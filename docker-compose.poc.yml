@@ -1,0 +1,52 @@
+name: irlight-poc
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+    restart: unless-stopped
+    volumes:
+      - ./poc/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "${IRLIGHT_BIND_ADDRESS:-127.0.0.1}:1935:1935/tcp"
+      - "${IRLIGHT_BIND_ADDRESS:-127.0.0.1}:8554:8554/tcp"
+      - "${IRLIGHT_BIND_ADDRESS:-127.0.0.1}:8890:8890/udp"
+    expose:
+      - "9997"
+      - "9998"
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  continuity:
+    build:
+      context: .
+      dockerfile: poc/continuity/Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - mediamtx
+    environment:
+      IRLIGHT_INPUT_URI: "rtsp://mediamtx:8554/live/input"
+      IRLIGHT_OUTPUT_URL: "${IRLIGHT_OUTPUT_URL:-rtmp://mediamtx:1935/output/stream}"
+      IRLIGHT_PUBLIC_INGEST_URL: "rtmp://${IRLIGHT_PUBLIC_HOST:-localhost}:1935/live/input"
+      IRLIGHT_PUBLIC_PREVIEW_URL: "rtmp://${IRLIGHT_PUBLIC_HOST:-localhost}:1935/output/stream"
+      IRLIGHT_HTTP_HOST: "0.0.0.0"
+      IRLIGHT_HTTP_PORT: "8080"
+      IRLIGHT_WIDTH: "${IRLIGHT_WIDTH:-1280}"
+      IRLIGHT_HEIGHT: "${IRLIGHT_HEIGHT:-720}"
+      IRLIGHT_FPS: "${IRLIGHT_FPS:-30}"
+      IRLIGHT_VIDEO_BITRATE_KBPS: "${IRLIGHT_VIDEO_BITRATE_KBPS:-3500}"
+      IRLIGHT_RECOVERY_STABLE_SECONDS: "${IRLIGHT_RECOVERY_STABLE_SECONDS:-3.0}"
+      IRLIGHT_INPUT_STALE_SECONDS: "${IRLIGHT_INPUT_STALE_SECONDS:-1.5}"
+      IRLIGHT_RESTART_DELAY_SECONDS: "${IRLIGHT_RESTART_DELAY_SECONDS:-2.0}"
+      IRLIGHT_LOG_LEVEL: "${IRLIGHT_LOG_LEVEL:-INFO}"
+    ports:
+      - "127.0.0.1:${IRLIGHT_UI_PORT:-8080}:8080/tcp"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s

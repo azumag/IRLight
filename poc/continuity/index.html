@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IRLight Phase 0 Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101214;
+      color: #f4f6f8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #101214; }
+    main { width: min(920px, 100%); margin: 0 auto; padding: 20px 16px 48px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    h1 { font-size: clamp(24px, 5vw, 38px); margin: 0; letter-spacing: -0.03em; }
+    h2 { font-size: 18px; margin: 0 0 14px; }
+    .phase { color: #aab3bd; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card { background: #1a1e22; border: 1px solid #2a3036; border-radius: 14px; padding: 16px; }
+    .wide { grid-column: 1 / -1; }
+    .label { color: #9da7b2; font-size: 12px; margin-bottom: 7px; }
+    .value { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+    .sub { color: #b8c0c8; font-size: 13px; line-height: 1.5; margin-top: 6px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; }
+    .dot { width: 11px; height: 11px; border-radius: 999px; background: #87909a; }
+    .ok .dot { background: #4ed17f; box-shadow: 0 0 0 4px rgba(78, 209, 127, 0.12); }
+    .warn .dot { background: #f0b849; box-shadow: 0 0 0 4px rgba(240, 184, 73, 0.12); }
+    .bad .dot { background: #f06c6c; box-shadow: 0 0 0 4px rgba(240, 108, 108, 0.12); }
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button { min-height: 64px; border: 0; border-radius: 12px; font: inherit; font-size: 17px; font-weight: 750; cursor: pointer; padding: 12px; }
+    button:focus-visible { outline: 3px solid #9cc7ff; outline-offset: 3px; }
+    button:disabled { opacity: 0.48; cursor: wait; }
+    .live-button { background: #e8edf2; color: #101214; }
+    .mute-button { background: #d64545; color: white; }
+    .active { box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.35); }
+    code { display: block; background: #101214; border: 1px solid #2a3036; border-radius: 9px; padding: 10px; overflow-wrap: anywhere; white-space: normal; user-select: all; }
+    .error { color: #ffb4b4; min-height: 1.5em; }
+    .muted-banner { display: none; border: 2px solid #ef7777; background: rgba(214, 69, 69, 0.13); padding: 14px; border-radius: 12px; font-size: 20px; font-weight: 800; text-align: center; }
+    .muted-banner.visible { display: block; }
+    footer { color: #8f99a3; font-size: 12px; line-height: 1.6; margin-top: 14px; }
+    @media (max-width: 600px) {
+      .grid { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; }
+      .controls { grid-template-columns: 1fr; }
+      header { display: block; }
+      .phase { margin-top: 6px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>IRLight Control</h1>
+    <div class="phase">Phase 0・単一セッションPoC</div>
+  </header>
+
+  <div id="mutedBanner" class="muted-banner" role="status" aria-live="assertive">配信音声はミュート中です</div>
+
+  <section class="grid" aria-label="配信状態" style="margin-top: 12px;">
+    <article class="card">
+      <div class="label">セッション</div>
+      <div id="sessionStatus" class="value status"><span class="dot"></span><span>取得中</span></div>
+      <div id="displaySource" class="sub"></div>
+    </article>
+    <article class="card">
+      <div class="label">入力</div>
+      <div id="inputStatus" class="value status"><span class="dot"></span><span>取得中</span></div>
+      <div id="inputDetail" class="sub"></div>
+    </article>
+    <article class="card">
+      <div class="label">出力</div>
+      <div id="outputStatus" class="value status"><span class="dot"></span><span>取得中</span></div>
+      <div id="outputDetail" class="sub"></div>
+    </article>
+    <article class="card">
+      <div class="label">音声出力</div>
+      <div id="audioStatus" class="value status"><span class="dot"></span><span>取得中</span></div>
+      <div id="audioDetail" class="sub"></div>
+    </article>
+
+    <article class="card wide">
+      <h2>音声コントロール</h2>
+      <div class="controls">
+        <button id="liveButton" class="live-button" type="button" onclick="setAudio('LIVE')">音声を流す</button>
+        <button id="muteButton" class="mute-button" type="button" onclick="setAudio('MUTED')">音声をミュート</button>
+      </div>
+      <div id="controlMessage" class="sub" aria-live="polite"></div>
+    </article>
+
+    <article class="card wide">
+      <h2>接続情報</h2>
+      <div class="label">配信アプリから送るURL</div>
+      <code id="ingestUrl">取得中</code>
+      <div class="label" style="margin-top: 14px;">ローカル確認用の出力URL</div>
+      <code id="previewUrl">取得中</code>
+    </article>
+
+    <article class="card wide">
+      <h2>エラー</h2>
+      <div id="lastError" class="error">なし</div>
+    </article>
+  </section>
+
+  <footer>
+    この画面はPhase 0 PoC用です。認証・複数ユーザー・課金・本番向けSecret管理は未実装です。
+    Docker Composeでは管理画面を127.0.0.1にだけ公開します。
+  </footer>
+</main>
+<script>
+  let currentState = null;
+  let requestInFlight = false;
+
+  function setStatus(elementId, text, kind) {
+    const element = document.getElementById(elementId);
+    element.className = `value status ${kind || ''}`;
+    element.querySelector('span:last-child').textContent = text;
+  }
+
+  function formatAudioReason(reason) {
+    const labels = {
+      INPUT_UNAVAILABLE: '入力音声待ち',
+      INPUT_AUDIO_UNAVAILABLE: '入力音声が届いていないため無音を送出中'
+    };
+    return labels[reason] || reason || '';
+  }
+
+  function render(state) {
+    currentState = state;
+    const sessionKind = state.session_status === 'LIVE' ? 'ok' : state.session_status === 'HOLDING' ? 'warn' : '';
+    setStatus('sessionStatus', state.session_status, sessionKind);
+    document.getElementById('displaySource').textContent = `表示中: ${state.display_source === 'LIVE' ? '通常映像' : '待機映像'}`;
+
+    setStatus('inputStatus', state.input_connected ? '接続中' : '未接続', state.input_connected ? 'ok' : 'warn');
+    document.getElementById('inputDetail').textContent = `映像: ${state.input_has_video ? '受信中' : 'なし'} / 音声: ${state.input_has_audio ? '受信中' : 'なし'}`;
+
+    setStatus('outputStatus', state.output_connected ? '接続中' : '再接続中', state.output_connected ? 'ok' : 'bad');
+    document.getElementById('outputDetail').textContent = state.output_connected ? 'RTMP出力パイプライン稼働中' : '出力先への再接続を試行します';
+
+    const audio = state.audio;
+    const audioText = audio.actual === 'LIVE' ? '音声オン' : audio.actual === 'MUTED' ? 'ミュート中' : audio.actual === 'APPLYING' ? '適用中' : '適用失敗';
+    const audioKind = audio.actual === 'LIVE' ? 'ok' : audio.actual === 'MUTED' ? 'warn' : audio.actual === 'FAILED' ? 'bad' : '';
+    setStatus('audioStatus', audioText, audioKind);
+    document.getElementById('audioDetail').textContent = `指定: ${audio.desired} / 実状態: ${audio.actual}${audio.reason ? ` / ${formatAudioReason(audio.reason)}` : ''}`;
+
+    document.getElementById('mutedBanner').classList.toggle('visible', audio.actual === 'MUTED');
+    document.getElementById('liveButton').classList.toggle('active', audio.desired === 'LIVE');
+    document.getElementById('muteButton').classList.toggle('active', audio.desired === 'MUTED');
+    document.getElementById('liveButton').disabled = requestInFlight;
+    document.getElementById('muteButton').disabled = requestInFlight;
+
+    document.getElementById('ingestUrl').textContent = state.connection?.ingest_url || '未設定';
+    document.getElementById('previewUrl').textContent = state.connection?.preview_url || '未設定';
+    document.getElementById('lastError').textContent = state.last_error || 'なし';
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`state HTTP ${response.status}`);
+      render(await response.json());
+    } catch (error) {
+      document.getElementById('lastError').textContent = `管理APIへ接続できません: ${error}`;
+      setStatus('outputStatus', '管理API切断', 'bad');
+    }
+  }
+
+  async function setAudio(mode) {
+    if (!currentState || requestInFlight) return;
+    requestInFlight = true;
+    document.getElementById('controlMessage').textContent = '適用要求を送信しています…';
+    render(currentState);
+
+    try {
+      const response = await fetch('/api/audio', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode,
+          expected_version: currentState.audio.version
+        })
+      });
+      const payload = await response.json();
+      if (response.status === 409) {
+        document.getElementById('controlMessage').textContent = '別の操作が先に反映されました。最新状態を再取得します。';
+      } else if (!response.ok) {
+        throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+      } else {
+        document.getElementById('controlMessage').textContent = mode === 'MUTED' ? 'ミュートを要求しました。' : '音声オンを要求しました。';
+      }
+    } catch (error) {
+      document.getElementById('controlMessage').textContent = `操作に失敗しました: ${error}`;
+    } finally {
+      requestInFlight = false;
+      await refresh();
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

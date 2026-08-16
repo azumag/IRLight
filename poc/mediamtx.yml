@@ -1,0 +1,41 @@
+# Phase 0 only. Authentication and TLS are intentionally left for #3 / #12.
+logLevel: info
+logDestinations: [stdout]
+logStructured: false
+
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+api: true
+apiAddress: :9997
+metrics: true
+metricsAddress: :9998
+pprof: false
+playback: false
+
+rtsp: true
+rtspTransports: [tcp]
+rtspEncryption: "no"
+rtspAddress: :8554
+
+rtmp: true
+rtmpEncryption: "no"
+rtmpAddress: :1935
+
+hls: false
+webrtc: false
+srt: true
+srtAddress: :8890
+moq: false
+
+paths:
+  live/input:
+    source: publisher
+    overridePublisher: true
+    maxReaders: 4
+
+  output/stream:
+    source: publisher
+    overridePublisher: true
+    maxReaders: 4
