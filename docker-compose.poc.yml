@@ -1,0 +1,50 @@
+name: irlight-poc
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+    restart: unless-stopped
+    volumes:
+      - ./config/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "1935:1935"   # RTMP ingest / local relay output
+      - "8554:8554"   # RTSP preview
+      - "8888:8888"   # HLS preview
+      - "8890:8890/udp" # SRT ingest (MediaMTX)
+      - "9998:9998"   # metrics (PoC only; do not expose publicly)
+
+  continuity:
+    build:
+      context: ./apps/continuity
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    environment:
+      INPUT_URI: ${INPUT_URI:-rtsp://mediamtx:8554/live/input}
+      EGRESS_URL: ${EGRESS_URL:-rtmp://mediamtx:1935/output/relay}
+      STATE_DIR: /state
+      VIDEO_WIDTH: ${VIDEO_WIDTH:-1280}
+      VIDEO_HEIGHT: ${VIDEO_HEIGHT:-720}
+      VIDEO_FPS: ${VIDEO_FPS:-30}
+      VIDEO_BITRATE_KBPS: ${VIDEO_BITRATE_KBPS:-3500}
+      INPUT_TIMEOUT_SECONDS: ${INPUT_TIMEOUT_SECONDS:-1.5}
+      RECOVERY_STABLE_SECONDS: ${RECOVERY_STABLE_SECONDS:-3.0}
+      SOURCE_RETRY_SECONDS: ${SOURCE_RETRY_SECONDS:-3.0}
+    volumes:
+      - irlight-state:/state
+
+  control-ui:
+    build:
+      context: ./apps/control-api
+    restart: unless-stopped
+    depends_on:
+      - continuity
+    environment:
+      STATE_DIR: /state
+    volumes:
+      - irlight-state:/state
+    ports:
+      - "8080:8080"
+
+volumes:
+  irlight-state:
