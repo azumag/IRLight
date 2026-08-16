@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - agent/phase0-vertical-slice
+    paths:
+      - bootstrap/phase0.tar.gz.b64.part-*
+      - .github/workflows/ci.yml
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Expand the reviewed source bundle
+        run: |
+          if ! compgen -G "bootstrap/phase0.tar.gz.b64.part-*" >/dev/null; then
+            echo "Bootstrap bundle is already removed."
+            exit 0
+          fi
+          cat bootstrap/phase0.tar.gz.b64.part-* | base64 --decode | tar -xzf -
+          rm -f bootstrap/phase0.tar.gz.b64.part-*
+          rmdir bootstrap 2>/dev/null || true
+      - name: Commit the Phase 0 files
+        run: |
+          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+            echo "No bootstrap changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add Phase 0 vertical slice"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+  unit:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Unit tests
+        run: python -m unittest discover -s poc/continuity -p 'test_*.py' -v
+      - name: Compile Python sources
+        run: python -m py_compile poc/continuity/app.py poc/continuity/state.py poc/scripts/set-audio.py poc/scripts/wait-state.py
+      - name: Validate shell scripts
+        run: bash -n poc/scripts/publish-test.sh poc/scripts/watch-output.sh poc/scripts/smoke-compose.sh
+
+  docker-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and exercise the vertical slice
+        run: ./poc/scripts/smoke-compose.sh
