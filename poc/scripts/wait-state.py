@@ -6,7 +6,6 @@ import json
 import sys
 import time
 from typing import Any
-from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -66,7 +65,10 @@ def main() -> int:
             if matches(payload, args):
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
                 return 0
-        except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError) as exc:
+            # 起動直後はTCP accept後にHTTP serverが再起動・初期化され、
+            # ConnectionResetErrorやRemoteDisconnected相当が一時的に起こり得る。
+            # ここでは最終失敗にせず、timeoutまで状態取得を再試行する。
             last_error = exc
         time.sleep(0.5)
 
