@@ -1,0 +1,24 @@
+logLevel: info
+
+rtsp: yes
+rtspAddress: :8554
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
+
+srt: yes
+srtAddress: :8890
+
+api: yes
+apiAddress: :9997
+
+metrics: yes
+metricsAddress: :9998
+
+# Phase 0では認証をまだ実装しない。外部公開禁止。
+paths:
+  all_others:
