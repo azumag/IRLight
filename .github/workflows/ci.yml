@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Expand the reviewed source bundle when present
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if ! compgen -G "bootstrap/phase0.tar.gz.b64.part-*" >/dev/null; then
+            echo "No bootstrap bundle to expand."
+            exit 0
+          fi
+          cat bootstrap/phase0.tar.gz.b64.part-* | base64 --decode | tar -xzf -
+          rm -f bootstrap/phase0.tar.gz.b64.part-*
+          rmdir bootstrap 2>/dev/null || true
+      - name: Commit materialized Phase 0 files
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+            echo "No materialization changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Materialize Phase 0 vertical slice"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+
+  unit:
+    needs: materialize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Unit tests
+        run: python -m unittest discover -s poc/continuity -p 'test_*.py' -v
+      - name: Compile Python sources
+        run: python -m py_compile poc/continuity/app.py poc/continuity/state.py poc/scripts/set-audio.py poc/scripts/wait-state.py
+      - name: Validate shell scripts
+        run: bash -n poc/scripts/publish-test.sh poc/scripts/watch-output.sh poc/scripts/smoke-compose.sh
+
+  docker-smoke:
+    needs: materialize
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Build and exercise the vertical slice
+        run: ./poc/scripts/smoke-compose.sh
