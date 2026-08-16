@@ -3,6 +3,26 @@ set -euo pipefail
 
 compose=(docker compose -f docker-compose.poc.yml)
 publisher_pid=""
+current_stage="bootstrap"
+
+annotation_escape() {
+  local value="$1"
+  value="${value//'%'/'%25'}"
+  value="${value//$'\r'/'%0D'}"
+  value="${value//$'\n'/'%0A'}"
+  printf '%s' "$value"
+}
+
+compact_diagnostics() {
+  local state ps continuity mediamtx publisher
+  state="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/state 2>&1 || true)"
+  ps="$("${compose[@]}" ps --format json 2>&1 | tail -c 2000 || true)"
+  continuity="$("${compose[@]}" logs --no-color --tail=50 continuity 2>&1 | tail -c 5000 || true)"
+  mediamtx="$("${compose[@]}" logs --no-color --tail=50 mediamtx 2>&1 | tail -c 5000 || true)"
+  publisher="$(tail -c 2000 /tmp/irlight-publisher.log 2>/dev/null || true)"
+  printf 'stage=%s\nstate=%s\nps=%s\ncontinuity=%s\nmediamtx=%s\npublisher=%s' \
+    "$current_stage" "$state" "$ps" "$continuity" "$mediamtx" "$publisher"
+}
 
 show_logs_and_cleanup() {
   status=$?
@@ -11,6 +31,11 @@ show_logs_and_cleanup() {
     "${compose[@]}" ps >&2 || true
     echo "--- docker compose logs ---" >&2
     "${compose[@]}" logs --no-color --tail=300 >&2 || true
+
+    # GitHub check annotations remain available through the Checks API even
+    # when the raw Actions log attachment cannot be retrieved by another tool.
+    diagnostics="$(compact_diagnostics)"
+    echo "::error title=IRLight docker smoke failure::$(annotation_escape "$diagnostics")"
   fi
   if [[ -n "$publisher_pid" ]]; then
     kill "$publisher_pid" 2>/dev/null || true
@@ -36,10 +61,12 @@ start_publisher() {
   publisher_pid=$!
 }
 
+current_stage="compose-up"
 "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build
 
+current_stage="initial-holding"
 ./poc/scripts/wait-state.py \
   --timeout 90 \
   --session-status READY \
@@ -48,6 +75,7 @@ start_publisher() {
   --audio-desired LIVE \
   --audio-actual MUTED
 
+current_stage="first-live"
 start_publisher 18
 ./poc/scripts/wait-state.py \
   --timeout 45 \
@@ -57,6 +85,7 @@ start_publisher 18
   --audio-desired LIVE \
   --audio-actual LIVE
 
+current_stage="mute"
 ./poc/scripts/set-audio.py MUTED >/dev/null
 ./poc/scripts/wait-state.py \
   --timeout 10 \
@@ -66,6 +95,7 @@ start_publisher 18
   --audio-desired MUTED \
   --audio-actual MUTED
 
+current_stage="unmute"
 ./poc/scripts/set-audio.py LIVE >/dev/null
 ./poc/scripts/wait-state.py \
   --timeout 10 \
@@ -75,6 +105,7 @@ start_publisher 18
   --audio-desired LIVE \
   --audio-actual LIVE
 
+current_stage="return-to-holding"
 wait "$publisher_pid" || true
 publisher_pid=""
 ./poc/scripts/wait-state.py \
@@ -85,6 +116,7 @@ publisher_pid=""
   --audio-desired LIVE \
   --audio-actual MUTED
 
+current_stage="second-live"
 start_publisher 10
 ./poc/scripts/wait-state.py \
   --timeout 30 \
@@ -94,6 +126,7 @@ start_publisher 10
   --audio-desired LIVE \
   --audio-actual LIVE
 
+current_stage="complete"
 wait "$publisher_pid" || true
 publisher_pid=""
 echo "IRLight Docker smoke test passed."
