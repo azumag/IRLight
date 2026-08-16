@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
-from state import ActualAudio, AudioMode, ContinuityState, VideoSource
+from state import ActualAudio, AudioMode, ContinuityState, VideoSource  # noqa: E402
 
 
 LOG = logging.getLogger("irlight.continuity")
@@ -66,7 +67,21 @@ def redact_url(url: str) -> str:
     return f"{scheme}://{host}/…"
 
 
+def _gst_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 class ContinuityPipeline:
+    """Single-session Phase 0 continuity engine.
+
+    The output pipeline is created once and never torn down: standby video and
+    silence audio are always available through input-selectors, so the RTMP
+    egress session survives input loss. The input pipeline is a separate,
+    disposable unit that is rebuilt from scratch on each reconnect attempt.
+    Rebuilding a fresh pipeline avoids the GStreamer quirks of adding or
+    recycling an uridecodebin inside a running pipeline.
+    """
+
     def __init__(self) -> None:
         self.input_uri = os.getenv("INPUT_URI", "rtsp://mediamtx:8554/live/input")
         self.egress_url = os.getenv(
@@ -93,11 +108,14 @@ class ContinuityPipeline:
         self.fallback_audio_pad: Gst.Pad | None = None
         self.live_video_pad: Gst.Pad | None = None
         self.live_audio_pad: Gst.Pad | None = None
-        self.live_elements: list[Gst.Element] = []
-        self.live_source: Gst.Element | None = None
+
+        self._stop_event = threading.Event()
+        self._input_failed = threading.Event()
+        self._input_pipeline: Gst.Pipeline | None = None
+        self._input_thread: threading.Thread | None = None
+
         self.source_generation = 0
         self.source_failed = False
-        self.next_source_retry_at = 0.0
         self.last_control_version = 0
         self.last_command_id: str | None = None
         self.last_error: str | None = None
@@ -107,21 +125,25 @@ class ContinuityPipeline:
     def run(self) -> None:
         Gst.init(None)
         self._ensure_default_control()
-        self._build_pipeline()
+        self._build_output_pipeline()
         assert self.pipeline is not None
 
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
-        bus.connect("message", self._on_bus_message)
+        bus.connect("message", self._on_output_message)
 
-        self._build_live_source()
         GLib.timeout_add(250, self._reconcile)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._stop)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self._stop)
 
         result = self.pipeline.set_state(Gst.State.PLAYING)
         if result == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("failed to start GStreamer pipeline")
+            raise RuntimeError("failed to start output pipeline")
+
+        self._input_thread = threading.Thread(
+            name="input-supervisor", target=self._input_supervisor, daemon=True
+        )
+        self._input_thread.start()
 
         LOG.info(
             "continuity pipeline started input=%s egress=%s profile=COMPOSITED_VIDEO_POC",
@@ -129,6 +151,11 @@ class ContinuityPipeline:
             redact_url(self.egress_url),
         )
         self.main_loop.run()
+        self._stop_event.set()
+        self._input_failed.set()
+        self._stop_input_pipeline()
+        if self._input_thread is not None:
+            self._input_thread.join(timeout=3.0)
         self.pipeline.set_state(Gst.State.NULL)
 
     def _ensure_default_control(self) -> None:
@@ -143,14 +170,15 @@ class ContinuityPipeline:
                 },
             )
 
-    def _build_pipeline(self) -> None:
+    def _build_output_pipeline(self) -> None:
         egress_literal = json.dumps(self.egress_url)
+        key_int = max(1, self.fps * 2)
         description = f"""
             input-selector name=video_selector sync-streams=true cache-buffers=true !
                 queue max-size-time=2000000000 !
                 videoconvert !
                 video/x-raw,format=I420,width={self.width},height={self.height},framerate={self.fps}/1 !
-                x264enc tune=zerolatency speed-preset=veryfast bitrate={self.bitrate_kbps} key-int-max={self.fps * 2} !
+                x264enc tune=zerolatency speed-preset=veryfast bitrate={self.bitrate_kbps} key-int-max={key_int} !
                 h264parse config-interval=-1 ! queue ! mux.
             input-selector name=audio_selector sync-streams=true cache-buffers=true !
                 queue max-size-time=2000000000 !
@@ -159,6 +187,24 @@ class ContinuityPipeline:
                 avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
             flvmux name=mux streamable=true !
                 rtmpsink location={egress_literal} sync=false async=false
+
+            videotestsrc name=standby_video is-live=true pattern=black !
+                video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1 !
+                queue ! video_selector.sink_0
+
+            intervideosrc name=live_video channel=irlight-live-video do-timestamp=true !
+                videoconvert ! videoscale ! videorate !
+                video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1 !
+                queue leaky=downstream max-size-buffers=2 ! video_selector.sink_1
+
+            audiotestsrc name=silence_source is-live=true wave=silence !
+                audio/x-raw,rate=48000,channels=2 !
+                queue ! audio_selector.sink_0
+
+            interaudiosrc name=live_audio channel=irlight-live-audio do-timestamp=true !
+                audioconvert ! audioresample !
+                audio/x-raw,rate=48000,channels=2 !
+                queue leaky=downstream max-size-buffers=2 ! audio_selector.sink_1
         """
         parsed = Gst.parse_launch(description)
         if not isinstance(parsed, Gst.Pipeline):
@@ -173,204 +219,121 @@ class ContinuityPipeline:
         self.audio_selector = self.pipeline.get_by_name("audio_selector")
         if self.video_selector is None or self.audio_selector is None:
             raise RuntimeError("input selectors were not created")
-
-        self.fallback_video_pad = self._add_fallback_video()
-        self.fallback_audio_pad = self._add_fallback_audio()
+        self.fallback_video_pad = self.video_selector.get_static_pad("sink_0")
+        self.fallback_audio_pad = self.audio_selector.get_static_pad("sink_0")
+        self.live_video_pad = self.video_selector.get_static_pad("sink_1")
+        self.live_audio_pad = self.audio_selector.get_static_pad("sink_1")
+        if any(
+            pad is None
+            for pad in (
+                self.fallback_video_pad,
+                self.fallback_audio_pad,
+                self.live_video_pad,
+                self.live_audio_pad,
+            )
+        ):
+            raise RuntimeError("selector sink pads were not created")
         self._activate_pad(self.video_selector, self.fallback_video_pad)
         self._activate_pad(self.audio_selector, self.fallback_audio_pad)
 
-    @staticmethod
-    def _link_many(elements: list[Gst.Element], label: str) -> None:
-        for left, right in zip(elements, elements[1:]):
-            if not left.link(right):
-                raise RuntimeError(
-                    f"failed to link {label}: {left.name} -> {right.name}"
-                )
-
-    def _request_selector_pad(self, selector: Gst.Element) -> Gst.Pad:
-        pad = selector.request_pad_simple("sink_%u")
-        if pad is None:
-            pad = selector.get_request_pad("sink_%u")
-        if pad is None:
-            raise RuntimeError(f"could not request selector pad from {selector.name}")
-        return pad
-
-    def _add_fallback_video(self) -> Gst.Pad:
-        assert self.pipeline is not None and self.video_selector is not None
-        source = Gst.ElementFactory.make("videotestsrc", "standby_video")
-        source.set_property("is-live", True)
-        source.set_property("pattern", 2)
-        caps = Gst.ElementFactory.make("capsfilter", "standby_video_caps")
-        caps.set_property(
-            "caps",
-            Gst.Caps.from_string(
-                f"video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1"
-            ),
-        )
-        overlay = Gst.ElementFactory.make("textoverlay", "standby_text")
-        overlay.set_property("text", "IRLight - input disconnected")
-        overlay.set_property("font-desc", "Sans 30")
-        convert = Gst.ElementFactory.make("videoconvert", "standby_convert")
-        queue = Gst.ElementFactory.make("queue", "standby_video_queue")
-        elements = [source, caps, overlay, convert, queue]
-        for element in elements:
-            if element is None:
-                raise RuntimeError("required standby video plugin is unavailable")
-            self.pipeline.add(element)
-        self._link_many(elements, "standby video")
-        selector_pad = self._request_selector_pad(self.video_selector)
-        if queue.get_static_pad("src").link(selector_pad) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to attach standby video to selector")
-        return selector_pad
-
-    def _add_fallback_audio(self) -> Gst.Pad:
-        assert self.pipeline is not None and self.audio_selector is not None
-        source = Gst.ElementFactory.make("audiotestsrc", "silence_source")
-        source.set_property("is-live", True)
-        source.set_property("wave", 4)
-        caps = Gst.ElementFactory.make("capsfilter", "silence_caps")
-        caps.set_property(
-            "caps", Gst.Caps.from_string("audio/x-raw,rate=48000,channels=2")
-        )
-        convert = Gst.ElementFactory.make("audioconvert", "silence_convert")
-        resample = Gst.ElementFactory.make("audioresample", "silence_resample")
-        queue = Gst.ElementFactory.make("queue", "silence_queue")
-        elements = [source, caps, convert, resample, queue]
-        for element in elements:
-            if element is None:
-                raise RuntimeError("required silence audio plugin is unavailable")
-            self.pipeline.add(element)
-        self._link_many(elements, "silence audio")
-        selector_pad = self._request_selector_pad(self.audio_selector)
-        if queue.get_static_pad("src").link(selector_pad) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to attach silence audio to selector")
-        return selector_pad
-
-    def _build_live_source(self) -> None:
-        assert self.pipeline is not None
-        self._remove_live_source()
-        self.source_generation += 1
-        generation = self.source_generation
-        source = Gst.ElementFactory.make("uridecodebin", f"live_source_{generation}")
-        if source is None:
-            raise RuntimeError("uridecodebin plugin is unavailable")
-        source.set_property("uri", self.input_uri)
-        source.connect("pad-added", self._on_live_pad_added, generation)
-        source.connect("source-setup", self._on_source_setup)
-        self.pipeline.add(source)
-        self.live_source = source
-        self.live_elements = [source]
-        self.source_failed = False
-        source.sync_state_with_parent()
-        LOG.info("created live source generation=%s", generation)
-
-    def _on_source_setup(self, _decodebin: Gst.Element, source: Gst.Element) -> None:
-        if source.find_property("latency") is not None:
-            source.set_property("latency", 500)
-        if source.find_property("tcp-timeout") is not None:
-            source.set_property("tcp-timeout", 3_000_000)
-
-    def _on_live_pad_added(
-        self, _source: Gst.Element, pad: Gst.Pad, generation: int
-    ) -> None:
-        if generation != self.source_generation or self.pipeline is None:
-            return
-        caps = pad.get_current_caps() or pad.query_caps(None)
-        structure = caps.get_structure(0) if caps and caps.get_size() else None
-        media_type = structure.get_name() if structure else ""
-        if media_type.startswith("video/") and self.live_video_pad is None:
-            self.live_video_pad = self._attach_live_video(pad, generation)
-        elif media_type.startswith("audio/") and self.live_audio_pad is None:
-            self.live_audio_pad = self._attach_live_audio(pad, generation)
-
-    def _attach_live_video(self, source_pad: Gst.Pad, generation: int) -> Gst.Pad:
-        assert self.pipeline is not None and self.video_selector is not None
-        queue = Gst.ElementFactory.make("queue", f"live_video_queue_{generation}")
-        convert = Gst.ElementFactory.make("videoconvert", f"live_video_convert_{generation}")
-        scale = Gst.ElementFactory.make("videoscale", f"live_video_scale_{generation}")
-        rate = Gst.ElementFactory.make("videorate", f"live_video_rate_{generation}")
-        caps = Gst.ElementFactory.make("capsfilter", f"live_video_caps_{generation}")
-        caps.set_property(
-            "caps",
-            Gst.Caps.from_string(
-                f"video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1"
-            ),
-        )
-        elements = [queue, convert, scale, rate, caps]
-        for element in elements:
-            if element is None:
-                raise RuntimeError("required live video plugin is unavailable")
-            self.pipeline.add(element)
-            self.live_elements.append(element)
-        self._link_many(elements, "live video conversion")
-        if source_pad.link(queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to link live video decode pad")
-        selector_pad = self._request_selector_pad(self.video_selector)
-        if caps.get_static_pad("src").link(selector_pad) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to attach live video to selector")
-        caps.get_static_pad("src").add_probe(
-            Gst.PadProbeType.BUFFER, self._on_video_buffer
-        )
-        for element in elements:
-            element.sync_state_with_parent()
-        LOG.info("live video pad attached generation=%s", generation)
-        return selector_pad
-
-    def _attach_live_audio(self, source_pad: Gst.Pad, generation: int) -> Gst.Pad:
-        assert self.pipeline is not None and self.audio_selector is not None
-        queue = Gst.ElementFactory.make("queue", f"live_audio_queue_{generation}")
-        convert = Gst.ElementFactory.make("audioconvert", f"live_audio_convert_{generation}")
-        resample = Gst.ElementFactory.make("audioresample", f"live_audio_resample_{generation}")
-        caps = Gst.ElementFactory.make("capsfilter", f"live_audio_caps_{generation}")
-        caps.set_property(
-            "caps", Gst.Caps.from_string("audio/x-raw,rate=48000,channels=2")
-        )
-        elements = [queue, convert, resample, caps]
-        for element in elements:
-            if element is None:
-                raise RuntimeError("required live audio plugin is unavailable")
-            self.pipeline.add(element)
-            self.live_elements.append(element)
-        self._link_many(elements, "live audio conversion")
-        if source_pad.link(queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to link live audio decode pad")
-        selector_pad = self._request_selector_pad(self.audio_selector)
-        if caps.get_static_pad("src").link(selector_pad) != Gst.PadLinkReturn.OK:
-            raise RuntimeError("failed to attach live audio to selector")
-        caps.get_static_pad("src").add_probe(
-            Gst.PadProbeType.BUFFER, self._on_audio_buffer
-        )
-        for element in elements:
-            element.sync_state_with_parent()
-        LOG.info("live audio pad attached generation=%s", generation)
-        return selector_pad
-
-    def _on_video_buffer(self, _pad: Gst.Pad, _info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
-        self.model.observe_video(time.monotonic())
-        return Gst.PadProbeReturn.OK
-
-    def _on_audio_buffer(self, _pad: Gst.Pad, _info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
-        self.model.observe_audio(time.monotonic())
-        return Gst.PadProbeReturn.OK
-
-    def _remove_live_source(self) -> None:
-        if self.pipeline is None:
-            return
-        if self.video_selector is not None and self.live_video_pad is not None:
-            self.video_selector.release_request_pad(self.live_video_pad)
-        if self.audio_selector is not None and self.live_audio_pad is not None:
-            self.audio_selector.release_request_pad(self.live_audio_pad)
-        self.live_video_pad = None
-        self.live_audio_pad = None
-
-        for element in reversed(self.live_elements):
+    def _input_supervisor(self) -> None:
+        while not self._stop_event.is_set():
+            self._input_failed.clear()
             try:
-                element.set_state(Gst.State.NULL)
-                self.pipeline.remove(element)
-            except (TypeError, RuntimeError):
-                LOG.exception("failed to remove live element %s", element.name)
-        self.live_elements = []
-        self.live_source = None
+                self._start_input_pipeline()
+                while (
+                    not self._stop_event.is_set()
+                    and not self._input_failed.wait(0.5)
+                ):
+                    pass
+            except Exception as exc:  # pragma: no cover - exercised in Docker PoC
+                LOG.info("Input is not available yet (%s)", type(exc).__name__)
+                self.last_error = f"INPUT_START_FAILED:{type(exc).__name__}"
+            finally:
+                self._stop_input_pipeline()
+
+            if not self._stop_event.wait(self.source_retry_seconds):
+                LOG.debug("Retrying input pipeline")
+
+    def _start_input_pipeline(self) -> None:
+        input_uri = _gst_quote(self.input_uri)
+        description = f"""
+            uridecodebin uri="{input_uri}" name=decode
+
+            decode.
+                ! queue
+                ! videoconvert
+                ! videoscale
+                ! videorate
+                ! video/x-raw,width={self.width},height={self.height},framerate={self.fps}/1
+                ! identity name=video_probe signal-handoffs=true
+                ! intervideosink channel=irlight-live-video sync=false
+
+            decode.
+                ! queue
+                ! audioconvert
+                ! audioresample
+                ! audio/x-raw,rate=48000,channels=2
+                ! identity name=audio_probe signal-handoffs=true
+                ! interaudiosink channel=irlight-live-audio sync=false
+        """
+        pipeline = Gst.parse_launch(description)
+        if not isinstance(pipeline, Gst.Pipeline):
+            raise RuntimeError("Input description did not produce a Gst.Pipeline")
+
+        video_probe = pipeline.get_by_name("video_probe")
+        audio_probe = pipeline.get_by_name("audio_probe")
+        if video_probe is None or audio_probe is None:
+            raise RuntimeError("Input probes were not created")
+        video_probe.connect("handoff", self._on_video_handoff)
+        audio_probe.connect("handoff", self._on_audio_handoff)
+
+        self._input_pipeline = pipeline
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_input_message)
+
+        self.source_generation += 1
+        self.source_failed = False
+        self.last_error = None
+        result = pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("Input pipeline refused PLAYING state")
+        LOG.info("input pipeline started generation=%s", self.source_generation)
+
+    def _stop_input_pipeline(self) -> None:
+        pipeline = self._input_pipeline
+        self._input_pipeline = None
+        if pipeline is not None:
+            pipeline.set_state(Gst.State.NULL)
+
+    def _on_input_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
+        if message.type == Gst.MessageType.ERROR:
+            error, _debug = message.parse_error()
+            identity = f"{error.domain}:{error.code}"
+            LOG.info("Input pipeline ended (%s)", identity)
+            self.last_error = f"INPUT_PIPELINE_ERROR:{identity}"
+            self._input_failed.set()
+        elif message.type == Gst.MessageType.EOS:
+            LOG.info("Input pipeline reached EOS")
+            self._input_failed.set()
+
+    def _on_output_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
+        if message.type == Gst.MessageType.ERROR:
+            error, _debug = message.parse_error()
+            identity = f"{error.domain}:{error.code}"
+            LOG.error("Output pipeline error (%s)", identity)
+            self.last_error = f"OUTPUT_PIPELINE_ERROR:{identity}"
+            self._stop()
+        elif message.type == Gst.MessageType.EOS:
+            self.last_error = "OUTPUT_PIPELINE_EOS"
+            self._stop()
+
+    def _on_video_handoff(self, _identity: Gst.Element, _buffer: Gst.Buffer) -> None:
+        self.model.observe_video(time.monotonic())
+
+    def _on_audio_handoff(self, _identity: Gst.Element, _buffer: Gst.Buffer) -> None:
+        self.model.observe_audio(time.monotonic())
 
     def _reconcile(self) -> bool:
         now_wall = time.time()
@@ -394,26 +357,22 @@ class ContinuityPipeline:
 
         decision = self.model.decide(now_mono)
         assert self.video_selector is not None and self.audio_selector is not None
-        assert self.fallback_video_pad is not None and self.fallback_audio_pad is not None
+        assert (
+            self.fallback_video_pad is not None
+            and self.fallback_audio_pad is not None
+            and self.live_video_pad is not None
+            and self.live_audio_pad is not None
+        )
 
-        if decision.video_source is VideoSource.LIVE and self.live_video_pad is not None:
+        if decision.video_source is VideoSource.LIVE:
             self._activate_pad(self.video_selector, self.live_video_pad)
         else:
             self._activate_pad(self.video_selector, self.fallback_video_pad)
 
-        if decision.actual_audio is ActualAudio.LIVE and self.live_audio_pad is not None:
+        if decision.actual_audio is ActualAudio.LIVE:
             self._activate_pad(self.audio_selector, self.live_audio_pad)
         else:
             self._activate_pad(self.audio_selector, self.fallback_audio_pad)
-
-        if self.source_failed and now_mono >= self.next_source_retry_at:
-            try:
-                self._build_live_source()
-            except Exception as exc:
-                self.last_error = f"SOURCE_REBUILD_FAILED:{type(exc).__name__}"
-                self.source_failed = True
-                self.next_source_retry_at = now_mono + self.source_retry_seconds
-                LOG.exception("live source rebuild failed")
 
         atomic_write_json(
             self.status_path,
@@ -428,7 +387,7 @@ class ContinuityPipeline:
                 "control_version": self.last_control_version,
                 "command_id": self.last_command_id,
                 "source_generation": self.source_generation,
-                "source_retrying": self.source_failed,
+                "source_retrying": self._input_pipeline is None,
                 "last_error": self.last_error,
                 "egress": redact_url(self.egress_url),
                 "started_at": self.started_at,
@@ -441,39 +400,6 @@ class ContinuityPipeline:
     def _activate_pad(selector: Gst.Element, pad: Gst.Pad) -> None:
         if selector.get_property("active-pad") != pad:
             selector.set_property("active-pad", pad)
-
-    def _on_bus_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
-        if message.type == Gst.MessageType.ERROR:
-            error, debug = message.parse_error()
-            if self._belongs_to_live_source(message.src):
-                LOG.warning("live input error: %s debug=%s", error, debug)
-                self.source_failed = True
-                self.next_source_retry_at = time.monotonic() + self.source_retry_seconds
-                self.last_error = f"INPUT_ERROR:{error.domain}:{error.code}"
-                return
-            self.last_error = f"PIPELINE_ERROR:{error.domain}:{error.code}"
-            LOG.error("fatal pipeline error: %s debug=%s", error, debug)
-            self._stop()
-        elif message.type == Gst.MessageType.EOS:
-            if self._belongs_to_live_source(message.src):
-                self.source_failed = True
-                self.next_source_retry_at = time.monotonic() + self.source_retry_seconds
-                self.last_error = "INPUT_EOS"
-            else:
-                self.last_error = "PIPELINE_EOS"
-                self._stop()
-
-    @staticmethod
-    def _belongs_to_live_source(element: Gst.Object | None) -> bool:
-        current = element
-        while current is not None:
-            try:
-                if current.get_name().startswith("live_"):
-                    return True
-                current = current.get_parent()
-            except (AttributeError, RuntimeError):
-                return False
-        return False
 
     def _stop(self) -> bool:
         if self.main_loop.is_running():

@@ -56,11 +56,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Unit tests
-        run: python -m unittest discover -s poc/continuity -p 'test_*.py' -v
+        run: python -m unittest discover -s tests -v
       - name: Compile Python sources
-        run: python -m py_compile poc/continuity/app.py poc/continuity/state.py poc/scripts/set-audio.py poc/scripts/wait-state.py
+        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/control-api/app.py
       - name: Validate shell scripts
-        run: bash -n poc/scripts/publish-test.sh poc/scripts/watch-output.sh poc/scripts/smoke-compose.sh
+        run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh
 
   docker-smoke:
     needs: materialize
@@ -72,4 +72,4 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
       - name: Build and exercise the vertical slice
-        run: ./poc/scripts/smoke-compose.sh
+        run: ./scripts/smoke-compose.sh

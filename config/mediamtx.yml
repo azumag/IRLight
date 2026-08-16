@@ -2,13 +2,15 @@ logLevel: info
 
 rtsp: yes
 rtspAddress: :8554
+# リレー用途はNATやUDPポート枯渇に弱いUDP unicastより、単一TCP接続のinterleavedを優先する。
+rtspTransports: [tcp]
 
 rtmp: yes
 rtmpAddress: :1935
 
 hls: yes
 hlsAddress: :8888
-hlsAllowOrigins: ['*']
+hlsAllowOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080']
 
 srt: yes
 srtAddress: :8890
@@ -21,4 +23,9 @@ metricsAddress: :9998
 
 # Phase 0では認証をまだ実装しない。外部公開禁止。
 paths:
-  all_others:
+  live/input:
+    source: publisher
+    maxReaders: 4
+  output/relay:
+    source: publisher
+    maxReaders: 4

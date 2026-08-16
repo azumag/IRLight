@@ -123,6 +123,10 @@ docker compose -f docker-compose.poc.yml config
 
 詳細な手動試験は `docs/phase0-test-plan.md` を参照してください。
 
+2026-08-16時点の実測結果（待機出力・LIVE遷移・ミュート・切断・再接続・ミュート維持）は
+`docs/phase0-verification.md` に記録しています。Docker E2Eは
+`bash scripts/smoke-compose.sh` で再現できます。
+
 ## 次の実装順
 
 1. Dockerで基本切断・復帰とミュートを実測

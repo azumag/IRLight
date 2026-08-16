@@ -7,11 +7,10 @@ services:
     volumes:
       - ./config/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "1935:1935"   # RTMP ingest / local relay output
-      - "8554:8554"   # RTSP preview
-      - "8888:8888"   # HLS preview
-      - "8890:8890/udp" # SRT ingest (MediaMTX)
-      - "9998:9998"   # metrics (PoC only; do not expose publicly)
+      - "127.0.0.1:1935:1935"     # RTMP ingest / local relay output
+      - "127.0.0.1:8554:8554"     # RTSP preview
+      - "127.0.0.1:8888:8888"     # HLS preview
+      - "127.0.0.1:8890:8890/udp" # SRT ingest (MediaMTX)
 
   continuity:
     build:
@@ -44,7 +43,7 @@ services:
     volumes:
       - irlight-state:/state
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
 volumes:
   irlight-state:

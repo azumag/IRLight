@@ -37,6 +37,9 @@
     <span class="label">配信音声</span><span id="audio" class="value badge"><span id="audioDot" class="dot"></span><span>—</span></span>
     <span class="label">入力映像</span><span id="inputVideo" class="value">—</span>
     <span class="label">入力音声</span><span id="inputAudio" class="value">—</span>
+    <span class="label">指定状態</span><span id="desired" class="value">—</span>
+    <span class="label">実状態</span><span id="actual" class="value">—</span>
+    <span class="label">バージョン</span><span id="version" class="value">—</span>
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
   </section>
 
@@ -73,6 +76,10 @@ function render(data) {
   $('inputVideo').textContent = r.input_video_recent ? '受信中' : '停止';
   $('inputAudio').textContent = r.input_audio_recent ? '受信中' : '停止／なし';
   $('updated').textContent = r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '—';
+  const actualLabel = ({LIVE:'音声オン', MUTED:'ミュート中', SILENT_FALLBACK:'入力音声なし', STARTING:'起動中'})[actual] || actual || '不明';
+  $('desired').textContent = desiredMuted ? 'ミュート指定' : 'オン指定';
+  $('actual').textContent = actualLabel;
+  $('version').textContent = c.version != null ? String(c.version) : '—';
   const button = $('audioButton');
   button.disabled = applying;
   button.className = desiredMuted ? 'muted' : 'live';
