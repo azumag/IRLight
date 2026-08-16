@@ -1,53 +1,57 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - agent/phase0-vertical-slice
-    paths:
-      - bootstrap/phase0.tar.gz.b64.part-*
-      - .github/workflows/ci.yml
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  bootstrap:
-    if: github.event_name == 'push'
+  materialize:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-      - name: Expand the reviewed source bundle
+      - name: Expand the reviewed source bundle when present
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: |
           if ! compgen -G "bootstrap/phase0.tar.gz.b64.part-*" >/dev/null; then
-            echo "Bootstrap bundle is already removed."
+            echo "No bootstrap bundle to expand."
             exit 0
           fi
           cat bootstrap/phase0.tar.gz.b64.part-* | base64 --decode | tar -xzf -
           rm -f bootstrap/phase0.tar.gz.b64.part-*
           rmdir bootstrap 2>/dev/null || true
-      - name: Commit the Phase 0 files
+      - name: Commit materialized Phase 0 files
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: |
           if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
-            echo "No bootstrap changes."
+            echo "No materialization changes."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Add Phase 0 vertical slice"
-          git push origin HEAD:${GITHUB_REF_NAME}
+          git commit -m "Materialize Phase 0 vertical slice"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
 
   unit:
-    if: github.event_name == 'pull_request'
+    needs: materialize
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -59,10 +63,13 @@ jobs:
         run: bash -n poc/scripts/publish-test.sh poc/scripts/watch-output.sh poc/scripts/smoke-compose.sh
 
   docker-smoke:
-    if: github.event_name == 'pull_request'
+    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
       - name: Build and exercise the vertical slice
         run: ./poc/scripts/smoke-compose.sh
