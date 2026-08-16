@@ -127,6 +127,16 @@ docker compose -f docker-compose.poc.yml config
 `docs/phase0-verification.md` に記録しています。Docker E2Eは
 `bash scripts/smoke-compose.sh` で再現できます。
 
+### メディアプロファイル
+
+`.env` の `PROFILE` で切り替えられます。
+
+- `COMPOSITED_VIDEO_POC`: Phase 0 baseline。映像・音声とも再エンコード
+- `AUDIO_PROCESSED`: 映像パススルー＋音声のみ再エンコード（本番候補）
+- `PASSTHROUGH`: 映像・音声ともパススルー（入力がH.264/AACのとき）
+
+実測比較は `docs/profile-comparison.md` を参照してください。
+
 ## 次の実装順
 
 1. Dockerで基本切断・復帰とミュートを実測
