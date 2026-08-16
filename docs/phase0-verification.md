@@ -62,9 +62,29 @@
    廃止した。MediaMTX の `paths` を `live/input` と `output/relay` のみに制限した。
 5. **RTSPトランスポート**: リレー用途で安定する TCP interleaved (`rtspTransports: [tcp]`) を指定した。
 
+## 60分soak試験（2026-08-16 夜、追加実施）
+
+`docker compose down -v` のクリーン状態から、`COMPOSITED_VIDEO_POC` 構成で
+MUTED指定のまま60分間連続運転し、5分毎に入力publisherを約20秒停止する入力断試験を12回実施した。
+
+| 項目 | 結果 |
+| --- | --- |
+| 出力RTMP接続（MediaMTX `output/relay`） | 60分間・12回の入力断を通して常に1本（再作成なし） |
+| 状態遷移 | 毎回 `LIVE+MUTED → HOLDING+MUTED → LIVE+MUTED` へ収束 |
+| desired/actual | 全期間 `MUTED / MUTED` を維持 |
+| 入力source世代 | 入力断毎に数回の再試行を観測（`SOURCE_RETRY_SECONDS=3`）、復帰後に安定 |
+| CPU | 約46〜69%（x264再エンコード込み） |
+| メモリ | 約96MiBから約210MiBまで増加し、45分以降は約200〜216MiBで頭打ち |
+| 出力映像 | 終了時もH.264 1280x720@30 + AAC 48kHz 2ch |
+| 出力音声 | 終了時も `mean/max_volume -91.0dB`（無音AAC継続） |
+| PTS連続性 | 70秒の壁時計に対しPTSも+70,000ms（1:1進行）、巻き戻り・不連続なし |
+
+メモリが約96→約210MiBで頭打ちすることは確認したが、これが6時間超でも安定するかは
+今後のsoakで継続監視する。本試験はローカルMediaMTX出力でのもので、外部配信先の枠維持は未実施。
+
 ## 未実施 / 残課題
 
 - Twitch / YouTube / Kick などの外部配信先での実配信試験
-- 2時間 / 6時間のsoak test、CPU・メモリ・遅延・drift の性能比較
+- 2時間 / 6時間のsoak test（本試験は60分）、CPU・メモリ・遅延・drift の性能比較
 - `PASSTHROUGH` / `AUDIO_PROCESSED` との比較
 - 認証・TLS・複数Session・Secret配送（Phase 0範囲外）
