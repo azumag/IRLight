@@ -8,5 +8,8 @@ IRL配信向けリレーサーバー。実装はIssueとPull Requestで段階的
 - `apps/node-agent/` : Node Agent（bootstrap / tmpfs Secret / heartbeat / stop）
 - `docker-compose.node.yml` : production compose（prebuilt image、internal-only）
 - `docker-compose.node.public.yml` : 公開ポートの overlay（RTMP ingest のみ）
+- `apps/control-api/session_*.py` / `reaper.py` : Session lifecycle / reaper
+- `apps/control-api/reaper_cli.py` : 定期実行する reaper CLI
 
-検証手順は `docs/cleanup-proof.md` と `docs/node-bootstrap-proof.md` を参照。
+検証手順は `docs/cleanup-proof.md`、`docs/node-bootstrap-proof.md`、
+`docs/session-lifecycle-proof.md` を参照。
