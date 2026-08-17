@@ -19,6 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY state.py continuity.py ./
+COPY state.py continuity.py secret_files.py ./
 
 CMD ["python3", "-u", "/app/continuity.py"]
