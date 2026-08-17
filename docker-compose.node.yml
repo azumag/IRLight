@@ -1,0 +1,84 @@
+name: irlight-node
+
+# Production compose for one on-demand Media Node.
+#
+# - Prebuilt images only: nothing here uses `build:` for the media stack.
+# - MediaMTX API / metrics stay on the internal network (no ports published).
+# - Public exposure lives in docker-compose.node.public.yml.
+# - Destination secrets are delivered as tmpfs files, never as env vars or
+#   process arguments.
+
+x-media-env: &media-env
+  INPUT_URI: ${INPUT_URI:-rtsp://mediamtx:8554/live/input}
+  EGRESS_URL_FILE: /run/irlight/secrets/egress_url
+  STATE_DIR: /state
+  VIDEO_WIDTH: ${VIDEO_WIDTH:-1280}
+  VIDEO_HEIGHT: ${VIDEO_HEIGHT:-720}
+  VIDEO_FPS: ${VIDEO_FPS:-30}
+  VIDEO_BITRATE_KBPS: ${VIDEO_BITRATE_KBPS:-3500}
+  INPUT_TIMEOUT_SECONDS: ${INPUT_TIMEOUT_SECONDS:-1.5}
+  RECOVERY_STABLE_SECONDS: ${RECOVERY_STABLE_SECONDS:-3.0}
+  SOURCE_RETRY_SECONDS: ${SOURCE_RETRY_SECONDS:-3.0}
+  PROFILE: ${PROFILE:-COMPOSITED_VIDEO_POC}
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+    restart: unless-stopped
+    volumes:
+      - ./config/mediamtx.yml:/mediamtx.yml:ro
+    # No ports: RTMP/RTSP/HLS/API/metrics stay internal. The public overlay
+    # publishes only the RTMP ingest port when explicitly requested.
+
+  continuity:
+    image: ${NODE_CONTINUITY_IMAGE:-ghcr.io/azumag/irlight-continuity:phase-b-spike}
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    environment: *media-env
+    volumes:
+      - irlight-state:/state
+      - type: volume
+        source: irlight-secrets
+        target: /run/irlight/secrets
+        volume:
+          nocopy: true
+        read_only: true
+
+  node-agent:
+    image: ${NODE_AGENT_IMAGE:-ghcr.io/azumag/irlight-node-agent:phase-b-spike}
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+      - continuity
+    environment:
+      NODE_CONTROL_PLANE_URL: ${NODE_CONTROL_PLANE_URL:-http://control-plane:8080}
+      NODE_BOOTSTRAP_TOKEN_FILE: ${NODE_BOOTSTRAP_TOKEN_FILE:-/run/secrets/bootstrap_token}
+      NODE_PROVIDER_SERVER_ID: ${NODE_PROVIDER_SERVER_ID:-local-node}
+      NODE_BOOT_ID: ${NODE_BOOT_ID:-compose-boot}
+      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.2.0-spike}
+      NODE_SECRET_DIR: /run/irlight/secrets
+      NODE_HEARTBEAT_INTERVAL: ${NODE_HEARTBEAT_INTERVAL:-10}
+      NODE_SUPERVISOR: compose
+      NODE_COMPOSE_FILE: /opt/irlight/docker-compose.node.yml
+      NODE_COMPOSE_PROJECT: irlight-node
+    volumes:
+      - irlight-secrets:/run/irlight/secrets
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    secrets:
+      - bootstrap_token
+    # The agent only needs read-only docker.sock to manage the media stack it
+    # shares a project with. No other host paths are mounted.
+
+volumes:
+  irlight-state:
+  irlight-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=700
+
+secrets:
+  bootstrap_token:
+    file: ./secrets/bootstrap_token

@@ -1,0 +1,14 @@
+name: irlight-node
+
+# Optional overlay that explicitly publishes the public-facing ports for a
+# Media Node. It must be applied on top of docker-compose.node.yml:
+#
+#   docker compose -f docker-compose.node.yml -f docker-compose.node.public.yml up -d
+#
+# Only the RTMP ingest port is exposed here. MediaMTX API (9997), metrics
+# (9998), RTSP (8554) and HLS (8888) stay internal and must never be added.
+
+services:
+  mediamtx:
+    ports:
+      - "1935:1935" # RTMP ingest (Node listens for publishers)
