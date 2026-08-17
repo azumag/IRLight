@@ -55,10 +55,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install Python dependencies
+        run: pip install -r apps/control-api/requirements.txt
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
-        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/control-api/app.py provider/admin_cli.py provider/conoha.py provider/fake_provider.py provider/provider_client.py
+        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/continuity/secret_files.py apps/control-api/app.py apps/control-api/node_internal.py apps/node-agent/agent.py apps/node-agent/supervisor.py provider/admin_cli.py provider/conoha.py provider/fake_provider.py provider/provider_client.py
       - name: Validate shell scripts
         run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh
 

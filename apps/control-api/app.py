@@ -14,6 +14,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from node_internal import ensure_state as ensure_node_state
+from node_internal import router as node_internal_router
+
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
 CONTROL_PATH = STATE_DIR / "control.json"
@@ -68,7 +71,9 @@ def ensure_control() -> None:
 
 
 ensure_control()
+ensure_node_state()
 app = FastAPI(title="IRLight Phase 0 Control API", version="0.1.0")
+app.include_router(node_internal_router)
 
 
 @app.get("/api/status")

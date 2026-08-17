@@ -15,6 +15,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst, GstApp  # noqa: E402
 
+from secret_files import read_secret_file_or_env  # noqa: E402
 from state import ActualAudio, AudioMode, ContinuityState, VideoSource  # noqa: E402
 
 
@@ -91,7 +92,7 @@ class ContinuityPipeline:
         ):
             raise ValueError(f"unsupported PROFILE: {self.profile}")
         self.input_uri = os.getenv("INPUT_URI", "rtsp://mediamtx:8554/live/input")
-        self.egress_url = os.getenv(
+        self.egress_url = read_secret_file_or_env(
             "EGRESS_URL", "rtmp://mediamtx:1935/output/relay"
         )
         self.state_dir = Path(os.getenv("STATE_DIR", "/state"))
