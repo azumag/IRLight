@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
+from session_api import router as session_router
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
@@ -74,6 +75,7 @@ ensure_control()
 ensure_node_state()
 app = FastAPI(title="IRLight Phase 0 Control API", version="0.1.0")
 app.include_router(node_internal_router)
+app.include_router(session_router)
 
 
 @app.get("/api/status")
