@@ -166,7 +166,14 @@ class ProvisioningWorkflow:
             "STOPPING",
             allow_from=ACTIVE_OR_CLEANUP,
         )
-        self._cleanup_resources(session_id)
+        if not self._cleanup_resources(session_id):
+            return self.store.transition(
+                session_id,
+                "FAILED_CLEANUP",
+                allow_from={"STOPPING"},
+                cleanup_pending=True,
+                failure_reason="resource cleanup failed",
+            )
         return self.store.transition(
             session_id,
             "FINISHED",
@@ -216,7 +223,14 @@ class ProvisioningWorkflow:
                     return server
         return None
 
-    def _cleanup_resources(self, session_id: str) -> None:
+    def _cleanup_resources(self, session_id: str) -> bool:
+        """Delete all provider resources for the session.
+
+        Returns True when every delete succeeded (or there was nothing to
+        delete). On failure the caller must stay in a non-terminal state so
+        the reaper keeps retrying.
+        """
+        ok = True
         resources = self.provider.list_managed_resources()
         servers = [r for r in resources if r.kind == "server" and r.session_id == session_id]
         volumes = [r for r in resources if r.kind == "volume" and r.session_id == session_id]
@@ -225,11 +239,14 @@ class ProvisioningWorkflow:
                 self.provider.delete_server(str(server.provider_id))
             except Exception as exc:
                 LOG.warning("server delete failed %s: %s", server.provider_id, exc)
+                ok = False
         for volume in volumes:
             try:
                 self.provider.delete_volume(str(volume.provider_id))
             except Exception as exc:
                 LOG.warning("volume delete failed %s: %s", volume.provider_id, exc)
+                ok = False
+        return ok
 
 
 ACTIVE_OR_CLEANUP = {

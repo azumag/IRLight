@@ -85,14 +85,15 @@ class Reaper:
                 result["deadline_stops"] += 1
 
         for session in self.store.sessions_in_states({"FAILED_CLEANUP"}):
-            self._cleanup_resources(session["session_id"])
+            result["failed_cleanup_retries"] += 1
+            if not self._cleanup_resources(session["session_id"]):
+                continue
             self.store.transition(
                 session["session_id"],
                 "FAILED",
                 allow_from={"FAILED_CLEANUP"},
                 cleanup_pending=False,
             )
-            result["failed_cleanup_retries"] += 1
 
         result["orphan_cleanup"] = self._cleanup_orphans()
         return result
@@ -111,7 +112,8 @@ class Reaper:
         except Exception as exc:
             LOG.warning("cannot fail session %s: %s", session_id, exc)
             return
-        self._cleanup_resources(session_id)
+        if not self._cleanup_resources(session_id):
+            return
         self.store.transition(
             session_id,
             "FAILED",
@@ -129,7 +131,15 @@ class Reaper:
         except Exception as exc:
             LOG.warning("cannot stop session %s: %s", session_id, exc)
             return
-        self._cleanup_resources(session_id)
+        if not self._cleanup_resources(session_id):
+            self.store.transition(
+                session_id,
+                "FAILED_CLEANUP",
+                allow_from={"STOPPING"},
+                cleanup_pending=True,
+                failure_reason="resource cleanup failed",
+            )
+            return
         self.store.transition(
             session_id,
             "FINISHED",
@@ -137,7 +147,9 @@ class Reaper:
             cleanup_pending=False,
         )
 
-    def _cleanup_resources(self, session_id: str) -> None:
+    def _cleanup_resources(self, session_id: str) -> bool:
+        """Delete provider resources for the session; False on any failure."""
+        ok = True
         resources = self.provider.list_managed_resources()
         # Delete servers first: volumes are attached to servers and deletion
         # fails while the attachment exists.
@@ -148,6 +160,7 @@ class Reaper:
                 self.provider.delete_server(str(resource.provider_id))
             except Exception as exc:
                 LOG.warning("cleanup failed %s %s: %s", resource.kind, resource.provider_id, exc)
+                ok = False
         for resource in resources:
             if resource.session_id != session_id or resource.kind != "volume":
                 continue
@@ -155,6 +168,8 @@ class Reaper:
                 self.provider.delete_volume(str(resource.provider_id))
             except Exception as exc:
                 LOG.warning("cleanup failed %s %s: %s", resource.kind, resource.provider_id, exc)
+                ok = False
+        return ok
 
     def _cleanup_orphans(self) -> int:
         """Delete provider resources that reference unknown sessions."""

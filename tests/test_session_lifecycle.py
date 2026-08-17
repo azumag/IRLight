@@ -22,6 +22,25 @@ def make_store() -> SessionStore:
     return SessionStore(tempfile.mkdtemp(prefix="irlight-sessions-"))
 
 
+class FailingDeleteProvider(FakeProvider):
+    """FakeProvider that fails deletes until failures are cleared."""
+
+    def __init__(self, fail_server: bool = False, fail_volume: bool = False) -> None:
+        super().__init__()
+        self.fail_server = fail_server
+        self.fail_volume = fail_volume
+
+    def delete_server(self, server_id: str) -> None:
+        if self.fail_server:
+            raise RuntimeError("server delete failed (injected)")
+        super().delete_server(server_id)
+
+    def delete_volume(self, volume_id: str) -> None:
+        if self.fail_volume:
+            raise RuntimeError("volume delete failed (injected)")
+        super().delete_volume(volume_id)
+
+
 class WorkflowPrepareTest(unittest.TestCase):
     def setUp(self) -> None:
         self.store = make_store()
@@ -75,6 +94,30 @@ class WorkflowPrepareTest(unittest.TestCase):
         second = self.workflow.stop(self.session_id)
         self.assertEqual(first["status"], "FINISHED")
         self.assertEqual(second["status"], "FINISHED")
+
+    def test_stop_with_delete_failure_keeps_pending_cleanup(self) -> None:
+        provider = FailingDeleteProvider(fail_server=True)
+        workflow = ProvisioningWorkflow(
+            self.store, provider, WorkflowConfig()
+        )
+        workflow.prepare(
+            self.session_id, user_id="deadbeef", environment="dev"
+        )
+
+        session = workflow.stop(self.session_id)
+        self.assertEqual(session["status"], "FAILED_CLEANUP")
+        self.assertTrue(session["cleanup_pending"])
+        # Resource stays so the reaper can reclaim it later.
+        self.assertEqual(len(provider.list_managed_resources()), 2)
+
+        # Reaper sweep retries and only reaches FAILED after cleanup succeeds.
+        provider.fail_server = False
+        reaper = Reaper(self.store, provider, ReaperConfig())
+        reaper.run()
+        session = self.store.get(self.session_id)
+        self.assertEqual(session["status"], "FAILED")
+        self.assertFalse(session["cleanup_pending"])
+        self.assertEqual(provider.list_managed_resources(), [])
 
 
 class SessionStateMachineTest(unittest.TestCase):
@@ -179,6 +222,83 @@ class ReaperTest(unittest.TestCase):
         session = self.store.get(session_id)
         self.assertEqual(session["status"], "FAILED")
         self.assertFalse(session["cleanup_pending"])
+
+    def test_reaper_keeps_retrying_after_delete_failure(self) -> None:
+        provider = FailingDeleteProvider(fail_server=True)
+        reaper = Reaper(self.store, provider, self.config)
+        session = self.store.create(user_id="deadbeef", environment="dev")
+        session_id = str(session["session_id"])
+        self.store.transition(session_id, "PROVISIONING")
+        self.store.transition(
+            session_id,
+            "FAILED_CLEANUP",
+            cleanup_pending=True,
+            failure_reason="boom",
+        )
+        from provider.conoha import SessionMetadata
+
+        tags = SessionMetadata(
+            session_id=session_id, user_id="deadbeef", environment="dev"
+        ).as_tags()
+        volume = provider.create_volume("boot", 20, tags)
+        provider.create_server(
+            "node",
+            image_ref="ubuntu-24.04",
+            flavor_ref="g2",
+            volume_id=volume.volume_id,
+            metadata=tags,
+        )
+
+        result = reaper.run()
+        self.assertEqual(result["failed_cleanup_retries"], 1)
+        session = self.store.get(session_id)
+        self.assertEqual(session["status"], "FAILED_CLEANUP")
+        self.assertTrue(session["cleanup_pending"])
+        self.assertEqual(len(provider.list_managed_resources()), 2)
+
+        # Next sweep after the delete starts working completes the cleanup.
+        provider.fail_server = False
+        result = reaper.run()
+        self.assertEqual(result["failed_cleanup_retries"], 1)
+        session = self.store.get(session_id)
+        self.assertEqual(session["status"], "FAILED")
+        self.assertFalse(session["cleanup_pending"])
+        self.assertEqual(provider.list_managed_resources(), [])
+
+    def test_reaper_deadline_stop_retries_after_delete_failure(self) -> None:
+        provider = FailingDeleteProvider(fail_server=True)
+        reaper = Reaper(self.store, provider, self.config)
+        session = self.store.create(user_id="deadbeef", environment="dev")
+        session_id = str(session["session_id"])
+        self.store.transition(session_id, "PROVISIONING")
+        self.store.transition(session_id, "BOOTSTRAPPING")
+        self.store.transition(session_id, "READY_WAIT_INGEST", ready_at=0)
+        from provider.conoha import SessionMetadata
+
+        tags = SessionMetadata(
+            session_id=session_id, user_id="deadbeef", environment="dev"
+        ).as_tags()
+        volume = provider.create_volume("boot", 20, tags)
+        provider.create_server(
+            "node",
+            image_ref="ubuntu-24.04",
+            flavor_ref="g2",
+            volume_id=volume.volume_id,
+            metadata=tags,
+        )
+
+        result = reaper.run()
+        self.assertEqual(result["deadline_stops"], 1)
+        session = self.store.get(session_id)
+        self.assertEqual(session["status"], "FAILED_CLEANUP")
+        self.assertTrue(session["cleanup_pending"])
+
+        provider.fail_server = False
+        result = reaper.run()
+        session = self.store.get(session_id)
+        self.assertEqual(session["status"], "FAILED")
+        self.assertFalse(session["cleanup_pending"])
+        self.assertEqual(provider.list_managed_resources(), [])
 
 
 if __name__ == "__main__":
