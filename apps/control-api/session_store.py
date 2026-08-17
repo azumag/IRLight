@@ -97,6 +97,7 @@ def new_session(
         ),
         "cleanup_pending": False,
         "failure_reason": None,
+        "events": [],
         "created_at": now,
         "updated_at": now,
     }
