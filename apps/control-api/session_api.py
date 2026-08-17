@@ -18,6 +18,12 @@ class PrepareRequest(BaseModel):
     environment: str = Field(default="dev", pattern="^(dev|beta|prod)$")
 
 
+class SessionEventRequest(BaseModel):
+    type: str = Field(min_length=1, max_length=100)
+    reason_code: str | None = Field(default=None, max_length=100)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 router = APIRouter(prefix="/v1/sessions")
 
 
@@ -70,6 +76,34 @@ def get_session(session_id: str) -> dict[str, Any]:
     if session is None:
         raise HTTPException(status_code=404, detail="unknown session")
     return session
+
+
+@router.post("/{session_id}/events")
+def add_session_event(session_id: str, request: SessionEventRequest) -> dict[str, Any]:
+    store = default_store()
+    session = store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    events = list(session.get("events", []))
+    event = {
+        "sequence": len(events) + 1,
+        "type": request.type,
+        "reason_code": request.reason_code,
+        "payload": request.payload,
+        "occurred_at": time.time(),
+    }
+    events.append(event)
+    store.update(session_id, events=events)
+    return event
+
+
+@router.get("/{session_id}/events")
+def list_session_events(session_id: str) -> dict[str, Any]:
+    session = default_store().get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    events = list(session.get("events", []))
+    return {"session_id": session_id, "events": events}
 
 
 @router.get("")
