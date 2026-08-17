@@ -58,7 +58,7 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
-        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/control-api/app.py
+        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/control-api/app.py provider/admin_cli.py provider/conoha.py provider/fake_provider.py provider/provider_client.py
       - name: Validate shell scripts
         run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh
 
