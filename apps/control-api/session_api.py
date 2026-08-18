@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from auth_api import require_csrf, require_user
 from entitlement_store import default_entitlement_store
 from fake_provider_for_api import default_provider, default_store
+from ingest_store import default_ingest_store
 from session_store import EntitlementExceeded
 from session_workflow import ProvisioningWorkflow
 
@@ -95,7 +96,11 @@ def stop_session(
     store = default_store()
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
-        return workflow.stop(session_id)
+        session = workflow.stop(session_id)
+        # Credentials stop being valid immediately after a user stop, even if
+        # MediaMTX or a publisher retries a stale connection URL later.
+        default_ingest_store().revoke_session(session_id)
+        return session
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
     except Exception as exc:
