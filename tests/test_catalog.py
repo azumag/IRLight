@@ -18,6 +18,7 @@ os.environ["STATE_DIR"] = _TMP
 from catalog_store import (  # noqa: E402
     CATALOG_PATH,
     CatalogNotFound,
+    CatalogVerifyFailed,
     create_asset,
     create_destination,
     delete_asset,
@@ -28,6 +29,7 @@ from catalog_store import (  # noqa: E402
     list_assets,
     list_destinations,
     update_destination,
+    verify_destination,
 )
 
 
@@ -75,6 +77,25 @@ class CatalogStoreTest(unittest.TestCase):
         delete_destination(str(item["id"]), "deadbeef")
         with self.assertRaises(CatalogNotFound):
             get_destination(str(item["id"]), "deadbeef")
+
+    def test_verify_destination_success(self) -> None:
+        item = self._create_destination()
+        verified = verify_destination(str(item["id"]), "deadbeef")
+        self.assertEqual(verified["verification_status"], "VERIFIED")
+        self.assertIsNotNone(verified["last_verified_at"])
+
+    def test_verify_destination_rejects_bad_scheme(self) -> None:
+        item = create_destination(
+            user_id="deadbeef",
+            type="rtmp",
+            display_name="Bad",
+            server_url="https://example.com/live",
+            secret_ref="secret/bad",
+        )
+        with self.assertRaises(CatalogVerifyFailed):
+            verify_destination(str(item["id"]), "deadbeef")
+        fetched = get_destination(str(item["id"]), "deadbeef")
+        self.assertEqual(fetched["verification_status"], "FAILED")
 
     def test_asset_lifecycle(self) -> None:
         asset = create_asset(user_id="deadbeef", source_object_key="uploads/standby.png")
