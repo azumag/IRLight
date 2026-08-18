@@ -68,6 +68,10 @@ class CatalogNotFound(KeyError):
     pass
 
 
+class CatalogVerifyFailed(ValueError):
+    pass
+
+
 def _get_owned(catalog: dict[str, Any], kind: str, item_id: str, user_id: str) -> dict[str, Any]:
     items = catalog.get(kind, {})
     item = items.get(item_id)
@@ -149,6 +153,30 @@ def delete_destination(destination_id: str, user_id: str) -> None:
         _get_owned(catalog, "destinations", destination_id, user_id)
         del catalog["destinations"][destination_id]
         _save(catalog)
+
+
+def verify_destination(destination_id: str, user_id: str) -> dict[str, Any]:
+    """Validate the destination URL and update its verification status.
+
+    The Phase B spike only validates the URL scheme; a real RTMP/RTMPS/SRT
+    connectivity check is wired later when the real provider is in place.
+    """
+    with LOCK:
+        catalog = _load()
+        item = _get_owned(catalog, "destinations", destination_id, user_id)
+        url = str(item.get("server_url", ""))
+        if not url.startswith(("rtmp://", "rtmps://", "srt://")):
+            item["verification_status"] = "FAILED"
+            item["updated_at"] = time.time()
+            catalog["destinations"][destination_id] = item
+            _save(catalog)
+            raise CatalogVerifyFailed("unsupported destination URL scheme")
+        item["verification_status"] = "VERIFIED"
+        item["last_verified_at"] = time.time()
+        item["updated_at"] = time.time()
+        catalog["destinations"][destination_id] = item
+        _save(catalog)
+        return dict(item)
 
 
 def create_asset(*, user_id: str, source_object_key: str) -> dict[str, Any]:

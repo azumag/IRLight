@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from catalog_store import (
     CatalogNotFound,
+    CatalogVerifyFailed,
     create_asset as store_create_asset,
     create_destination as store_create_destination,
     delete_asset as store_delete_asset,
@@ -19,6 +20,7 @@ from catalog_store import (
     list_assets as store_list_assets,
     list_destinations as store_list_destinations,
     update_destination as store_update_destination,
+    verify_destination as store_verify_destination,
 )
 
 
@@ -104,6 +106,19 @@ def delete_destination(
         return {"deleted": destination_id}
     except CatalogNotFound as exc:
         raise _not_found(exc) from exc
+
+
+@router.post("/destinations/{destination_id}/verify")
+def verify_destination(
+    destination_id: str,
+    user_id: Annotated[str, Query(min_length=1, max_length=128)],
+) -> dict[str, Any]:
+    try:
+        return store_verify_destination(destination_id, user_id)
+    except CatalogNotFound as exc:
+        raise _not_found(exc) from exc
+    except CatalogVerifyFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/assets")
