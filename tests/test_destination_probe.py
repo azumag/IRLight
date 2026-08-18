@@ -137,7 +137,7 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertIn("streamid=publish:probe", command[2])
         self.assertIn("mode=caller", command[2])
         self.assertIn("conntimeo=2000", command[2])
-        self.assertIn("-autoreconnect:no", command)
+        self.assertNotIn("-autoreconnect:no", command)
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(result["protocol"], "srt")
         self.assertTrue(process.terminated)
