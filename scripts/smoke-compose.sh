@@ -9,6 +9,7 @@ fi
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 publisher_pid=""
+auth_cookie_jar="/tmp/irlight-smoke-cookies.txt"
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -45,6 +46,7 @@ show_logs_and_cleanup() {
     kill "$publisher_pid" 2>/dev/null || true
     wait "$publisher_pid" 2>/dev/null || true
   fi
+  rm -f "$auth_cookie_jar"
   "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -90,6 +92,40 @@ control_mode() {
     --data "{\"mode\":\"$mode\",\"expected_version\":$version}" >/dev/null
 }
 
+verify_local_destinations() {
+  local email password login csrf destination destination_id
+  email="smoke-$(date +%s)-$RANDOM@example.invalid"
+  password="SmokePassword123!"
+  rm -f "$auth_cookie_jar"
+
+  curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
+    -H 'Content-Type: application/json' \
+    --data "{\"email\":\"$email\",\"password\":\"$password\",\"display_name\":\"Smoke\"}" >/dev/null
+
+  login="$(curl -fsS --max-time 10 -c "$auth_cookie_jar" -X POST "$base_url/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    --data "{\"email\":\"$email\",\"password\":\"$password\"}")"
+  csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
+
+  destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: $csrf" \
+    --data '{"type":"rtmp","display_name":"Local RTMP probe","server_url":"rtmp://mediamtx:1935/live/input","secret_ref":"smoke/rtmp"}')"
+  destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+    "$base_url/v1/destinations/$destination_id/verify" \
+    -H "X-CSRF-Token: $csrf" >/dev/null
+
+  destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: $csrf" \
+    --data '{"type":"srt","display_name":"Local SRT probe","server_url":"srt://mediamtx:8890?streamid=publish:live/input","secret_ref":"smoke/srt"}')"
+  destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+    "$base_url/v1/destinations/$destination_id/verify" \
+    -H "X-CSRF-Token: $csrf" >/dev/null
+}
+
 wait_status() {
   ./scripts/wait-status.py --base-url "$base_url" "$@"
 }
@@ -107,6 +143,9 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
+
+current_stage="destination-probes"
+verify_local_destinations
 
 current_stage="first-live"
 start_publisher 20

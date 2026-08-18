@@ -31,6 +31,7 @@ from catalog_store import (  # noqa: E402
     update_destination,
     verify_destination,
 )
+from destination_probe import DestinationProbeError  # noqa: E402
 
 
 class CatalogStoreTest(unittest.TestCase):
@@ -72,6 +73,28 @@ class CatalogStoreTest(unittest.TestCase):
         )
         self.assertEqual(updated["display_name"], "YouTube")
 
+    def test_server_url_change_resets_verification(self) -> None:
+        item = self._create_destination()
+        verified = verify_destination(
+            str(item["id"]),
+            "deadbeef",
+            probe=lambda _url: {
+                "protocol": "rtmp",
+                "peer_ip": "203.0.113.10",
+                "peer_port": 1935,
+                "elapsed_ms": 1.0,
+            },
+        )
+        self.assertEqual(verified["verification_status"], "VERIFIED")
+        updated = update_destination(
+            str(item["id"]),
+            user_id="deadbeef",
+            server_url="rtmp://example.com/live",
+        )
+        self.assertEqual(updated["verification_status"], "UNVERIFIED")
+        self.assertIsNone(updated["last_verified_at"])
+        self.assertIsNone(updated["verification_transport"])
+
     def test_delete_destination(self) -> None:
         item = self._create_destination()
         delete_destination(str(item["id"]), "deadbeef")
@@ -80,9 +103,33 @@ class CatalogStoreTest(unittest.TestCase):
 
     def test_verify_destination_success(self) -> None:
         item = self._create_destination()
-        verified = verify_destination(str(item["id"]), "deadbeef")
+        verified = verify_destination(
+            str(item["id"]),
+            "deadbeef",
+            probe=lambda _url: {
+                "protocol": "rtmp",
+                "peer_ip": "203.0.113.10",
+                "peer_port": 1935,
+                "elapsed_ms": 12.5,
+            },
+        )
         self.assertEqual(verified["verification_status"], "VERIFIED")
         self.assertIsNotNone(verified["last_verified_at"])
+        self.assertEqual(verified["verification_transport"]["protocol"], "rtmp")
+        self.assertEqual(verified["verification_transport"]["peer_port"], 1935)
+
+    def test_verify_destination_records_probe_failure(self) -> None:
+        item = self._create_destination()
+
+        def fail(_url: str) -> dict[str, object]:
+            raise DestinationProbeError("destination did not complete the RTMP handshake")
+
+        with self.assertRaisesRegex(CatalogVerifyFailed, "RTMP handshake"):
+            verify_destination(str(item["id"]), "deadbeef", probe=fail)
+        fetched = get_destination(str(item["id"]), "deadbeef")
+        self.assertEqual(fetched["verification_status"], "FAILED")
+        self.assertIn("RTMP handshake", fetched["last_verification_error"])
+        self.assertIsNone(fetched["verification_transport"])
 
     def test_verify_destination_rejects_bad_scheme(self) -> None:
         item = create_destination(
