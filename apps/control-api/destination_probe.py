@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import queue
 import secrets
 import socket
 import ssl
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +30,7 @@ from urllib.parse import parse_qsl, unquote_plus, urlsplit, urlunsplit
 RTMP_HANDSHAKE_BYTES = 1536
 RTMP_VERSION = 3
 SENSITIVE_SRT_QUERY_KEYS = {"passphrase"}
+SRT_CONNECTED_MARKER = b"SRT target connected"
 
 
 class DestinationProbeError(RuntimeError):
@@ -192,6 +195,19 @@ def _probe_rtmp(
     raise DestinationProbeError("destination did not complete the RTMP handshake") from last_error
 
 
+def _read_stderr_lines(stream: Any, messages: queue.Queue[bytes | None]) -> None:
+    """Forward child stderr lines without ever logging destination URI content."""
+
+    try:
+        while True:
+            line = stream.readline()
+            if not line:
+                break
+            messages.put(line)
+    finally:
+        messages.put(None)
+
+
 def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     query = parse_qsl(parsed.query, keep_blank_values=True)
     for key, _value in query:
@@ -242,29 +258,73 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         )
     )
 
+    # srt-live-transmit is a stream relay/sample app, so its final exit code
+    # describes the entire stream lifecycle, not just the SRT handshake. Keep
+    # stdin open and wait for the application's explicit SRTS_CONNECTED event.
+    # This lets verify stop immediately after the transport handshake without
+    # having to publish media or depend on the destination's application path.
     started = time.monotonic()
+    process: subprocess.Popen[bytes] | None = None
+    reader: threading.Thread | None = None
+    messages: queue.Queue[bytes | None] = queue.Queue()
+    connected = False
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [
                 config.srt_binary,
                 "file://con",
                 safe_uri,
                 "-loglevel:error",
+                "-autoreconnect:no",
             ],
-            input=b"",
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            timeout=config.timeout_seconds + 1.0,
-            check=False,
         )
+        if process.stderr is None:
+            raise DestinationProbeError("SRT verifier stderr is unavailable")
+
+        reader = threading.Thread(
+            target=_read_stderr_lines,
+            args=(process.stderr, messages),
+            daemon=True,
+        )
+        reader.start()
+        deadline = started + config.timeout_seconds + 1.0
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DestinationProbeError("SRT destination handshake timed out")
+            try:
+                line = messages.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise DestinationProbeError("SRT destination handshake timed out") from exc
+
+            if line is None:
+                raise DestinationProbeError("destination did not complete the SRT handshake")
+            if SRT_CONNECTED_MARKER in line:
+                connected = True
+                break
     except FileNotFoundError as exc:
         raise DestinationProbeError("SRT verifier is unavailable") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise DestinationProbeError("SRT destination handshake timed out") from exc
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+            if reader is not None:
+                reader.join(timeout=1.0)
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stderr is not None:
+                process.stderr.close()
 
-    if result.returncode != 0:
-        # Do not include stderr: libSRT tools can echo the URI, and URI query
-        # values may contain identifiers that should not be copied into logs.
+    if not connected:
         raise DestinationProbeError("destination did not complete the SRT handshake")
 
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
