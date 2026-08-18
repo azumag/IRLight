@@ -127,7 +127,7 @@ def get_connection_info(session_id: str, current_user: CurrentUser) -> dict[str,
     user_id = str(current_user["id"])
     session = _owned_session(session_id, user_id)
     record = default_ingest_store().active_for_session(session_id)
-    if record is None:
+    if record is None or record.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="no active ingest credential")
     return {
         "credential": record,
@@ -144,13 +144,14 @@ def revoke_ingest_credential(
 ) -> dict[str, Any]:
     user_id = str(current_user["id"])
     _owned_session(session_id, user_id)
+    store = default_ingest_store()
+    active = store.active_for_session(session_id)
+    if active is None or active.get("id") != credential_id or active.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="unknown ingest credential")
     try:
-        record = default_ingest_store().revoke(credential_id, user_id=user_id)
+        return store.revoke(credential_id, user_id=user_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown ingest credential") from exc
-    if record.get("session_id") != session_id:
-        raise HTTPException(status_code=404, detail="unknown ingest credential")
-    return record
 
 
 @internal_router.post("/auth")
