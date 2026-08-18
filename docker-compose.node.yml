@@ -25,10 +25,15 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:1.20.0
     restart: unless-stopped
+    environment:
+      # MediaMTX external authentication calls the Control Plane for every
+      # public publish attempt. Set this to the routable internal/mTLS URL in
+      # production; the default is only useful in a composed control network.
+      MTX_AUTHHTTPADDRESS: ${NODE_INGEST_AUTH_URL:-http://control-plane:8080/internal/ingest/auth}
     volumes:
       - ./config/mediamtx.yml:/mediamtx.yml:ro
     # No ports: RTMP/RTSP/HLS/API/metrics stay internal. The public overlay
-    # publishes only the RTMP ingest port when explicitly requested.
+    # publishes only ingest ports when explicitly requested.
 
   continuity:
     image: ${NODE_CONTINUITY_IMAGE:-ghcr.io/azumag/irlight-continuity:phase-b-spike}
