@@ -10,6 +10,9 @@ base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 publisher_pid=""
 auth_cookie_jar="/tmp/irlight-smoke-cookies.txt"
+ingest_username=""
+ingest_secret=""
+ingest_session_id=""
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -54,9 +57,13 @@ trap show_logs_and_cleanup EXIT
 
 start_publisher() {
   duration="${1:-18}"
+  if [[ -z "$ingest_username" || -z "$ingest_secret" ]]; then
+    echo "ingest credential is not initialized" >&2
+    return 1
+  fi
   "${compose[@]}" exec -T continuity sh -c "
     timeout --signal=INT ${duration}s gst-launch-1.0 -q -e \
-      flvmux name=mux streamable=true ! rtmp2sink location=rtmp://mediamtx:1935/live/input \
+      flvmux name=mux streamable=true ! rtmp2sink location='rtmp://mediamtx:1935/live/input?user=${ingest_username}&pass=${ingest_secret}' \
       videotestsrc is-live=true pattern=smpte ! \
         video/x-raw,width=1280,height=720,framerate=30/1,format=I420 ! \
         x264enc tune=zerolatency speed-preset=veryfast bitrate=1200 key-int-max=60 bframes=0 ! \
@@ -92,8 +99,8 @@ control_mode() {
     --data "{\"mode\":\"$mode\",\"expected_version\":$version}" >/dev/null
 }
 
-verify_local_destinations() {
-  local email password login csrf destination destination_id
+setup_control_plane_and_ingest() {
+  local email password login csrf destination destination_id credential srt_url srt_payload auth_status
   email="smoke-$(date +%s)-$RANDOM@example.invalid"
   password="SmokePassword123!"
   rm -f "$auth_cookie_jar"
@@ -116,10 +123,41 @@ verify_local_destinations() {
     "$base_url/v1/destinations/$destination_id/verify" \
     -H "X-CSRF-Token: $csrf" >/dev/null
 
+  ingest_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+    "$base_url/v1/sessions/$ingest_session_id/prepare" \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: $csrf" \
+    -H "Idempotency-Key: smoke-prepare-$ingest_session_id" \
+    --data '{"environment":"dev"}' >/dev/null
+
+  credential="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+    "$base_url/v1/sessions/$ingest_session_id/ingest-credentials" \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: $csrf" \
+    --data '{"protocols":["rtmp","srt"],"ttl_seconds":3600}')"
+  ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
+  ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
+
+  # The auth endpoint must reject a wrong secret without revealing whether the
+  # Session ID itself was valid.
+  auth_status="$(curl -sS -o /tmp/irlight-auth-reject.json -w '%{http_code}' --max-time 5 \
+    -X POST "$base_url/internal/ingest/auth" \
+    -H 'Content-Type: application/json' \
+    --data "{\"user\":\"$ingest_username\",\"password\":\"wrong\",\"action\":\"publish\",\"path\":\"live/input\",\"protocol\":\"rtmp\"}")"
+  if [[ "$auth_status" != "401" ]]; then
+    echo "invalid ingest credential was not rejected (HTTP $auth_status)" >&2
+    return 1
+  fi
+
+  # Keep the existing real-SRT destination probe, but authenticate its short
+  # publisher connection against the same MediaMTX ingest boundary.
+  srt_url="srt://mediamtx:8890?streamid=publish:live/input:${ingest_username}:${ingest_secret}"
+  srt_payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Local SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' "$srt_url")"
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
-    --data '{"type":"srt","display_name":"Local SRT probe","server_url":"srt://mediamtx:8890?streamid=publish:live/input","secret_ref":"smoke/srt"}')"
+    --data "$srt_payload")"
   destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/destinations/$destination_id/verify" \
@@ -144,8 +182,8 @@ wait_status \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
 
-current_stage="destination-probes"
-verify_local_destinations
+current_stage="authenticated-ingest-setup"
+setup_control_plane_and_ingest
 
 current_stage="first-live"
 start_publisher 20
