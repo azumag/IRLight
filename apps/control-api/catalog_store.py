@@ -13,7 +13,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from destination_probe import DestinationProbeError, probe_destination
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
@@ -101,6 +103,8 @@ def create_destination(
             "secret_ref": secret_ref,
             "verification_status": "UNVERIFIED",
             "last_verified_at": None,
+            "last_verification_error": None,
+            "verification_transport": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -138,6 +142,11 @@ def update_destination(
         if display_name is not None:
             item["display_name"] = display_name
         if server_url is not None:
+            if server_url != item.get("server_url"):
+                item["verification_status"] = "UNVERIFIED"
+                item["last_verified_at"] = None
+                item["last_verification_error"] = None
+                item["verification_transport"] = None
             item["server_url"] = server_url
         if secret_ref is not None:
             item["secret_ref"] = secret_ref
@@ -155,28 +164,76 @@ def delete_destination(destination_id: str, user_id: str) -> None:
         _save(catalog)
 
 
-def verify_destination(destination_id: str, user_id: str) -> dict[str, Any]:
-    """Validate the destination URL and update its verification status.
+def verify_destination(
+    destination_id: str,
+    user_id: str,
+    *,
+    probe: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Probe the configured transport and persist the verification result.
 
-    The Phase B spike only validates the URL scheme; a real RTMP/RTMPS/SRT
-    connectivity check is wired later when the real provider is in place.
+    The network operation intentionally runs outside ``LOCK`` so a slow remote
+    destination cannot block unrelated catalog reads and writes. Before writing
+    the result back, the URL is checked again; a concurrent edit therefore
+    cannot stamp a result for an old URL onto a newer destination.
     """
+    verifier = probe or probe_destination
+    with LOCK:
+        catalog = _load()
+        item = dict(_get_owned(catalog, "destinations", destination_id, user_id))
+        url = str(item.get("server_url", ""))
+
+    try:
+        result = verifier(url)
+    except DestinationProbeError as exc:
+        _record_verification_failure(destination_id, user_id, url, str(exc))
+        raise CatalogVerifyFailed(str(exc)) from exc
+    except Exception as exc:
+        # Custom/injected probes should not leak arbitrary exception details to
+        # API clients. The production probe raises DestinationProbeError.
+        _record_verification_failure(
+            destination_id, user_id, url, "destination verification failed"
+        )
+        raise CatalogVerifyFailed("destination verification failed") from exc
+
+    with LOCK:
+        catalog = _load()
+        current = _get_owned(catalog, "destinations", destination_id, user_id)
+        if current.get("server_url") != url:
+            raise CatalogVerifyFailed("destination changed during verification")
+        now = time.time()
+        current["verification_status"] = "VERIFIED"
+        current["last_verified_at"] = now
+        current["last_verification_error"] = None
+        current["verification_transport"] = {
+            "protocol": result.get("protocol"),
+            "peer_ip": result.get("peer_ip"),
+            "peer_port": result.get("peer_port"),
+            "elapsed_ms": result.get("elapsed_ms"),
+        }
+        current["updated_at"] = now
+        catalog["destinations"][destination_id] = current
+        _save(catalog)
+        return dict(current)
+
+
+def _record_verification_failure(
+    destination_id: str,
+    user_id: str,
+    expected_url: str,
+    reason: str,
+) -> None:
     with LOCK:
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
-        url = str(item.get("server_url", ""))
-        if not url.startswith(("rtmp://", "rtmps://", "srt://")):
-            item["verification_status"] = "FAILED"
-            item["updated_at"] = time.time()
-            catalog["destinations"][destination_id] = item
-            _save(catalog)
-            raise CatalogVerifyFailed("unsupported destination URL scheme")
-        item["verification_status"] = "VERIFIED"
-        item["last_verified_at"] = time.time()
+        if item.get("server_url") != expected_url:
+            return
+        item["verification_status"] = "FAILED"
+        item["last_verification_error"] = reason[:200]
+        item["verification_transport"] = None
         item["updated_at"] = time.time()
         catalog["destinations"][destination_id] = item
         _save(catalog)
-        return dict(item)
 
 
 def create_asset(*, user_id: str, source_object_key: str) -> dict[str, Any]:
