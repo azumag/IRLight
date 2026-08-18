@@ -40,6 +40,13 @@ class EntitlementStoreTest(unittest.TestCase):
             else:
                 os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = previous
 
+    def test_zero_limit_can_disable_session_creation(self) -> None:
+        state_dir = tempfile.mkdtemp(prefix="irlight-entitlements-")
+        entitlement = EntitlementStore(state_dir).set(
+            "user-a", max_concurrent_sessions=0, plan="disabled"
+        )
+        self.assertEqual(entitlement["max_concurrent_sessions"], 0)
+
 
 class ConcurrentSessionLimitTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -47,14 +54,24 @@ class ConcurrentSessionLimitTest(unittest.TestCase):
         self.user_id = "deadbeef"
         self.entitlement_id = "user:deadbeef"
 
-    def _reserve(self, session_id: str, *, user_id: str | None = None) -> dict[str, object]:
+    def _reserve(
+        self,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+        max_concurrent_sessions: int = 1,
+    ) -> dict[str, object]:
         return self.store.reserve_prepare_slot(
             session_id,
             user_id=user_id or self.user_id,
             environment="dev",
             entitlement_id=self.entitlement_id,
-            max_concurrent_sessions=1,
+            max_concurrent_sessions=max_concurrent_sessions,
         )
+
+    def test_zero_limit_rejects_prepare_slot(self) -> None:
+        with self.assertRaises(EntitlementExceeded):
+            self._reserve(str(uuid.uuid4()), max_concurrent_sessions=0)
 
     def test_reservation_itself_consumes_slot(self) -> None:
         first_id = str(uuid.uuid4())
