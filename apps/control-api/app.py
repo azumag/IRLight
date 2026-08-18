@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from auth_api import router as auth_router
+from auth_store import ensure_auth_state
 from catalog_api import router as catalog_router
 from catalog_store import ensure_catalog
 from node_internal import ensure_state as ensure_node_state
@@ -76,8 +78,10 @@ def ensure_control() -> None:
 ensure_control()
 ensure_node_state()
 ensure_catalog()
+ensure_auth_state()
 app = FastAPI(title="IRLight Phase 0 Control API", version="0.1.0")
 app.include_router(node_internal_router)
+app.include_router(auth_router)
 app.include_router(catalog_router)
 app.include_router(session_router)
 
