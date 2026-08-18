@@ -29,8 +29,3 @@ paths:
   output/relay:
     source: publisher
     maxReaders: 4
-  # Destination verify の Docker smoke 専用。SRT caller の streamid が
-  # MediaMTX で受理されるところまで確認し、実配信経路とは分離する。
-  probe:
-    source: publisher
-    maxReaders: 1
