@@ -45,6 +45,12 @@ ACTIVE_STATES = {
 
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 
+# Sessions that still occupy a concurrent-session entitlement. STOPPING and
+# FAILED_CLEANUP remain counted until provider resources have actually been
+# reclaimed; allowing a replacement before cleanup completes can exceed the
+# provider/resource cap even though the old stream is no longer LIVE.
+CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
+
 # Allowed transitions from each state. Idempotent retries of the same
 # operation are handled by the caller, not by widening these sets.
 TRANSITIONS: dict[str, set[str]] = {
@@ -62,6 +68,12 @@ TRANSITIONS: dict[str, set[str]] = {
 
 
 class InvalidTransition(RuntimeError):
+    pass
+
+
+class EntitlementExceeded(RuntimeError):
+    """Raised when a user has no free concurrent-session entitlement slot."""
+
     pass
 
 
@@ -95,6 +107,8 @@ def new_session(
         "absolute_deadline_at": (
             now + absolute_deadline_hours * 3600 if absolute_deadline_hours else None
         ),
+        "entitlement_id": None,
+        "entitlement_reserved": False,
         "cleanup_pending": False,
         "failure_reason": None,
         "events": [],
@@ -161,6 +175,74 @@ class SessionStore:
             self._persist()
             return dict(session)
 
+    def reserve_prepare_slot(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        environment: str,
+        entitlement_id: str,
+        max_concurrent_sessions: int,
+    ) -> dict[str, Any]:
+        """Atomically reserve one concurrent-session slot before prepare.
+
+        The reservation flag closes the small race between creating a STOPPED
+        session and transitioning it to PROVISIONING. Existing active sessions
+        without the flag (state written by an older version) are still counted
+        by status, so deploying this change does not accidentally grant an
+        extra slot.
+        """
+        if max_concurrent_sessions < 1:
+            raise EntitlementExceeded("concurrent session entitlement is disabled")
+
+        with self.lock:
+            existing = self._sessions.get(session_id)
+            if existing is not None and existing.get("user_id") != user_id:
+                raise KeyError(session_id)
+
+            if existing is not None and existing.get("status") in {"FINISHED", "FAILED"}:
+                return dict(existing)
+
+            # Retrying prepare for a session that already occupies a slot must
+            # not be treated as a new allocation, even if the user's plan was
+            # downgraded after the session started.
+            if existing is not None and (
+                existing.get("entitlement_reserved")
+                or existing.get("status") in CAPACITY_STATES
+            ):
+                existing["entitlement_id"] = entitlement_id
+                existing["entitlement_reserved"] = True
+                existing["updated_at"] = time.time()
+                self._persist()
+                return dict(existing)
+
+            occupied = 0
+            for other_id, session in self._sessions.items():
+                if other_id == session_id or session.get("user_id") != user_id:
+                    continue
+                if session.get("entitlement_reserved") or session.get("status") in CAPACITY_STATES:
+                    occupied += 1
+
+            if occupied >= max_concurrent_sessions:
+                raise EntitlementExceeded(
+                    f"concurrent session limit exceeded ({occupied}/{max_concurrent_sessions})"
+                )
+
+            if existing is None:
+                existing = new_session(
+                    user_id=user_id,
+                    environment=environment,
+                    absolute_deadline_hours=12.0,
+                )
+                existing["session_id"] = session_id
+                self._sessions[session_id] = existing
+
+            existing["entitlement_id"] = entitlement_id
+            existing["entitlement_reserved"] = True
+            existing["updated_at"] = time.time()
+            self._persist()
+            return dict(existing)
+
     def get(self, session_id: str) -> dict[str, Any] | None:
         with self.lock:
             value = self._sessions.get(session_id)
@@ -204,6 +286,8 @@ class SessionStore:
                     raise InvalidTransition(f"{current} -> {new_state} not allowed")
             session.update(changes)
             session["status"] = new_state
+            if new_state in {"FINISHED", "FAILED"}:
+                session["entitlement_reserved"] = False
             session["updated_at"] = time.time()
             self._persist()
             return dict(session)
