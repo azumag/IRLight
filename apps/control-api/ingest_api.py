@@ -19,7 +19,9 @@ INGEST_PATH = "live/input"
 
 
 class IssueIngestCredentialRequest(BaseModel):
-    protocols: list[Literal["rtmp", "srt"]] = Field(default_factory=lambda: ["rtmp", "srt"])
+    protocols: list[Literal["rtmp", "srt"]] = Field(
+        default_factory=lambda: ["rtmp", "srt"], min_length=1
+    )
     ttl_seconds: int = Field(default=12 * 3600, ge=60, le=12 * 3600)
 
 
