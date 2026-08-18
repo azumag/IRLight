@@ -60,10 +60,21 @@ def is_safe_session_id(value: str) -> bool:
 
 
 def is_safe_user_id(value: str) -> bool:
-    """Opaque user IDs are lowercase hex; reject email-like or free-form values."""
-    if not value or len(value) > 128 or not value.isalnum():
+    """Accept current UUID4 user IDs and legacy lowercase-hex opaque IDs."""
+    if not isinstance(value, str) or not value or len(value) > 128:
         return False
-    return all(ch in "0123456789abcdef" for ch in value)
+
+    # The auth store issues canonical UUID4 strings. Keep accepting the older
+    # short lowercase-hex IDs used by provider/admin spike tests and existing
+    # metadata so this validation change is backward compatible.
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        parsed = None
+    if parsed is not None and str(parsed) == value.lower() and parsed.version == 4:
+        return True
+
+    return value.isalnum() and all(ch in "0123456789abcdef" for ch in value)
 
 
 def request_id_for(scope: str, session_id: str) -> str:
