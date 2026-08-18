@@ -10,7 +10,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from auth_api import require_csrf, require_user
+from entitlement_store import default_entitlement_store
 from fake_provider_for_api import default_provider, default_store
+from session_store import EntitlementExceeded
 from session_workflow import ProvisioningWorkflow
 
 
@@ -59,13 +61,23 @@ def prepare_session(
     if existing is not None and existing.get("idempotency_key") == key:
         return existing
 
+    entitlement = default_entitlement_store().get(user_id)
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
+        store.reserve_prepare_slot(
+            session_id,
+            user_id=user_id,
+            environment=request.environment,
+            entitlement_id=str(entitlement["id"]),
+            max_concurrent_sessions=int(entitlement["max_concurrent_sessions"]),
+        )
         session = workflow.prepare(
             session_id,
             user_id=user_id,
             environment=request.environment,
         )
+    except EntitlementExceeded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
