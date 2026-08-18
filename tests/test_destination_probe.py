@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import socket
+import subprocess
 import sys
 import threading
 import unittest
@@ -16,6 +18,32 @@ from destination_probe import (  # noqa: E402
     ProbeConfig,
     probe_destination,
 )
+
+
+class _FakeProcess:
+    def __init__(self, stderr_data: bytes) -> None:
+        self.stderr = io.BytesIO(stderr_data)
+        self.stdin = io.BytesIO()
+        self._returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self._returncode is None:
+            self._returncode = 0
+        return self._returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self._returncode = -9
 
 
 class DestinationProbeTest(unittest.TestCase):
@@ -85,9 +113,14 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertTrue(probe_rtmp.call_args.kwargs["use_tls"])
         self.assertEqual(probe_rtmp.call_args.kwargs["port"], 443)
 
-    @patch("destination_probe.subprocess.run")
-    def test_srt_uses_real_cli_handshake_and_literal_ip(self, run) -> None:
-        run.return_value.returncode = 0
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_waits_for_real_connected_event_and_uses_literal_ip(self, popen) -> None:
+        process = _FakeProcess(
+            b"Media path: 'file://con' --> 'srt://127.0.0.1:8890'\n"
+            b"SRT target connected\n"
+        )
+        popen.return_value = process
+
         result = probe_destination(
             "srt://127.0.0.1:8890?streamid=publish:probe&latency=120",
             ProbeConfig(
@@ -96,14 +129,32 @@ class DestinationProbeTest(unittest.TestCase):
                 srt_binary="srt-live-transmit",
             ),
         )
-        command = run.call_args.args[0]
+
+        command = popen.call_args.args[0]
         self.assertEqual(command[0], "srt-live-transmit")
         self.assertEqual(command[1], "file://con")
         self.assertIn("srt://127.0.0.1:8890?", command[2])
         self.assertIn("streamid=publish:probe", command[2])
         self.assertIn("mode=caller", command[2])
         self.assertIn("conntimeo=2000", command[2])
+        self.assertIn("-autoreconnect:no", command)
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(result["protocol"], "srt")
+        self.assertTrue(process.terminated)
+
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_fails_when_process_ends_before_connected_event(self, popen) -> None:
+        popen.return_value = _FakeProcess(b"ERROR: Connection setup failure\n")
+
+        with self.assertRaisesRegex(DestinationProbeError, "SRT handshake"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid=publish:probe",
+                ProbeConfig(
+                    timeout_seconds=1.0,
+                    allow_private_targets=True,
+                    srt_binary="srt-live-transmit",
+                ),
+            )
 
     def test_srt_rejects_passphrase_in_url(self) -> None:
         with self.assertRaisesRegex(DestinationProbeError, "secrets"):
