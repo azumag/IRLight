@@ -18,6 +18,8 @@ from auth_api import router as auth_router
 from auth_store import ensure_auth_state
 from catalog_api import router as catalog_router
 from catalog_store import ensure_catalog
+from ingest_api import internal_router as ingest_internal_router
+from ingest_api import user_router as ingest_user_router
 from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
 from session_api import router as session_router
@@ -81,9 +83,11 @@ ensure_catalog()
 ensure_auth_state()
 app = FastAPI(title="IRLight Phase 0 Control API", version="0.1.0")
 app.include_router(node_internal_router)
+app.include_router(ingest_internal_router)
 app.include_router(auth_router)
 app.include_router(catalog_router)
 app.include_router(session_router)
+app.include_router(ingest_user_router)
 
 
 @app.get("/api/status")
