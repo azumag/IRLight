@@ -69,6 +69,22 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertEqual(result["peer_ip"], "127.0.0.1")
         self.assertEqual(result["peer_port"], port)
 
+    @patch("destination_probe._probe_rtmp")
+    def test_rtmps_uses_tls_probe(self, probe_rtmp) -> None:
+        probe_rtmp.return_value = {
+            "protocol": "rtmps",
+            "peer_ip": "203.0.113.10",
+            "peer_port": 443,
+            "elapsed_ms": 1.0,
+        }
+        result = probe_destination(
+            "rtmps://stream.example.com/app",
+            ProbeConfig(timeout_seconds=2.0),
+        )
+        self.assertEqual(result["protocol"], "rtmps")
+        self.assertTrue(probe_rtmp.call_args.kwargs["use_tls"])
+        self.assertEqual(probe_rtmp.call_args.kwargs["port"], 443)
+
     @patch("destination_probe.subprocess.run")
     def test_srt_uses_real_cli_handshake_and_literal_ip(self, run) -> None:
         run.return_value.returncode = 0
