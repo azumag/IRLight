@@ -1,0 +1,33 @@
+name: irlight-node
+
+# Optional TLS overlay for RTMPS ingest.
+#
+# Apply together with docker-compose.node.yml and docker-compose.node.public.yml:
+#
+#   NODE_RTMPS_KEY_FILE=/etc/irlight/tls/rtmps.key \
+#   NODE_RTMPS_CERT_FILE=/etc/irlight/tls/rtmps.crt \
+#   docker compose \
+#     -f docker-compose.node.yml \
+#     -f docker-compose.node.public.yml \
+#     -f docker-compose.node.rtmps.yml up -d
+#
+# MediaMTX keeps plain RTMP on 1935 and adds RTMPS on 1936 (optional mode).
+# The certificate private key is supplied through a Compose secret and never
+# baked into an image or placed in container environment variables.
+
+services:
+  mediamtx:
+    environment:
+      MTX_RTMPENCRYPTION: optional
+      MTX_RTMPSADDRESS: :1936
+      MTX_RTMPSERVERKEY: /run/secrets/rtmps_server_key
+      MTX_RTMPSERVERCERT: /run/secrets/rtmps_server_cert
+    secrets:
+      - rtmps_server_key
+      - rtmps_server_cert
+
+secrets:
+  rtmps_server_key:
+    file: ${NODE_RTMPS_KEY_FILE:-./secrets/rtmps.key}
+  rtmps_server_cert:
+    file: ${NODE_RTMPS_CERT_FILE:-./secrets/rtmps.crt}
