@@ -43,6 +43,8 @@ services:
       - continuity
     environment:
       STATE_DIR: /state
+      COOKIE_INSECURE: "1"
+      IRLIGHT_VERIFY_ALLOW_PRIVATE_TARGETS: "1"
     volumes:
       - irlight-state:/state
     ports:
