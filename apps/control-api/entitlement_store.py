@@ -21,7 +21,7 @@ def _default_limit() -> int:
         value = int(raw)
     except ValueError:
         return DEFAULT_MAX_CONCURRENT_SESSIONS
-    return max(1, value)
+    return max(0, value)
 
 
 class EntitlementStore:
@@ -85,8 +85,8 @@ class EntitlementStore:
         max_concurrent_sessions: int,
         plan: str = DEFAULT_PLAN,
     ) -> dict[str, Any]:
-        if max_concurrent_sessions < 1:
-            raise ValueError("max_concurrent_sessions must be at least 1")
+        if max_concurrent_sessions < 0:
+            raise ValueError("max_concurrent_sessions must be at least 0")
         if not plan.strip():
             raise ValueError("plan must not be empty")
         with self.lock:
