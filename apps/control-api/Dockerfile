@@ -5,12 +5,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates srt-tools \
+    && rm -rf /var/lib/apt/lists/*
 COPY apps/control-api/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/auth_api.py apps/control-api/auth_store.py \
      apps/control-api/catalog_api.py apps/control-api/catalog_store.py \
-     apps/control-api/entitlement_store.py \
+     apps/control-api/destination_probe.py apps/control-api/entitlement_store.py \
      apps/control-api/session_api.py apps/control-api/session_store.py \
      apps/control-api/session_workflow.py apps/control-api/reaper.py \
      apps/control-api/fake_provider_for_api.py ./
