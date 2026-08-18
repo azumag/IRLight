@@ -119,7 +119,7 @@ verify_local_destinations() {
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
-    --data '{"type":"srt","display_name":"Local SRT probe","server_url":"srt://mediamtx:8890?streamid=publish:probe","secret_ref":"smoke/srt"}')"
+    --data '{"type":"srt","display_name":"Local SRT probe","server_url":"srt://mediamtx:8890?streamid=publish:live/input","secret_ref":"smoke/srt"}')"
   destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/destinations/$destination_id/verify" \
