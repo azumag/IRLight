@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Iterable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -68,19 +68,32 @@ def _public_ingest_host(session: dict[str, Any]) -> str:
     return str(session.get("provider_public_ipv4") or "127.0.0.1")
 
 
-def _connection_info(session: dict[str, Any], username: str, secret: str | None) -> dict[str, Any]:
+def _connection_info(
+    session: dict[str, Any],
+    username: str,
+    secret: str | None,
+    protocols: Iterable[str] = ("rtmp", "srt"),
+) -> dict[str, Any]:
+    allowed = {str(value).lower() for value in protocols}
     host = _public_ingest_host(session)
     host_for_url = _host_for_url(host)
     rtmp_port = int(os.getenv("IRLIGHT_INGEST_RTMP_PORT", "1935"))
     rtmps_port = int(os.getenv("IRLIGHT_INGEST_RTMPS_PORT", "1936"))
     srt_port = int(os.getenv("IRLIGHT_INGEST_SRT_PORT", "8890"))
-    rtmps_enabled = os.getenv("IRLIGHT_INGEST_RTMPS_ENABLED", "") == "1"
+    rtmp_enabled = "rtmp" in allowed
+    rtmps_enabled = rtmp_enabled and os.getenv("IRLIGHT_INGEST_RTMPS_ENABLED", "") == "1"
+    srt_enabled = "srt" in allowed
 
     rtmp: dict[str, Any] = {
-        "server_url": f"rtmp://{host_for_url}:{rtmp_port}/{INGEST_PATH}",
-        "username": username,
-        "password": secret,
-        "password_available": secret is not None,
+        "enabled": rtmp_enabled,
+        "server_url": (
+            f"rtmp://{host_for_url}:{rtmp_port}/{INGEST_PATH}"
+            if rtmp_enabled
+            else None
+        ),
+        "username": username if rtmp_enabled else None,
+        "password": secret if rtmp_enabled else None,
+        "password_available": rtmp_enabled and secret is not None,
     }
     rtmps: dict[str, Any] = {
         "enabled": rtmps_enabled,
@@ -89,17 +102,22 @@ def _connection_info(session: dict[str, Any], username: str, secret: str | None)
             if rtmps_enabled
             else None
         ),
-        "username": username,
+        "username": username if rtmps_enabled else None,
         "password": secret if rtmps_enabled else None,
         "password_available": rtmps_enabled and secret is not None,
     }
     srt: dict[str, Any] = {
-        "host": host,
-        "port": srt_port,
-        "streamid_template": f"publish:{INGEST_PATH}:{username}:<credential-secret>",
+        "enabled": srt_enabled,
+        "host": host if srt_enabled else None,
+        "port": srt_port if srt_enabled else None,
+        "streamid_template": (
+            f"publish:{INGEST_PATH}:{username}:<credential-secret>"
+            if srt_enabled
+            else None
+        ),
         "url": None,
     }
-    if secret is not None:
+    if srt_enabled and secret is not None:
         srt["url"] = (
             f"srt://{host_for_url}:{srt_port}"
             f"?streamid=publish:{INGEST_PATH}:{username}:{secret}"
@@ -142,7 +160,9 @@ def issue_ingest_credential(
         # Returned once. The raw value is never persisted and cannot be
         # recovered later; issuing another credential rotates the old one out.
         "credential_secret": secret,
-        "connection_info": _connection_info(session, str(record["username"]), secret),
+        "connection_info": _connection_info(
+            session, str(record["username"]), secret, record.get("protocols", [])
+        ),
     }
 
 
@@ -155,7 +175,9 @@ def get_connection_info(session_id: str, current_user: CurrentUser) -> dict[str,
         raise HTTPException(status_code=404, detail="no active ingest credential")
     return {
         "credential": record,
-        "connection_info": _connection_info(session, str(record["username"]), None),
+        "connection_info": _connection_info(
+            session, str(record["username"]), None, record.get("protocols", [])
+        ),
     }
 
 
