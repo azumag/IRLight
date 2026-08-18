@@ -203,6 +203,19 @@ class SessionStore:
             if existing is not None and existing.get("status") in {"FINISHED", "FAILED"}:
                 return dict(existing)
 
+            # Retrying prepare for a session that already occupies a slot must
+            # not be treated as a new allocation, even if the user's plan was
+            # downgraded after the session started.
+            if existing is not None and (
+                existing.get("entitlement_reserved")
+                or existing.get("status") in CAPACITY_STATES
+            ):
+                existing["entitlement_id"] = entitlement_id
+                existing["entitlement_reserved"] = True
+                existing["updated_at"] = time.time()
+                self._persist()
+                return dict(existing)
+
             occupied = 0
             for other_id, session in self._sessions.items():
                 if other_id == session_id or session.get("user_id") != user_id:
