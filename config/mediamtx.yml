@@ -1,5 +1,19 @@
 logLevel: info
 
+# Publisher authentication is delegated to the Control Plane. Reads and the
+# internal continuity egress path remain internal and are explicitly excluded.
+# Production nodes override authHTTPAddress through MTX_AUTHHTTPADDRESS.
+authMethod: http
+authHTTPAddress: http://control-ui:8080/internal/ingest/auth
+authHTTPExclude:
+  - action: read
+  - action: playback
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: publish
+    path: output/relay
+
 rtsp: yes
 rtspAddress: :8554
 # リレー用途はNATやUDPポート枯渇に弱いUDP unicastより、単一TCP接続のinterleavedを優先する。
@@ -21,10 +35,12 @@ apiAddress: :9997
 metrics: yes
 metricsAddress: :9998
 
-# Phase 0では認証をまだ実装しない。外部公開禁止。
 paths:
   live/input:
     source: publisher
+    # A second publisher must not silently evict a live one. Reconnect is
+    # allowed after the prior publisher actually disconnects.
+    overridePublisher: false
     maxReaders: 4
   output/relay:
     source: publisher
