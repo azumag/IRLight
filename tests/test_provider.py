@@ -8,7 +8,12 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from provider.conoha import SessionMetadata, is_safe_session_id, request_id_for  # noqa: E402
+from provider.conoha import (  # noqa: E402
+    SessionMetadata,
+    is_safe_session_id,
+    is_safe_user_id,
+    request_id_for,
+)
 from provider.fake_provider import FakeProvider  # noqa: E402
 
 
@@ -28,7 +33,18 @@ class SessionMetadataTest(unittest.TestCase):
         self.assertIn("irlight-created-at", tags)
         self.assertEqual(tags["irlight-delete-after"], "2001-09-09T01:46:40Z")
 
+    def test_accepts_authenticated_uuid_user_id(self) -> None:
+        user_id = str(uuid.uuid4())
+        self.assertTrue(is_safe_user_id(user_id))
+        meta = SessionMetadata(
+            session_id=str(uuid.uuid4()),
+            user_id=user_id,
+            environment="dev",
+        )
+        self.assertEqual(meta.as_tags()["irlight-user-id"], user_id)
+
     def test_rejects_email_like_user_id(self) -> None:
+        self.assertFalse(is_safe_user_id("user@example.com"))
         with self.assertRaises(ValueError):
             SessionMetadata(
                 session_id=str(uuid.uuid4()),
