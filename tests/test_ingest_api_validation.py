@@ -15,9 +15,8 @@ from ingest_api import IssueIngestCredentialRequest  # noqa: E402
 
 class IngestApiValidationTest(unittest.TestCase):
     def test_protocol_list_must_not_be_empty(self) -> None:
-        # Keep this contract explicit even if Pydantic defaults change later.
-        request = IssueIngestCredentialRequest(protocols=[])
-        self.assertEqual(request.protocols, [])
+        with self.assertRaises(ValidationError):
+            IssueIngestCredentialRequest(protocols=[])
 
     def test_unknown_protocol_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
