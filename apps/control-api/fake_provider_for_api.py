@@ -1,8 +1,13 @@
-"""Singleton wiring for the Session API (spike).
+"""Runtime provider and SessionStore wiring for the Control Plane.
 
-The control plane keeps one in-memory fake provider and one session store per
-process so the API, workflow and reaper share state. In production this would
-be replaced with the real ConoHa provider and a durable database.
+``IRLIGHT_PROVIDER`` selects the provider implementation:
+
+- ``fake`` (default): in-memory provider used by local/CI smoke tests.
+- ``conoha``: real ConoHa REST client configured through ``CONOHA_*`` env vars.
+
+The fake provider remains a process singleton because its remote state is
+in-memory. The ConoHa client is created per workflow/reaper invocation so token
+state is not shared across concurrent API requests.
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 # Local checkouts run with cwd inside apps/control-api; add the repo root so
@@ -24,12 +30,13 @@ if _LOCAL_REPO is not None and (_LOCAL_REPO / "provider").is_dir():
         sys.path.insert(0, str(_LOCAL_REPO))
 
 from provider.fake_provider import FakeProvider  # noqa: E402
+from provider.provider_client import ConohaClient, ConohaConfig  # noqa: E402
 
 from session_store import SessionStore  # noqa: E402
 
 
 _STORE: SessionStore | None = None
-_PROVIDER: FakeProvider | None = None
+_FAKE_PROVIDER: FakeProvider | None = None
 
 
 def default_store() -> SessionStore:
@@ -39,8 +46,26 @@ def default_store() -> SessionStore:
     return _STORE
 
 
-def default_provider() -> FakeProvider:
-    global _PROVIDER
-    if _PROVIDER is None:
-        _PROVIDER = FakeProvider()
-    return _PROVIDER
+def provider_mode() -> str:
+    mode = os.getenv("IRLIGHT_PROVIDER", "fake").strip().lower()
+    if mode not in {"fake", "conoha"}:
+        raise RuntimeError(
+            f"unsupported IRLIGHT_PROVIDER={mode!r}; expected 'fake' or 'conoha'"
+        )
+    return mode
+
+
+def default_provider() -> Any:
+    """Return the provider selected for this process invocation.
+
+    FakeProvider is intentionally shared inside the process. ConoHa is backed
+    by the remote API, therefore each caller gets a fresh lightweight client.
+    """
+
+    global _FAKE_PROVIDER
+    if provider_mode() == "conoha":
+        return ConohaClient(ConohaConfig.from_env())
+
+    if _FAKE_PROVIDER is None:
+        _FAKE_PROVIDER = FakeProvider()
+    return _FAKE_PROVIDER

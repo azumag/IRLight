@@ -1,0 +1,11 @@
+[Unit]
+Description=IRLight session/resource reaper
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/irlight
+ExecStart=/usr/bin/docker compose -f /opt/irlight/docker-compose.poc.yml exec -T control-ui python /app/reaper_cli.py
+TimeoutStartSec=120
