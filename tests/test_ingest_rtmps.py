@@ -35,7 +35,12 @@ class RTMPSConnectionInfoTest(unittest.TestCase):
                 "IRLIGHT_INGEST_RTMPS_PORT": "1936",
             },
         ):
-            info = _connection_info(self.session, "session-user", "one-time-secret")
+            info = _connection_info(
+                self.session,
+                "session-user",
+                "one-time-secret",
+                ["rtmp", "srt"],
+            )
         self.assertTrue(info["rtmps"]["enabled"])
         self.assertEqual(
             info["rtmps"]["server_url"],
@@ -50,10 +55,36 @@ class RTMPSConnectionInfoTest(unittest.TestCase):
             clear=False,
         ):
             os.environ.pop("IRLIGHT_INGEST_RTMPS_ENABLED", None)
-            disabled = _connection_info(self.session, "session-user", "one-time-secret")
+            disabled = _connection_info(
+                self.session,
+                "session-user",
+                "one-time-secret",
+                ["rtmp", "srt"],
+            )
         self.assertFalse(disabled["rtmps"]["enabled"])
         self.assertIsNone(disabled["rtmps"]["server_url"])
         self.assertIsNone(disabled["rtmps"]["password"])
+
+    def test_srt_only_credential_does_not_advertise_rtmp_or_rtmps(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "IRLIGHT_INGEST_PUBLIC_HOST": "ingest.example.test",
+                "IRLIGHT_INGEST_RTMPS_ENABLED": "1",
+            },
+        ):
+            info = _connection_info(
+                self.session,
+                "session-user",
+                "one-time-secret",
+                ["srt"],
+            )
+        self.assertFalse(info["rtmp"]["enabled"])
+        self.assertIsNone(info["rtmp"]["server_url"])
+        self.assertFalse(info["rtmps"]["enabled"])
+        self.assertIsNone(info["rtmps"]["server_url"])
+        self.assertTrue(info["srt"]["enabled"])
+        self.assertIsNotNone(info["srt"]["url"])
 
     def test_connection_info_never_recovers_secret(self) -> None:
         with patch.dict(
@@ -63,7 +94,12 @@ class RTMPSConnectionInfoTest(unittest.TestCase):
                 "IRLIGHT_INGEST_RTMPS_ENABLED": "1",
             },
         ):
-            info = _connection_info(self.session, "session-user", None)
+            info = _connection_info(
+                self.session,
+                "session-user",
+                None,
+                ["rtmp", "srt"],
+            )
         self.assertIsNone(info["rtmp"]["password"])
         self.assertIsNone(info["rtmps"]["password"])
         self.assertFalse(info["rtmps"]["password_available"])
