@@ -264,10 +264,10 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     # This lets verify stop immediately after the transport handshake without
     # having to publish media or depend on the destination's application path.
     started = time.monotonic()
+    connected_at: float | None = None
     process: subprocess.Popen[bytes] | None = None
     reader: threading.Thread | None = None
     messages: queue.Queue[bytes | None] = queue.Queue()
-    connected = False
     try:
         process = subprocess.Popen(
             [
@@ -275,7 +275,6 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
                 "file://con",
                 safe_uri,
                 "-loglevel:error",
-                "-autoreconnect:no",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -304,7 +303,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
             if line is None:
                 raise DestinationProbeError("destination did not complete the SRT handshake")
             if SRT_CONNECTED_MARKER in line:
-                connected = True
+                connected_at = time.monotonic()
                 break
     except FileNotFoundError as exc:
         raise DestinationProbeError("SRT verifier is unavailable") from exc
@@ -324,10 +323,10 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
             if process.stderr is not None:
                 process.stderr.close()
 
-    if not connected:
+    if connected_at is None:
         raise DestinationProbeError("destination did not complete the SRT handshake")
 
-    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    elapsed_ms = round((connected_at - started) * 1000, 1)
     return {
         "protocol": "srt",
         "peer_ip": peer_ip,
