@@ -5,11 +5,15 @@ name: irlight-node
 #
 #   docker compose -f docker-compose.node.yml -f docker-compose.node.public.yml up -d
 #
+# Add docker-compose.node.rtmps.yml when RTMPS is enabled. Port 1936 is still
+# published here so the public firewall/port contract remains in one place.
+#
 # MediaMTX API (9997), metrics (9998), RTSP (8554) and HLS (8888) stay internal
 # and must never be added here.
 
 services:
   mediamtx:
     ports:
-      - "1935:1935"     # RTMP ingest (Node listens for publishers)
+      - "1935:1935"     # RTMP ingest
+      - "1936:1936"     # RTMPS ingest (listener enabled by RTMPS overlay)
       - "8890:8890/udp" # SRT ingest
