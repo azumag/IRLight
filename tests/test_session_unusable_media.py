@@ -15,7 +15,7 @@ from session_store import SessionStore  # noqa: E402
 class SessionUnusableMediaTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = SessionStore(self.tmp.name)
+        self.store = SessionStore(self.tmp.name, recovery_stability_seconds=3.0)
         self.session_id = "session-unusable-media"
         self.store.create(
             session_id=self.session_id,
@@ -111,8 +111,18 @@ class SessionUnusableMediaTest(unittest.TestCase):
         self.assertEqual(len(session["events"]), event_count)
 
         session = self.apply("ACCEPTED", occurred_at=120.0)
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertEqual(session["recovery_candidate_since"], 120.0)
+        self.assertEqual(len(session["events"]), event_count)
+
+        session = self.apply("ACCEPTED", occurred_at=122.9)
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertEqual(session["recovery_candidate_since"], 120.0)
+
+        session = self.apply("ACCEPTED", occurred_at=123.0)
         self.assertEqual(session["status"], "LIVE")
         self.assertEqual(session["events"][-1]["type"], "session.recovered")
+        self.assertIsNone(session["recovery_candidate_since"])
         self.assertIsNone(session["hold_deadline_at"])
 
     def test_video_timeout_moves_running_session_to_holding(self) -> None:
@@ -166,6 +176,48 @@ class SessionUnusableMediaTest(unittest.TestCase):
         )
         self.assertEqual(session["status"], "HOLDING")
         self.assertEqual(session["events"][-1]["reason_code"], "BITRATE_TOO_HIGH")
+
+    def test_recovery_candidate_resets_when_media_becomes_unusable_again(self) -> None:
+        self.make_live()
+        self.apply(
+            "DEGRADED",
+            reasons=["VIDEO_TIMEOUT"],
+            event_types=["ingest.degraded"],
+            occurred_at=110.0,
+        )
+        session = self.apply("ACCEPTED", occurred_at=120.0)
+        self.assertEqual(session["recovery_candidate_since"], 120.0)
+
+        session = self.apply(
+            "DEGRADED",
+            reasons=["VIDEO_TIMEOUT"],
+            occurred_at=122.0,
+        )
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertIsNone(session["recovery_candidate_since"])
+
+        session = self.apply("ACCEPTED", occurred_at=123.0)
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertEqual(session["recovery_candidate_since"], 123.0)
+        session = self.apply("ACCEPTED", occurred_at=126.0)
+        self.assertEqual(session["status"], "LIVE")
+
+    def test_recovery_candidate_survives_store_restart(self) -> None:
+        self.make_live()
+        self.apply(
+            "DEGRADED",
+            reasons=["AUDIO_TIMEOUT"],
+            event_types=["ingest.degraded"],
+            occurred_at=110.0,
+        )
+        session = self.apply("ACCEPTED", occurred_at=120.0)
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertEqual(session["recovery_candidate_since"], 120.0)
+
+        self.store = SessionStore(self.tmp.name, recovery_stability_seconds=3.0)
+        session = self.apply("ACCEPTED", occurred_at=123.0)
+        self.assertEqual(session["status"], "LIVE")
+        self.assertIsNone(session["recovery_candidate_since"])
 
 
 if __name__ == "__main__":
