@@ -2,7 +2,7 @@
 
 Issue #5 の最初の縦切りとして、Destinationのstream keyをControl Planeで暗号化保存し、選択されたSessionのMedia Nodeへbootstrap時だけ配送します。
 
-この段階ではRTMP / RTMPS Destinationのsecret配送までを対象とします。実際の外部サービスへのpublish成功判定、egress reconnect/backoff、AUTH_FAILED / UNREACHABLE分類は次の縦切りで実装します。
+RTMP / RTMPS Destinationのsecret配送をこの文書で扱います。実publish・状態監視・再接続は `docs/egress-reconnect.md` を参照してください。
 
 ## Destinationとsecret
 
@@ -86,6 +86,7 @@ prepare前に次を検証します。
 - typeがRTMPまたはRTMPS
 - `verification_status=VERIFIED`
 - `secret_ref` に暗号化secretが設定済み
+- ciphertextが現在のmaster keyで復号可能
 
 実ConoHa providerではDestination指定を既定必須にします。fake/PoCでは既存のローカルoutputを維持するため未指定を許可します。
 
@@ -93,7 +94,7 @@ prepare前に次を検証します。
 IRLIGHT_REQUIRE_DESTINATION=1
 ```
 
-Destination検証はentitlement reservation / provider allocationより前に行うため、secret未設定等の入力エラーでVPSを作成しません。
+Destination検証はentitlement reservation / provider allocationより前に行うため、secret未設定・復号不能等の入力エラーでVPSを作成しません。
 
 ## server_urlとstream key
 
@@ -130,7 +131,7 @@ Node bootstrap時、Control Planeは `provider_server_id` からユーザーSess
 5. bootstrap responseの `egress_url` に一度だけ含める
 6. Node Agentが即座にsecret fileへ書く
 
-Node Agentの既存動作により、配送されたURLは `NODE_SECRET_DIR/egress_url` にmode `0600` で保存されます。production composeでは`NODE_SECRET_DIR`はtmpfs volumeです。Continuity containerは`EGRESS_URL_FILE`としてこのfileを読むため、credentialed URLをenvironmentやprocess argumentへ置きません。
+配送されたURLは `NODE_SECRET_DIR/egress_url` に作成時点からmode `0600` で保存します。productionではこのdirectoryはtmpfs volumeです。Continuityは外部secretを読まず、常に内部 `rtmp://mediamtx:1935/output/relay` へ出力します。専用Egress Gatewayだけがsecret volumeをread-only mountして外部Destinationへpublishします。Node停止時はNode Agentがmedia stack停止後にsecret fileを削除します。
 
 ## 永続化しない場所
 
@@ -141,9 +142,10 @@ credentialed egress URL / raw stream keyは以下へ保存しません。
 - nodes.json
 - Session events
 - Node events
+- Egress status JSON
 - normal API responses
 
-Node stateにはsafeな`destination_id`だけを保存します。
+Node/Session stateに残すegress情報はstatus、reason code、destination scheme/hostなどの安全な要約だけです。
 
 bootstrap responseにはNodeへ配送するためcredentialed URLが含まれるため、internal bootstrap endpointのrequest/response bodyを平文ログへ記録しないことが前提です。現在のControl API access logはbodyを記録しません。
 
@@ -168,6 +170,7 @@ bootstrap responseにはNodeへ配送するためcredentialed URLが含まれる
 - plaintext非永続化
 - user isolation
 - wrong master keyで復号不可
+- corrupt/unreadable stateのfail closed
 - explicit delete
 - URL placeholder / path append
 - SRT egressは現時点で拒否
@@ -175,6 +178,7 @@ bootstrap responseにはNodeへ配送するためcredentialed URLが含まれる
 `tests/test_session_destination.py`:
 
 - prepareのowner/enabled/VERIFIED/type/secret検証
+- wrong master keyをprovider allocation前に拒否
 - ConoHaのDestination必須化
 - bootstrap egress URL解決
 
