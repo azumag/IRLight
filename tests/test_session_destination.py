@@ -67,6 +67,11 @@ class PrepareDestinationTest(unittest.TestCase):
             ({**DESTINATION, "verification_status": "FAILED"}, _SecretStore(), "verified"),
             ({**DESTINATION, "type": "srt"}, _SecretStore(), "not supported"),
             (dict(DESTINATION), _SecretStore(configured=False), "secret is not configured"),
+            (
+                {**DESTINATION, "type": "rtmp"},
+                _SecretStore(),
+                "configuration is invalid",
+            ),
         ]
         for destination, secret_store, detail in cases:
             with self.subTest(detail=detail), patch(
