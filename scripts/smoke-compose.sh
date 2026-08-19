@@ -24,15 +24,16 @@ annotation_escape() {
 }
 
 compact_diagnostics() {
-  local status ps continuity control mediamtx publisher
+  local status ps continuity control mediamtx node_agent publisher
   status="$(curl -fsS --max-time 3 "$base_url/api/status" 2>&1 || true)"
   ps="$("${compose[@]}" ps --format json 2>&1 | tail -c 2000 || true)"
   continuity="$("${compose[@]}" logs --no-color --tail=50 continuity 2>&1 | tail -c 5000 || true)"
   control="$("${compose[@]}" logs --no-color --tail=50 control-ui 2>&1 | tail -c 3000 || true)"
   mediamtx="$("${compose[@]}" logs --no-color --tail=50 mediamtx 2>&1 | tail -c 3000 || true)"
+  node_agent="$("${compose[@]}" logs --no-color --tail=50 node-agent 2>&1 | tail -c 3000 || true)"
   publisher="$(tail -c 2000 /tmp/irlight-publisher.log 2>/dev/null || true)"
-  printf 'stage=%s\nstatus=%s\nps=%s\ncontinuity=%s\ncontrol=%s\nmediamtx=%s\npublisher=%s' \
-    "$current_stage" "$status" "$ps" "$continuity" "$control" "$mediamtx" "$publisher"
+  printf 'stage=%s\nstatus=%s\nps=%s\ncontinuity=%s\ncontrol=%s\nmediamtx=%s\nnode_agent=%s\npublisher=%s' \
+    "$current_stage" "$status" "$ps" "$continuity" "$control" "$mediamtx" "$node_agent" "$publisher"
 }
 
 show_logs_and_cleanup() {
@@ -57,6 +58,8 @@ trap show_logs_and_cleanup EXIT
 
 start_publisher() {
   duration="${1:-18}"
+  width="${2:-1280}"
+  height="${3:-720}"
   if [[ -z "$ingest_username" || -z "$ingest_secret" ]]; then
     echo "ingest credential is not initialized" >&2
     return 1
@@ -65,7 +68,7 @@ start_publisher() {
     timeout --signal=INT ${duration}s gst-launch-1.0 -q -e \
       flvmux name=mux streamable=true ! rtmp2sink location='rtmp://mediamtx:1935/live/input?user=${ingest_username}&pass=${ingest_secret}' \
       videotestsrc is-live=true pattern=smpte ! \
-        video/x-raw,width=1280,height=720,framerate=30/1,format=I420 ! \
+        video/x-raw,width=${width},height=${height},framerate=30/1,format=I420 ! \
         x264enc tune=zerolatency speed-preset=veryfast bitrate=1200 key-int-max=60 bframes=0 ! \
         video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
       audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample ! \
@@ -85,6 +88,50 @@ wait_http() {
     fi
     sleep 1
   done
+}
+
+wait_node_registered() {
+  local timeout="${1:-30}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node Agent がControl Planeへ登録されませんでした" >&2
+  return 1
+}
+
+wait_node_ingest_status() {
+  local expected="$1"
+  local timeout="${2:-20}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any((n.get("ingest") or {}).get("status") == expected for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node ingest status が $expected になりませんでした" >&2
+  return 1
+}
+
+wait_node_event() {
+  local expected="$1"
+  local timeout="${2:-20}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any(any(e.get("type") == expected for e in n.get("events",[])) for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node event $expected が記録されませんでした" >&2
+  return 1
 }
 
 control_mode() {
@@ -139,8 +186,6 @@ setup_control_plane_and_ingest() {
   ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
   ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
-  # The auth endpoint must reject a wrong secret without revealing whether the
-  # Session ID itself was valid.
   auth_status="$(curl -sS -o /tmp/irlight-auth-reject.json -w '%{http_code}' --max-time 5 \
     -X POST "$base_url/internal/ingest/auth" \
     -H 'Content-Type: application/json' \
@@ -150,8 +195,6 @@ setup_control_plane_and_ingest() {
     return 1
   fi
 
-  # Keep the existing real-SRT destination probe, but authenticate its short
-  # publisher connection against the same MediaMTX ingest boundary.
   srt_url="srt://mediamtx:8890?streamid=publish:live/input:${ingest_username}:${ingest_secret}"
   srt_payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Local SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' "$srt_url")"
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
@@ -181,18 +224,33 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
+wait_node_registered 45
 
 current_stage="authenticated-ingest-setup"
 setup_control_plane_and_ingest
 
+current_stage="reject-unsupported-resolution"
+start_publisher 15 640 360
+wait_node_event "ingest.rejected" 15
+if [[ -n "$publisher_pid" ]]; then
+  kill "$publisher_pid" 2>/dev/null || true
+  wait "$publisher_pid" 2>/dev/null || true
+  publisher_pid=""
+fi
+wait_status \
+  --timeout 15 \
+  --session-status HOLDING \
+  --video-source STANDBY
+
 current_stage="first-live"
-start_publisher 20
+start_publisher 20 1280 720
 wait_status \
   --timeout 45 \
   --session-status LIVE \
   --video-source LIVE \
   --audio-desired LIVE \
   --audio-actual LIVE
+wait_node_ingest_status "ACCEPTED" 12
 
 current_stage="mute"
 control_mode MUTED
