@@ -58,18 +58,23 @@ credential secret、password、tokenはevent payloadへ保存しません。
 
 ## Session lifecycle
 
-Node heartbeatとSession event更新はSessionStoreの同一lock内で原子的に行います。
+Node heartbeatとSession event更新はSessionStoreの同一lock内で原子的に行います。Node-levelの `ingest.*` eventを残した上で、実際にSession stateが変化した場合だけ `session.*` lifecycle eventを追加します。
 
-- `ACCEPTED / WARNING / DEGRADED` の入力がonlineになった場合
-  - `READY_WAIT_INGEST -> LIVE`
-  - `HOLDING -> LIVE`
-  - 初回のみ `first_ingest_at` を設定
-  - `last_ingest_at` を更新
-- LIVE中にinputがofflineになった場合
-  - `LIVE -> HOLDING`
-  - `last_ingest_at` を更新
+- `ACCEPTED / WARNING` + online
+  - `READY_WAIT_INGEST -> LIVE` (`session.live`)
+  - `DEGRADED -> LIVE` (`session.recovered`)
+  - `HOLDING -> LIVE` (`session.recovered`)
+- `DEGRADED` + online
+  - `READY_WAIT_INGEST -> DEGRADED` (`session.degraded`)
+  - `LIVE -> DEGRADED` (`session.degraded`)
+  - `HOLDING -> DEGRADED` (`session.recovered`)
+- input offline
+  - `LIVE -> HOLDING` (`session.holding`)
+  - `DEGRADED -> HOLDING` (`session.holding`)
 
-`PENDING` の段階では接続eventは記録しますが、format/policy判定が完了するまでSessionをLIVEへ遷移させません。`REJECTED` はLIVE遷移対象外です。
+最初のusable inputがhealthyでもdegradedでも `first_ingest_at` を設定します。onlineへ復帰した場合は `hold_deadline_at` をclearします。`PENDING` は接続eventを記録してもSessionをLIVE/DEGRADEDへ昇格させず、`REJECTED` も昇格対象外です。
+
+Lifecycle event payloadには安全なingest observationに加えて `from_state / to_state` を入れます。`session.degraded` では先頭のquality reasonをreason codeに使い、切断による `session.holding` は `INGEST_DISCONNECTED` を使います。詳細は `docs/session-degraded-lifecycle.md` を参照してください。
 
 Sessionが既にSTOPPING / FINISHED / FAILED等へ移行している場合、Node heartbeatによるSession lifecycle更新は行いません。Node heartbeat自体は継続させ、cleanupと競合してAgent restart loopを起こさないようにします。
 
@@ -93,9 +98,16 @@ unknown Session IDへの総当たりはSession eventを生成せず、PR #36のb
 
 - provider server IDから既存ユーザーSessionへbootstrapをbind
 - strict modeで未割当provider serverを拒否し、失敗時はone-time tokenを消費しない
-- ACCEPTED inputでLIVE + connected/format event
-- disconnectでHOLDING + disconnected event
-- reconnect + DEGRADEDでreconnected/format/degraded event
+- `READY_WAIT_INGEST -> LIVE -> DEGRADED -> LIVE -> HOLDING -> DEGRADED` の正式遷移
+- `ingest.*` と `session.*` eventの順序・reason・transition payload
+- 初回からDEGRADEDで開始できること
+
+`tests/test_session_degraded_lifecycle.py`:
+
+- DEGRADEDがactive stateであること
+- READY/LIVE/HOLDINGとの許可transition
+- DEGRADED中のuser stopがFINISHEDまで完了すること
+- stop後のlate reconnectがSessionを復活させないこと
 
 `scripts/smoke-session-ingest-events.sh`:
 
