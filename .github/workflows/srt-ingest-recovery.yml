@@ -10,17 +10,21 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/smoke-srt-ingest-recovery.sh"
       - ".github/workflows/srt-ingest-recovery.yml"
+  schedule:
+    - cron: "47 18 * * *"
   workflow_dispatch:
     inputs:
       disconnect_seconds:
         description: "Seconds to keep the SRT publisher disconnected"
         required: true
-        default: "10"
+        default: "30"
         type: choice
         options:
           - "5"
           - "10"
           - "30"
+          - "120"
+          - "600"
 
 permissions:
   contents: read
@@ -28,9 +32,9 @@ permissions:
 jobs:
   srt-ingest-recovery:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
-      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.disconnect_seconds || '10' }}
+      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install SRT publisher dependency
