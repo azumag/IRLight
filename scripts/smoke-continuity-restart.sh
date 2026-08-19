@@ -43,6 +43,21 @@ wait_http() {
   done
 }
 
+wait_node_registered() {
+  local timeout="${1:-45}"
+  local deadline=$((SECONDS + timeout))
+  local payload=""
+  while (( SECONDS < deadline )); do
+    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node Agent did not register before restart smoke" >&2
+  return 1
+}
+
 wait_runtime() {
   local expected_status="$1"
   local expected_video="$2"
@@ -53,7 +68,7 @@ wait_runtime() {
   local payload=""
   while (( SECONDS < deadline )); do
     payload="$(curl -fsS --max-time 3 "$base_url/api/status" 2>/dev/null || true)"
-    if python3 - "$expected_status" "$expected_video" "$expected_desired" "$expected_actual" <<'PY' <<<"$payload" 2>/dev/null; then
+    if python3 -c '
 import json, sys
 value = json.load(sys.stdin)
 runtime = value.get("runtime") or {}
@@ -66,7 +81,7 @@ ok = (
     and runtime.get("actual_audio_mode") == expected[3]
 )
 raise SystemExit(0 if ok else 1)
-PY
+' "$expected_status" "$expected_video" "$expected_desired" "$expected_actual" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 0.5
@@ -94,7 +109,7 @@ wait_new_continuity_process() {
   local payload=""
   while (( SECONDS < deadline )); do
     payload="$(curl -fsS --max-time 3 "$base_url/api/status" 2>/dev/null || true)"
-    if python3 - "$previous_started_at" <<'PY' <<<"$payload" 2>/dev/null; then
+    if python3 -c '
 import json, sys
 value = json.load(sys.stdin)
 runtime = value.get("runtime") or {}
@@ -107,7 +122,7 @@ ok = (
     and control.get("audio_mode") == "MUTED"
 )
 raise SystemExit(0 if ok else 1)
-PY
+' "$previous_started_at" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 0.25
@@ -179,6 +194,7 @@ EOF
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" up -d --build
 wait_http "$base_url/api/status" 60
+wait_node_registered 45
 register_ingest
 
 "${test_compose[@]}" up -d --build restart-publisher
