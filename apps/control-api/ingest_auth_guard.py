@@ -201,19 +201,22 @@ class IngestAuthGuard:
             locked_until = float(bucket.get("locked_until", 0.0) or 0.0)
         except (TypeError, ValueError):
             locked_until = 0.0
-        if locked_until <= now:
+        lock_expired = locked_until > 0.0 and locked_until <= now
+        if lock_expired:
             locked_until = 0.0
+
         cutoff = now - self.config.failure_window_seconds
         failures: list[float] = []
-        raw_failures = bucket.get("failures", [])
-        if isinstance(raw_failures, list):
-            for value in raw_failures:
-                try:
-                    timestamp = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if cutoff <= timestamp <= now + 1.0:
-                    failures.append(timestamp)
+        if not lock_expired:
+            raw_failures = bucket.get("failures", [])
+            if isinstance(raw_failures, list):
+                for value in raw_failures:
+                    try:
+                        timestamp = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if cutoff <= timestamp <= now + 1.0:
+                        failures.append(timestamp)
         bucket["failures"] = failures
         bucket["locked_until"] = locked_until
 
