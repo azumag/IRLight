@@ -16,7 +16,7 @@ from ingest_auth_guard import default_ingest_auth_guard
 from ingest_store import default_ingest_store
 
 
-ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "HOLDING"}
+ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "DEGRADED", "HOLDING"}
 INGEST_PATH = "live/input"
 DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
 
