@@ -1,8 +1,8 @@
 """Internal APIs used by Node Agents (bootstrap / heartbeat / stop).
 
-These endpoints are intentionally separate from the user-facing Phase 0 API.
-They are only reachable from inside the trusted network in the production
-compose file; they must never be exposed to the public internet.
+These endpoints are intentionally separate from the user-facing API. They are
+only reachable from inside the trusted network in the production compose file;
+they must never be exposed to the public internet.
 """
 
 from __future__ import annotations
@@ -34,7 +34,9 @@ class BootstrapRequest(BaseModel):
 
 
 class IngestObservationRequest(BaseModel):
-    status: str = Field(pattern="^(OFFLINE|UNKNOWN|PENDING|ACCEPTED|WARNING|REJECTED)$")
+    status: str = Field(
+        pattern="^(OFFLINE|UNKNOWN|PENDING|ACCEPTED|WARNING|DEGRADED|REJECTED)$"
+    )
     path: str = Field(min_length=1, max_length=200)
     online: bool = False
     source_type: str | None = Field(default=None, max_length=50)
@@ -44,13 +46,16 @@ class IngestObservationRequest(BaseModel):
     tracks: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     reasons: list[str] = Field(default_factory=list, max_length=16)
     warnings: list[str] = Field(default_factory=list, max_length=16)
+    quality: dict[str, Any] | None = None
     enforced: bool = False
     enforcement_error: str | None = Field(default=None, max_length=200)
     observed_at: float
 
 
 class HeartbeatRequest(BaseModel):
-    status: str = Field(default="READY", pattern="^(BOOTSTRAPPING|READY|STOPPING|STOPPED|FAILED)$")
+    status: str = Field(
+        default="READY", pattern="^(BOOTSTRAPPING|READY|STOPPING|STOPPED|FAILED)$"
+    )
     media_health: str = Field(default="unknown", max_length=200)
     active_publisher: bool = False
     egress_connected: bool = False
@@ -118,7 +123,7 @@ def _issue_node_id(state: dict[str, Any]) -> str:
     return node_id
 
 
-def _append_ingest_event(node: dict[str, Any], previous: object, current: dict[str, Any]) -> None:
+def _ingest_event_types(previous: object, current: dict[str, Any]) -> list[str]:
     previous = previous if isinstance(previous, dict) else {}
     previous_status = previous.get("status")
     previous_source = previous.get("source_id")
@@ -127,35 +132,55 @@ def _append_ingest_event(node: dict[str, Any], previous: object, current: dict[s
     previous_online = bool(previous.get("online", False))
     current_online = bool(current.get("online", False))
 
-    event_type: str | None = None
-    if current_status == "REJECTED" and previous_status != "REJECTED":
-        event_type = "ingest.rejected"
-    elif previous_online and not current_online:
-        event_type = "ingest.disconnected"
-    elif current_online and (not previous_online or previous_source != current_source):
-        event_type = "ingest.format_detected"
-    elif current_status != previous_status:
-        event_type = "ingest.policy_changed"
-    if event_type is None:
-        return
+    events: list[str] = []
+    if previous_online and not current_online:
+        events.append("ingest.disconnected")
+        return events
 
+    if current_online and (not previous_online or previous_source != current_source):
+        events.append("ingest.format_detected")
+
+    if current_status == "REJECTED" and previous_status != "REJECTED":
+        events.append("ingest.rejected")
+    elif current_status == "DEGRADED" and previous_status != "DEGRADED":
+        events.append("ingest.degraded")
+    elif (
+        previous_status == "DEGRADED"
+        and current_online
+        and current_status in {"PENDING", "ACCEPTED", "WARNING"}
+    ):
+        events.append("ingest.recovered")
+    elif current_status != previous_status and not events:
+        events.append("ingest.policy_changed")
+
+    return events
+
+
+def _append_ingest_events(
+    node: dict[str, Any], previous: object, current: dict[str, Any]
+) -> None:
+    event_types = _ingest_event_types(previous, current)
+    if not event_types:
+        return
     events = list(node.get("events", []))
-    events.append(
-        {
-            "sequence": len(events) + 1,
-            "type": event_type,
-            "occurred_at": time.time(),
-            "payload": {
-                "status": current_status,
-                "source_type": current.get("source_type"),
-                "bitrate_bps": current.get("bitrate_bps"),
-                "tracks": current.get("tracks", []),
-                "reasons": current.get("reasons", []),
-                "warnings": current.get("warnings", []),
-                "enforced": current.get("enforced", False),
-            },
-        }
-    )
+    for event_type in event_types:
+        events.append(
+            {
+                "sequence": len(events) + 1,
+                "type": event_type,
+                "occurred_at": time.time(),
+                "payload": {
+                    "status": current.get("status"),
+                    "source_type": current.get("source_type"),
+                    "bitrate_bps": current.get("bitrate_bps"),
+                    "tracks": current.get("tracks", []),
+                    "quality": current.get("quality"),
+                    "reasons": current.get("reasons", []),
+                    "warnings": current.get("warnings", []),
+                    "enforced": current.get("enforced", False),
+                },
+            }
+        )
     node["events"] = events[-100:]
 
 
@@ -183,7 +208,9 @@ def bootstrap(
     nodes = read_json(NODES_PATH, _default_nodes())
     node_id = _issue_node_id(nodes)
     session_id = str(uuid.uuid4())
-    absolute_deadline = time.time() + float(os.getenv("NODE_ABSOLUTE_DEADLINE_HOURS", "12")) * 3600
+    absolute_deadline = time.time() + float(
+        os.getenv("NODE_ABSOLUTE_DEADLINE_HOURS", "12")
+    ) * 3600
     node = {
         "node_id": node_id,
         "session_id": session_id,
@@ -210,8 +237,6 @@ def bootstrap(
     }
     atomic_write_json(TOKENS_PATH, tokens)
 
-    # The egress secret is delivered once, in this response only. The Node
-    # Agent writes it to a tmpfs file and never to process arguments.
     return {
         "node_id": node_id,
         "session_id": session_id,
@@ -248,7 +273,7 @@ def heartbeat(
     if request.ingest is not None:
         previous = node.get("ingest")
         current = request.ingest.model_dump()
-        _append_ingest_event(node, previous, current)
+        _append_ingest_events(node, previous, current)
         node["ingest"] = current
     atomic_write_json(NODES_PATH, nodes)
 
