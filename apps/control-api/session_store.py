@@ -452,8 +452,8 @@ class SessionStore:
                     session["last_ingest_at"] = current
 
                 lifecycle_payload = dict(payload)
-                lifecycle_payload["from_status"] = state
-                lifecycle_payload["to_status"] = target_state
+                lifecycle_payload["from_state"] = state
+                lifecycle_payload["to_state"] = target_state
                 assert lifecycle_event is not None
                 self._append_event_locked(
                     session,
