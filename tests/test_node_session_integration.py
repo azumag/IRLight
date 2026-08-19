@@ -25,7 +25,9 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.node_state = self.root / "nodes"
         self.session_state = self.root / "sessions"
-        self.store = SessionStore(self.session_state)
+        # This baseline integration test predates the recovery timing gate and
+        # focuses on event/state mapping. Dedicated tests cover stable recovery.
+        self.store = SessionStore(self.session_state, recovery_stable_seconds=0.0)
         self.nodes_path = self.node_state / "nodes.json"
         self.tokens_path = self.node_state / "bootstrap_tokens.json"
         self.token = "session-integration-token"
