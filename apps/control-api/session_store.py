@@ -15,6 +15,7 @@ new work; cleanup must finish before FINISHED.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -50,6 +51,8 @@ ACTIVE_STATES = {
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
 SESSION_EVENT_LIMIT = 1000
+DEFAULT_RECOVERY_STABLE_SECONDS = 3.0
+MAX_RECOVERY_STABLE_SECONDS = 30.0
 
 TRANSITIONS: dict[str, set[str]] = {
     "STOPPED": {"PROVISIONING"},
@@ -106,6 +109,9 @@ def new_session(
         "first_ingest_at": None,
         "last_ingest_at": None,
         "hold_deadline_at": None,
+        "recovery_candidate_started_at": None,
+        "recovery_candidate_source_id": None,
+        "recovery_candidate_target": None,
         "absolute_deadline_at": (
             now + absolute_deadline_hours * 3600 if absolute_deadline_hours else None
         ),
@@ -180,6 +186,26 @@ class SessionStore:
             except (TypeError, ValueError):
                 continue
         return maximum + 1
+
+    @staticmethod
+    def _recovery_stable_seconds() -> float:
+        raw = os.getenv(
+            "SESSION_RECOVERY_STABLE_SECONDS",
+            str(DEFAULT_RECOVERY_STABLE_SECONDS),
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_RECOVERY_STABLE_SECONDS
+        if not math.isfinite(value):
+            return DEFAULT_RECOVERY_STABLE_SECONDS
+        return min(MAX_RECOVERY_STABLE_SECONDS, max(0.0, value))
+
+    @staticmethod
+    def _clear_recovery_candidate(session: dict[str, Any]) -> None:
+        session["recovery_candidate_started_at"] = None
+        session["recovery_candidate_source_id"] = None
+        session["recovery_candidate_target"] = None
 
     def _append_event_locked(
         self,
@@ -416,21 +442,56 @@ class SessionStore:
             target_state: str | None = None
             lifecycle_event: str | None = None
             lifecycle_reason: str | None = None
+            recovery_started_at: float | None = None
 
-            if online and ingest_status == "DEGRADED" and state in {
+            if state == "HOLDING":
+                recovery_target: str | None = None
+                if online and ingest_status == "DEGRADED":
+                    recovery_target = "DEGRADED"
+                elif online and ingest_status in {"ACCEPTED", "WARNING"}:
+                    recovery_target = "LIVE"
+
+                if recovery_target is None:
+                    self._clear_recovery_candidate(session)
+                else:
+                    source_id = str(observation.get("source_id") or "")
+                    try:
+                        candidate_started_at = float(
+                            session.get("recovery_candidate_started_at")
+                        )
+                    except (TypeError, ValueError):
+                        candidate_started_at = current
+                    same_candidate = (
+                        session.get("recovery_candidate_started_at") is not None
+                        and str(session.get("recovery_candidate_source_id") or "") == source_id
+                        and session.get("recovery_candidate_target") == recovery_target
+                        and candidate_started_at <= current
+                    )
+                    if not same_candidate:
+                        candidate_started_at = current
+                        session["recovery_candidate_started_at"] = current
+                        session["recovery_candidate_source_id"] = source_id
+                        session["recovery_candidate_target"] = recovery_target
+
+                    stable_seconds = self._recovery_stable_seconds()
+                    if current - candidate_started_at >= stable_seconds:
+                        target_state = recovery_target
+                        lifecycle_event = "session.recovered"
+                        lifecycle_reason = (
+                            degraded_reason if recovery_target == "DEGRADED" else None
+                        )
+                        recovery_started_at = candidate_started_at
+                        self._clear_recovery_candidate(session)
+            elif online and ingest_status == "DEGRADED" and state in {
                 "READY_WAIT_INGEST",
                 "LIVE",
-                "HOLDING",
             }:
                 target_state = "DEGRADED"
-                lifecycle_event = (
-                    "session.recovered" if state == "HOLDING" else "session.degraded"
-                )
+                lifecycle_event = "session.degraded"
                 lifecycle_reason = degraded_reason
             elif online and ingest_status in {"ACCEPTED", "WARNING"} and state in {
                 "READY_WAIT_INGEST",
                 "DEGRADED",
-                "HOLDING",
             }:
                 target_state = "LIVE"
                 lifecycle_event = (
@@ -440,6 +501,7 @@ class SessionStore:
                 target_state = "HOLDING"
                 lifecycle_event = "session.holding"
                 lifecycle_reason = "INGEST_DISCONNECTED"
+                self._clear_recovery_candidate(session)
 
             if target_state is not None and target_state != state:
                 session["status"] = target_state
@@ -454,6 +516,11 @@ class SessionStore:
                 lifecycle_payload = dict(payload)
                 lifecycle_payload["from_state"] = state
                 lifecycle_payload["to_state"] = target_state
+                if recovery_started_at is not None:
+                    lifecycle_payload["recovery_candidate_started_at"] = recovery_started_at
+                    lifecycle_payload["recovery_stable_seconds"] = max(
+                        0.0, current - recovery_started_at
+                    )
                 assert lifecycle_event is not None
                 self._append_event_locked(
                     session,
@@ -493,6 +560,8 @@ class SessionStore:
                     raise InvalidTransition(f"{current} -> {new_state} not allowed")
             session.update(changes)
             session["status"] = new_state
+            if new_state != "HOLDING":
+                self._clear_recovery_candidate(session)
             if new_state in {"FINISHED", "FAILED"}:
                 session["entitlement_reserved"] = False
             session["updated_at"] = time.time()
