@@ -24,6 +24,7 @@ class FakeControlPlane:
     def __init__(self) -> None:
         self.desired_state = "RUNNING"
         self.heartbeat_count = 0
+        self.last_heartbeat: dict[str, object] | None = None
         self.egress_url = "rtmp://fake-egress/output/relay"
         self.bootstrap_token = "test-bootstrap-token"
 
@@ -80,6 +81,7 @@ class FakeControlPlane:
 
                 if self.path.endswith("/heartbeat"):
                     control.heartbeat_count += 1
+                    control.last_heartbeat = payload if isinstance(payload, dict) else {}
                     self._send({"desired_state": control.desired_state})
                     return
                 self._send({"error": "not found"}, status=404)
@@ -111,9 +113,13 @@ class NodeAgentTest(unittest.TestCase):
         response = self.agent.bootstrap()
         secret_path = self.agent.write_secret(response)
         self.assertTrue(secret_path.exists())
-        self.assertEqual(secret_path.read_text(encoding="utf-8").strip(), "rtmp://fake-egress/output/relay")
+        self.assertEqual(
+            secret_path.read_text(encoding="utf-8").strip(),
+            "rtmp://fake-egress/output/relay",
+        )
         mode = secret_path.stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
+        self.assertEqual(self.secret_dir.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.agent.node_id, self.control.node_id)
         self.assertIsNotNone(self.agent.session_id)
 
@@ -124,6 +130,38 @@ class NodeAgentTest(unittest.TestCase):
         heartbeat = self.agent.heartbeat()
         self.assertEqual(heartbeat["desired_state"], "RUNNING")
         self.assertEqual(self.control.heartbeat_count, 1)
+
+    def test_heartbeat_reports_safe_egress_status(self) -> None:
+        status_path = self.secret_dir.parent / f"egress-status-{uuid.uuid4().hex}.json"
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": "RECONNECTING",
+                    "connected": False,
+                    "attempt": 3,
+                    "reason_code": "UNREACHABLE",
+                    "rendered_buffers": 0,
+                    "destination_scheme": "rtmps",
+                    "destination_host": "live.example",
+                    "observed_at": 100.0,
+                    "stream_key": "must-not-leak",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.agent.egress_status_file = status_path
+        response = self.agent.bootstrap()
+        self.agent.write_secret(response)
+        self.supervisor.start("session-test")
+        self.agent.heartbeat()
+        payload = self.control.last_heartbeat or {}
+        self.assertFalse(payload.get("egress_connected"))
+        egress = payload.get("egress")
+        self.assertIsInstance(egress, dict)
+        self.assertEqual(egress.get("status"), "RECONNECTING")
+        self.assertEqual(egress.get("reason_code"), "UNREACHABLE")
+        self.assertNotIn("stream_key", egress)
+        self.assertNotIn("must-not-leak", str(payload))
 
     def test_transport_failure_is_wrapped_as_runtime_error(self) -> None:
         unused = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
@@ -138,17 +176,10 @@ class NodeAgentTest(unittest.TestCase):
             )
         self.assertIn("control plane unavailable", str(failure.exception))
 
-    def test_run_starts_media_and_stops_on_signal(self) -> None:
-        response = self.agent.bootstrap()
-        self.agent.write_secret(response)
-        # Run the loop in a thread so we can send SIGTERM after bootstrapping.
-        import signal as signal_module
-
+    def test_run_starts_media_stops_and_removes_secret(self) -> None:
         result: list[int] = []
 
         def run_agent() -> None:
-            # The agent installs signal handlers; simulate via the STOP path by
-            # flipping desired_state to STOPPED from the control plane.
             self.control.desired_state = "STOPPED"
             result.append(self.agent.run())
 
@@ -161,6 +192,7 @@ class NodeAgentTest(unittest.TestCase):
         self.assertIn(session_id, self.supervisor.started_sessions)
         self.assertIn(session_id, self.supervisor.stopped_sessions)
         self.assertFalse(self.supervisor.running)
+        self.assertFalse((self.secret_dir / "egress_url").exists())
 
 
 if __name__ == "__main__":
