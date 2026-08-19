@@ -103,6 +103,7 @@ class EgressAttempt:
         self.rendered_buffers = 0
         self.result = AttemptResult("EGRESS_PIPELINE_FAILED", False, 0)
         self._requested_mux_pads: list[Gst.Pad] = []
+        self._track_sinks: dict[str, Gst.Pad] = {}
         self._poll_source_id: int | None = None
         self._attempt_started = time.monotonic()
         self._last_progress_at = self._attempt_started
@@ -139,44 +140,25 @@ class EgressAttempt:
         pipeline.add(sink)
         if not mux.link(sink):
             raise RuntimeError("failed to link FLV muxer to RTMP sink")
-        source.connect("pad-added", self._on_source_pad)
 
         self.pipeline = pipeline
         self.sink = sink
         self.mux = mux
 
-    def _on_source_pad(self, _source: Gst.Element, pad: Gst.Pad) -> None:
-        caps = pad.get_current_caps() or pad.query_caps(None)
-        structure = caps.get_structure(0) if caps and caps.get_size() else None
-        if structure is None:
-            return
-        media = (structure.get_string("media") or "").lower()
-        encoding = (structure.get_string("encoding-name") or "").upper()
-        try:
-            if media == "video" and encoding == "H264":
-                self._attach_track(pad, "video")
-            elif media == "audio" and encoding == "MPEG4-GENERIC":
-                self._attach_track(pad, "audio")
-        except Exception:
-            # Do not render exception text: a downstream plugin error can embed
-            # the credentialed destination URL.
-            LOG.error("failed to attach an internal RTSP track to egress")
-            self.result = AttemptResult(
-                "LOCAL_PIPELINE_FAILED",
-                self.connected_once,
-                self.rendered_buffers,
-                terminal=True,
-            )
-            self.loop.quit()
+        # Request and link both FLV tracks before PLAYING. flvmux is a
+        # GstAggregator; pre-creating both sink pads prevents it from emitting
+        # an audio-only or video-only FLV header while rtspsrc is still
+        # discovering the second dynamic pad.
+        self._prepare_track("video")
+        self._prepare_track("audio")
+        source.connect("pad-added", self._on_source_pad)
 
-    def _attach_track(self, source_pad: Gst.Pad, kind: str) -> None:
+    def _prepare_track(self, kind: str) -> None:
         pipeline = self.pipeline
         mux = self.mux
         if pipeline is None or mux is None:
-            return
-        existing = mux.get_static_pad(kind)
-        if existing is not None and existing.is_linked():
-            return
+            raise RuntimeError("egress pipeline is not initialized")
+
         mux_pad = mux.request_pad_simple(kind)
         if mux_pad is None:
             raise RuntimeError(f"cannot request flvmux {kind} pad")
@@ -217,10 +199,40 @@ class EgressAttempt:
         if queue_src is None or queue_src.link(mux_pad) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"failed to link {kind} to flvmux")
         depay_sink = depay.get_static_pad("sink")
-        if depay_sink is None or source_pad.link(depay_sink) != Gst.PadLinkReturn.OK:
+        if depay_sink is None:
+            raise RuntimeError(f"failed to get {kind} depay sink pad")
+        self._track_sinks[kind] = depay_sink
+
+    def _on_source_pad(self, _source: Gst.Element, pad: Gst.Pad) -> None:
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        structure = caps.get_structure(0) if caps and caps.get_size() else None
+        if structure is None:
+            return
+        media = (structure.get_string("media") or "").lower()
+        encoding = (structure.get_string("encoding-name") or "").upper()
+        try:
+            if media == "video" and encoding == "H264":
+                self._attach_track(pad, "video")
+            elif media == "audio" and encoding == "MPEG4-GENERIC":
+                self._attach_track(pad, "audio")
+        except Exception:
+            # Do not render exception text: a downstream plugin error can embed
+            # the credentialed destination URL.
+            LOG.error("failed to attach an internal RTSP track to egress")
+            self.result = AttemptResult(
+                "LOCAL_PIPELINE_FAILED",
+                self.connected_once,
+                self.rendered_buffers,
+                terminal=True,
+            )
+            self.loop.quit()
+
+    def _attach_track(self, source_pad: Gst.Pad, kind: str) -> None:
+        depay_sink = self._track_sinks.get(kind)
+        if depay_sink is None or depay_sink.is_linked():
+            return
+        if source_pad.link(depay_sink) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"failed to link RTSP {kind} pad")
-        for element in (depay, parser, capsfilter, queue):
-            element.sync_state_with_parent()
 
     def _poll_sink(self) -> bool:
         if self.stop_event.is_set():
