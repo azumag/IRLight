@@ -35,6 +35,7 @@ def _config(
     window: float = 60.0,
     lockout: float = 30.0,
     event_limit: int = 20,
+    blocked_event_interval: float = 5.0,
 ) -> IngestAuthGuardConfig:
     return IngestAuthGuardConfig(
         enabled=True,
@@ -44,6 +45,7 @@ def _config(
         lockout_seconds=lockout,
         event_limit=event_limit,
         bucket_limit=64,
+        blocked_event_interval_seconds=blocked_event_interval,
     )
 
 
@@ -151,6 +153,66 @@ class IngestAuthGuardTest(unittest.TestCase):
             self.assertEqual(len(credential_buckets[0]["failures"]), 1)
             self.assertEqual(len(ip_buckets), 1)
             self.assertEqual(len(ip_buckets[0]["failures"]), 3)
+
+    def test_blocked_audit_events_are_throttled_during_lockout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = IngestAuthGuard(
+                tmp,
+                config=_config(
+                    max_ip=10,
+                    max_credential=2,
+                    lockout=30.0,
+                    blocked_event_interval=5.0,
+                ),
+            )
+            for now in (100.0, 101.0):
+                guard.record_failure(
+                    source_ip="203.0.113.15",
+                    username="candidate-user",
+                    protocol="rtmp",
+                    now=now,
+                )
+
+            self.assertTrue(
+                guard.record_blocked(
+                    source_ip="203.0.113.15",
+                    username="candidate-user",
+                    protocol="rtmp",
+                    now=102.0,
+                ).blocked
+            )
+            guard.record_blocked(
+                source_ip="203.0.113.15",
+                username="candidate-user",
+                protocol="rtmp",
+                now=103.0,
+            )
+            guard.record_blocked(
+                source_ip="203.0.113.15",
+                username="candidate-user",
+                protocol="rtmp",
+                now=106.9,
+            )
+            first_snapshot = guard.snapshot()
+            first_blocked = [
+                event
+                for event in first_snapshot["events"]
+                if event.get("type") == "ingest.auth_blocked"
+            ]
+            self.assertEqual(len(first_blocked), 1)
+
+            guard.record_blocked(
+                source_ip="203.0.113.15",
+                username="candidate-user",
+                protocol="rtmp",
+                now=107.0,
+            )
+            second_blocked = [
+                event
+                for event in guard.snapshot()["events"]
+                if event.get("type") == "ingest.auth_blocked"
+            ]
+            self.assertEqual(len(second_blocked), 2)
 
     def test_persisted_audit_is_bounded_and_does_not_store_attacker_username(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
