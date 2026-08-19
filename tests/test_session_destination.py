@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 
 
@@ -13,6 +15,11 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import node_internal  # noqa: E402
 import session_api  # noqa: E402
+from destination_secret_store import (  # noqa: E402
+    DestinationSecretError,
+    DestinationSecretNotFound,
+    DestinationSecretStore,
+)
 
 
 class _SecretStore:
@@ -24,7 +31,14 @@ class _SecretStore:
         return self.is_configured
 
     def resolve(self, *, user_id: str, secret_ref: str) -> str:
+        if not self.is_configured:
+            raise DestinationSecretNotFound(secret_ref)
         return self.value
+
+
+class _EmptySessionStore:
+    def get(self, session_id: str) -> None:
+        return None
 
 
 DESTINATION = {
@@ -64,6 +78,53 @@ class PrepareDestinationTest(unittest.TestCase):
                     session_api._validated_destination("dest-1", "user-1")
                 self.assertEqual(failure.exception.status_code, 409)
                 self.assertIn(detail, str(failure.exception.detail))
+
+    def test_wrong_master_key_fails_before_provider_is_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = DestinationSecretStore(tmp, master_key=Fernet.generate_key())
+            first.put(
+                user_id="user-1",
+                secret_ref="dest/primary",
+                value="stream-key",
+            )
+            wrong_key_store = DestinationSecretStore(
+                tmp,
+                master_key=Fernet.generate_key(),
+            )
+            with patch("session_api.default_store", return_value=_EmptySessionStore()), patch(
+                "session_api.store_get_destination", return_value=dict(DESTINATION)
+            ), patch(
+                "session_api.default_destination_secret_store",
+                return_value=wrong_key_store,
+            ), patch("session_api.default_provider") as provider_factory:
+                with self.assertRaises(HTTPException) as failure:
+                    session_api.prepare_session(
+                        "session-wrong-key",
+                        session_api.PrepareRequest(
+                            environment="prod",
+                            destination_id="dest-1",
+                        ),
+                        {"id": "user-1"},
+                        idempotency_key="wrong-key-preflight",
+                        _csrf=None,
+                    )
+            self.assertEqual(failure.exception.status_code, 503)
+            self.assertIn("secret is unavailable", str(failure.exception.detail))
+            provider_factory.assert_not_called()
+
+    def test_explicit_secret_error_is_rejected_by_validation(self) -> None:
+        class _BrokenSecretStore(_SecretStore):
+            def resolve(self, *, user_id: str, secret_ref: str) -> str:
+                raise DestinationSecretError("broken ciphertext")
+
+        with patch("session_api.store_get_destination", return_value=dict(DESTINATION)), patch(
+            "session_api.default_destination_secret_store",
+            return_value=_BrokenSecretStore(),
+        ):
+            with self.assertRaises(HTTPException) as failure:
+                session_api._validated_destination("dest-1", "user-1")
+        self.assertEqual(failure.exception.status_code, 503)
+        self.assertEqual(failure.exception.detail, "destination secret is unavailable")
 
     def test_conoha_requires_destination_by_default(self) -> None:
         with patch("session_api.provider_mode", return_value="conoha"):
