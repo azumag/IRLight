@@ -99,6 +99,9 @@ def new_session(
         "provider_volume_id": None,
         "provider_server_id": None,
         "provider_public_ipv4": None,
+        "node_id": None,
+        "node_boot_id": None,
+        "node_registered_at": None,
         "provisioning_started_at": None,
         "ready_at": None,
         "first_ingest_at": None,
@@ -252,6 +255,20 @@ class SessionStore:
         with self.lock:
             return [dict(value) for value in self._sessions.values()]
 
+    def find_by_provider_server_id(
+        self,
+        provider_server_id: str,
+        *,
+        states: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.lock:
+            return [
+                dict(session)
+                for session in self._sessions.values()
+                if session.get("provider_server_id") == provider_server_id
+                and (states is None or session.get("status") in states)
+            ]
+
     def update(self, session_id: str, **changes: Any) -> dict[str, Any]:
         with self.lock:
             session = self._sessions.get(session_id)
@@ -259,6 +276,106 @@ class SessionStore:
                 raise KeyError(session_id)
             session.update(changes)
             session["updated_at"] = time.time()
+            self._persist()
+            return dict(session)
+
+    def bind_node(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        boot_id: str,
+        provider_server_id: str,
+        registered_at: float | None = None,
+    ) -> dict[str, Any]:
+        current = time.time() if registered_at is None else registered_at
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("provider_server_id") != provider_server_id:
+                raise RuntimeError("node provider server does not match session")
+            if session.get("status") not in ACTIVE_STATES:
+                raise RuntimeError(f"session {session_id} is not active")
+            session["node_id"] = node_id
+            session["node_boot_id"] = boot_id
+            session["node_registered_at"] = current
+            session["updated_at"] = current
+            self._persist()
+            return dict(session)
+
+    def apply_ingest_observation(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        event_types: list[str],
+        observation: dict[str, Any],
+        occurred_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically append Node ingest events and update Session lifecycle."""
+        current = time.time() if occurred_at is None else occurred_at
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("node_id") not in {None, node_id}:
+                raise RuntimeError("node is not assigned to session")
+            if session.get("status") not in ACTIVE_STATES:
+                return dict(session)
+
+            payload = {
+                "node_id": node_id,
+                "status": observation.get("status"),
+                "path": observation.get("path"),
+                "online": bool(observation.get("online", False)),
+                "source_type": observation.get("source_type"),
+                "source_id": observation.get("source_id"),
+                "bitrate_bps": observation.get("bitrate_bps"),
+                "max_bitrate_bps": observation.get("max_bitrate_bps"),
+                "tracks": observation.get("tracks", []),
+                "quality": observation.get("quality"),
+                "reasons": observation.get("reasons", []),
+                "warnings": observation.get("warnings", []),
+                "enforced": observation.get("enforced", False),
+                "observed_at": observation.get("observed_at"),
+            }
+            events = list(session.get("events", []))
+            for event_type in event_types:
+                reasons = payload.get("reasons") or []
+                reason_code = (
+                    str(reasons[0])[:100]
+                    if event_type in {"ingest.rejected", "ingest.degraded"} and reasons
+                    else None
+                )
+                events.append(
+                    {
+                        "sequence": len(events) + 1,
+                        "type": event_type,
+                        "reason_code": reason_code,
+                        "payload": dict(payload),
+                        "occurred_at": current,
+                        "origin": "node-agent",
+                    }
+                )
+            session["events"] = events
+
+            online = bool(observation.get("online", False))
+            ingest_status = str(observation.get("status", ""))
+            state = str(session.get("status", ""))
+            usable_online = online and ingest_status not in {"REJECTED", "OFFLINE", "UNKNOWN"}
+            if usable_online and state in {"READY_WAIT_INGEST", "HOLDING"}:
+                session["status"] = "LIVE"
+                if session.get("first_ingest_at") is None:
+                    session["first_ingest_at"] = current
+                session["last_ingest_at"] = current
+                session["hold_deadline_at"] = None
+            elif not online and state == "LIVE":
+                session["status"] = "HOLDING"
+                session["last_ingest_at"] = current
+
+            session["node_id"] = node_id
+            session["updated_at"] = current
             self._persist()
             return dict(session)
 
