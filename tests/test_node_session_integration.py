@@ -167,8 +167,8 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             [event["type"] for event in session["events"]],
             ["ingest.connected", "ingest.format_detected", "session.live"],
         )
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "READY_WAIT_INGEST")
-        self.assertEqual(session["events"][-1]["payload"]["to_status"], "LIVE")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "READY_WAIT_INGEST")
+        self.assertEqual(session["events"][-1]["payload"]["to_state"], "LIVE")
         for event in session["events"]:
             self.assertEqual(event["origin"], "node-agent")
             self.assertEqual(event["payload"]["node_id"], node_id)
@@ -197,8 +197,8 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             ["ingest.degraded", "session.degraded"],
         )
         self.assertEqual(session["events"][-1]["reason_code"], "FPS_OUT_OF_RANGE")
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "LIVE")
-        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "LIVE")
+        self.assertEqual(session["events"][-1]["payload"]["to_state"], "DEGRADED")
 
         node_internal.heartbeat(
             node_id,
@@ -217,8 +217,8 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             [event["type"] for event in session["events"][-2:]],
             ["ingest.recovered", "session.recovered"],
         )
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "DEGRADED")
-        self.assertEqual(session["events"][-1]["payload"]["to_status"], "LIVE")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["to_state"], "LIVE")
 
         node_internal.heartbeat(
             node_id,
@@ -268,8 +268,8 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             ],
         )
         self.assertEqual(session["events"][-1]["reason_code"], "FPS_OUT_OF_RANGE")
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "HOLDING")
-        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "HOLDING")
+        self.assertEqual(session["events"][-1]["payload"]["to_state"], "DEGRADED")
         self.assertIsNone(session["hold_deadline_at"])
 
         node_internal.heartbeat(
@@ -286,7 +286,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         assert session is not None
         self.assertEqual(session["status"], "HOLDING")
         self.assertEqual(session["events"][-1]["type"], "session.holding")
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "DEGRADED")
 
     def test_first_usable_ingest_can_start_degraded(self) -> None:
         session_id = self._prepared_session()
@@ -314,8 +314,8 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(session["first_ingest_at"])
         self.assertEqual(session["events"][-1]["type"], "session.degraded")
         self.assertEqual(session["events"][-1]["reason_code"], "BITRATE_TOO_LOW")
-        self.assertEqual(session["events"][-1]["payload"]["from_status"], "READY_WAIT_INGEST")
-        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["from_state"], "READY_WAIT_INGEST")
+        self.assertEqual(session["events"][-1]["payload"]["to_state"], "DEGRADED")
 
 
 if __name__ == "__main__":
