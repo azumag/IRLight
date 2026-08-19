@@ -23,6 +23,10 @@ from catalog_store import (
     update_destination as store_update_destination,
     verify_destination as store_verify_destination,
 )
+from destination_secret_store import (
+    DestinationSecretConfigurationError,
+    default_destination_secret_store,
+)
 
 
 class DestinationCreate(BaseModel):
@@ -36,6 +40,11 @@ class DestinationUpdate(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=128)
     server_url: str | None = Field(default=None, min_length=1, max_length=500)
     secret_ref: str | None = Field(default=None, min_length=1, max_length=200)
+    enabled: bool | None = None
+
+
+class DestinationSecretUpdate(BaseModel):
+    value: str = Field(min_length=1, max_length=1000)
 
 
 class AssetCreate(BaseModel):
@@ -50,6 +59,10 @@ Csrf = Annotated[None, Depends(require_csrf)]
 
 def _not_found(exc: CatalogNotFound) -> HTTPException:
     return HTTPException(status_code=404, detail="unknown item")
+
+
+def _secret_store_unavailable(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail="destination secret store is not configured")
 
 
 @router.post("/destinations")
@@ -95,9 +108,53 @@ def update_destination(
             display_name=request.display_name,
             server_url=request.server_url,
             secret_ref=request.secret_ref,
+            enabled=request.enabled,
         )
     except CatalogNotFound as exc:
         raise _not_found(exc) from exc
+
+
+@router.put("/destinations/{destination_id}/secret")
+def put_destination_secret(
+    destination_id: str,
+    request: DestinationSecretUpdate,
+    current_user: CurrentUser,
+    _csrf: Csrf = None,
+) -> dict[str, Any]:
+    user_id = str(current_user["id"])
+    try:
+        destination = store_get_destination(destination_id, user_id)
+    except CatalogNotFound as exc:
+        raise _not_found(exc) from exc
+    try:
+        return default_destination_secret_store().put(
+            user_id=user_id,
+            secret_ref=str(destination["secret_ref"]),
+            value=request.value,
+        )
+    except DestinationSecretConfigurationError as exc:
+        raise _secret_store_unavailable(exc) from exc
+
+
+@router.delete("/destinations/{destination_id}/secret")
+def delete_destination_secret(
+    destination_id: str,
+    current_user: CurrentUser,
+    _csrf: Csrf = None,
+) -> dict[str, Any]:
+    user_id = str(current_user["id"])
+    try:
+        destination = store_get_destination(destination_id, user_id)
+    except CatalogNotFound as exc:
+        raise _not_found(exc) from exc
+    try:
+        deleted = default_destination_secret_store().delete(
+            user_id=user_id,
+            secret_ref=str(destination["secret_ref"]),
+        )
+    except DestinationSecretConfigurationError as exc:
+        raise _secret_store_unavailable(exc) from exc
+    return {"deleted": deleted, "secret_ref": destination["secret_ref"]}
 
 
 @router.delete("/destinations/{destination_id}")
