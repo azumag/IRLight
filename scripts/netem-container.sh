@@ -16,9 +16,13 @@ Options for apply:
   --rate <rate>                Netem rate, e.g. 4mbit, 800kbit
   --interface <name>           Interface inside the container namespace (default: eth0)
 
+`NETEM_LOSS_CORRELATION` can provide the loss correlation for harnesses that
+already supply `--loss`; an explicit `--loss-correlation` overrides it.
+
 Examples:
   ./scripts/netem-container.sh apply publisher --loss 5
   ./scripts/netem-container.sh apply publisher --loss 10 --loss-correlation 75
+  NETEM_LOSS_CORRELATION=75 ./scripts/netem-container.sh apply publisher --loss 10
   ./scripts/netem-container.sh apply publisher --delay-ms 100 --jitter-ms 20 --rate 4mbit
   ./scripts/netem-container.sh show publisher
   ./scripts/netem-container.sh clear publisher
@@ -100,7 +104,7 @@ case "$ACTION" in
 
   apply)
     LOSS=""
-    LOSS_CORRELATION=""
+    LOSS_CORRELATION="${NETEM_LOSS_CORRELATION:-}"
     DELAY_MS=""
     JITTER_MS=""
     RATE=""
@@ -151,7 +155,7 @@ case "$ACTION" in
       validate_percent "loss" "$LOSS"
     fi
     if [[ -n "$LOSS_CORRELATION" ]]; then
-      [[ -n "$LOSS" ]] || fail "--loss-correlation requires --loss"
+      [[ -n "$LOSS" ]] || fail "--loss-correlation/NETEM_LOSS_CORRELATION requires --loss"
       validate_percent "loss-correlation" "$LOSS_CORRELATION"
     fi
     if [[ -n "$DELAY_MS" ]]; then
