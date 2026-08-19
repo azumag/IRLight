@@ -62,7 +62,7 @@ jobs:
       - name: Compile Python sources
         run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/continuity/secret_files.py apps/egress-gateway/egress.py apps/egress-gateway/egress_policy.py apps/egress-gateway/destination_guard.py apps/control-api/app.py apps/control-api/node_internal.py apps/control-api/auth_store.py apps/control-api/auth_api.py apps/control-api/catalog_api.py apps/control-api/catalog_store.py apps/control-api/destination_probe.py apps/control-api/destination_secret_store.py apps/control-api/egress_destination.py apps/control-api/entitlement_store.py apps/control-api/ingest_api.py apps/control-api/ingest_auth_guard.py apps/control-api/ingest_store.py apps/control-api/session_api.py apps/control-api/session_store.py apps/control-api/session_workflow.py apps/control-api/reaper.py apps/control-api/reaper_cli.py apps/control-api/fake_provider_for_api.py apps/node-agent/agent.py apps/node-agent/node_entrypoint.py apps/node-agent/egress_status.py apps/node-agent/ingest_auth_proxy.py apps/node-agent/ingest_policy.py apps/node-agent/ingest_quality.py apps/node-agent/supervisor.py provider/admin_cli.py provider/conoha.py provider/fake_provider.py provider/provider_client.py
       - name: Validate shell scripts
-        run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh scripts/smoke-rtmps.sh scripts/smoke-ingest-quality.sh scripts/smoke-ingest-auth-abuse.sh scripts/smoke-ingest-auth-cache.sh scripts/smoke-session-ingest-events.sh scripts/smoke-egress-secret-delivery.sh scripts/smoke-egress-reconnect.sh scripts/smoke-egress-stop-terminal.sh scripts/smoke-egress-dns-tls.sh scripts/smoke-egress-publish-conflict.sh
+        run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh scripts/smoke-continuity-restart.sh scripts/smoke-rtmps.sh scripts/smoke-ingest-quality.sh scripts/smoke-ingest-auth-abuse.sh scripts/smoke-ingest-auth-cache.sh scripts/smoke-session-ingest-events.sh scripts/smoke-egress-secret-delivery.sh scripts/smoke-egress-reconnect.sh scripts/smoke-egress-stop-terminal.sh scripts/smoke-egress-dns-tls.sh scripts/smoke-egress-publish-conflict.sh
       - name: Validate production RTMPS compose overlays
         run: |
           mkdir -p secrets
@@ -87,6 +87,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
       - name: Build and exercise the vertical slice
         run: ./scripts/smoke-compose.sh
+
+  continuity-restart-smoke:
+    needs: materialize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Exercise Continuity process restart and desired/actual reconcile
+        run: bash ./scripts/smoke-continuity-restart.sh
 
   rtmps-smoke:
     needs: materialize
