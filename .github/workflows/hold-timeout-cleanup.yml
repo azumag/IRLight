@@ -1,0 +1,26 @@
+name: Hold timeout cleanup E2E
+
+on:
+  pull_request:
+    paths:
+      - "apps/control-api/fake_provider_for_api.py"
+      - "apps/control-api/reaper.py"
+      - "apps/control-api/reaper_cli.py"
+      - "provider/fake_provider.py"
+      - "tests/test_provider_runtime.py"
+      - "scripts/smoke-hold-timeout-cleanup.sh"
+      - "docker-compose.poc.yml"
+      - ".github/workflows/hold-timeout-cleanup.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hold-timeout-cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run HOLD_TIMEOUT cleanup smoke
+        run: bash ./scripts/smoke-hold-timeout-cleanup.sh
