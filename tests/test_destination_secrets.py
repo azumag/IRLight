@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
@@ -53,6 +54,33 @@ class DestinationSecretStoreTest(unittest.TestCase):
             second = DestinationSecretStore(tmp, master_key=Fernet.generate_key())
             with self.assertRaises(DestinationSecretError):
                 second.resolve(user_id="user-a", secret_ref="primary")
+
+    def test_corrupt_json_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "destination_secrets.json").write_text(
+                "{not-valid-json",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(DestinationSecretError, "invalid JSON"):
+                DestinationSecretStore(tmp, master_key=Fernet.generate_key())
+
+    def test_unreadable_state_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "destination_secret_store.Path.open",
+                side_effect=PermissionError("permission denied"),
+            ):
+                with self.assertRaisesRegex(DestinationSecretError, "cannot be read"):
+                    DestinationSecretStore(tmp, master_key=Fernet.generate_key())
+
+    def test_invalid_state_record_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "destination_secrets.json").write_text(
+                '{"secrets":{"not-a-valid-key":{"user_id":"user-a","secret_ref":"primary","ciphertext":"ciphertext"}}}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(DestinationSecretError, "mismatched record key"):
+                DestinationSecretStore(tmp, master_key=Fernet.generate_key())
 
     def test_delete_and_missing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
