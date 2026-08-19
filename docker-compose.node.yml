@@ -53,6 +53,10 @@ services:
     environment:
       EGRESS_INPUT_URI: ${EGRESS_INPUT_URI:-rtsp://mediamtx:8554/output/relay}
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
+      EGRESS_VERIFIED_PEER_IP_FILE: /run/irlight/secrets/egress_verified_peer_ip
+      # Production is fail-closed. Set to 1 only for explicitly trusted
+      # self-hosted/private destinations and local test networks.
+      EGRESS_ALLOW_PRIVATE_TARGETS: ${EGRESS_ALLOW_PRIVATE_TARGETS:-0}
       EGRESS_STATUS_FILE: /state/egress.json
       EGRESS_CONNECT_TIMEOUT_SECONDS: ${EGRESS_CONNECT_TIMEOUT_SECONDS:-15}
       EGRESS_RETRY_INITIAL_SECONDS: ${EGRESS_RETRY_INITIAL_SECONDS:-1}
