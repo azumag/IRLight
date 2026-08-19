@@ -8,7 +8,6 @@ target_config="$tmp_dir/mediamtx-conflict.yml"
 secret_file="$tmp_dir/egress_url"
 stream_key="ci-conflict-$RANDOM"
 path_name="conflict/$stream_key"
-holder_pid=""
 export EGRESS_SECRET_FILE="$secret_file"
 
 cat >"$target_config" <<EOF
@@ -33,6 +32,27 @@ services:
     restart: "no"
     volumes:
       - $target_config:/mediamtx.yml:ro
+
+  conflict-holder:
+    build:
+      context: ./apps/continuity
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      - egress-conflict-target
+    command:
+      - /bin/sh
+      - -c
+      - |
+        exec timeout --signal=INT --kill-after=5s 120s gst-launch-1.0 -q -e \
+          flvmux name=mux streamable=true ! \
+            rtmp2sink location='rtmp://egress-conflict-target:1935/$path_name' \
+          videotestsrc is-live=true pattern=black ! \
+            video/x-raw,width=640,height=360,framerate=15/1,format=I420 ! \
+            x264enc tune=zerolatency speed-preset=veryfast bitrate=600 key-int-max=30 bframes=0 ! \
+            video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
+          audiotestsrc is-live=true wave=silence ! audioconvert ! audioresample ! \
+            audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=96000 ! aacparse ! queue ! mux.
 
   egress-conflict:
     build:
@@ -65,15 +85,11 @@ compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
-  if [[ -n "$holder_pid" ]]; then
-    kill "$holder_pid" 2>/dev/null || true
-    wait "$holder_pid" 2>/dev/null || true
-  fi
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps -a >&2 || true
-    echo "--- holder output ---" >&2
-    cat "$tmp_dir/holder.log" >&2 2>/dev/null || true
+    echo "--- holder logs ---" >&2
+    "${compose[@]}" logs --no-color --tail=120 conflict-holder >&2 || true
     echo "--- egress logs ---" >&2
     "${compose[@]}" logs --no-color --tail=160 egress-conflict >&2 || true
     echo "--- target logs ---" >&2
@@ -114,29 +130,15 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-conflict-target
-sleep 2
+"${compose[@]}" up -d --build mediamtx continuity egress-conflict-target conflict-holder
 
-# Hold the target path with a first publisher. MediaMTX is configured with
-# overridePublisher=false, so a second publisher must be rejected rather than
-# silently evicting this one.
-"${compose[@]}" exec -T continuity sh -c "
-  timeout --signal=INT --kill-after=5s 90s gst-launch-1.0 -q -e \
-    flvmux name=mux streamable=true ! \
-      rtmp2sink location='rtmp://egress-conflict-target:1935/$path_name' \
-    videotestsrc is-live=true pattern=black ! \
-      video/x-raw,width=640,height=360,framerate=15/1,format=I420 ! \
-      x264enc tune=zerolatency speed-preset=veryfast bitrate=600 key-int-max=30 bframes=0 ! \
-      video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
-    audiotestsrc is-live=true wave=silence ! audioconvert ! audioresample ! \
-      audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=96000 ! aacparse ! queue ! mux.
-" >"$tmp_dir/holder.log" 2>&1 &
-holder_pid=$!
-
-for _ in $(seq 1 12); do
-  if ! kill -0 "$holder_pid" 2>/dev/null; then
-    echo "first publisher exited before conflict test" >&2
-    cat "$tmp_dir/holder.log" >&2 || true
+# Hold the target path with a first publisher in a dedicated service. Keeping
+# it outside the continuity container is important: starting another Compose
+# service is allowed to recreate continuity, but must not accidentally kill the
+# publisher that creates the conflict we are trying to test.
+for _ in $(seq 1 20); do
+  if ! "${compose[@]}" ps --status running --services | grep -qx conflict-holder; then
+    echo "first publisher holder exited before conflict test" >&2
     exit 1
   fi
   if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "is publishing to path '$path_name'"; then
@@ -164,7 +166,7 @@ if "${compose[@]}" ps --status running --services | grep -qx egress-conflict; th
   echo "publish conflict left egress gateway running/retrying" >&2
   exit 1
 fi
-if ! kill -0 "$holder_pid" 2>/dev/null; then
+if ! "${compose[@]}" ps --status running --services | grep -qx conflict-holder; then
   echo "publish conflict evicted the original publisher" >&2
   exit 1
 fi
