@@ -35,13 +35,51 @@ class EgressStatusReaderTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            result = read_egress_status(path)
+            result = read_egress_status(path, now=130.0, max_age_seconds=30.0)
         self.assertTrue(result["connected"])
         self.assertEqual(result["status"], "CONNECTED")
         self.assertEqual(result["destination_host"], "live.example")
         self.assertNotIn("credentialed_url", result)
         self.assertNotIn("stream_key", result)
         self.assertNotIn("secret-key", str(result))
+
+    def test_stale_nonterminal_status_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "CONNECTED",
+                        "connected": True,
+                        "attempt": 1,
+                        "observed_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = read_egress_status(path, now=131.0, max_age_seconds=30.0)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["reason_code"], "STATUS_STALE")
+
+    def test_terminal_status_does_not_expire(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "AUTH_FAILED",
+                        "connected": False,
+                        "attempt": 1,
+                        "reason_code": "AUTH_FAILED",
+                        "observed_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = read_egress_status(path, now=1000.0, max_age_seconds=30.0)
+        self.assertEqual(result["status"], "AUTH_FAILED")
+        self.assertEqual(result["reason_code"], "AUTH_FAILED")
 
     def test_missing_or_corrupt_status_is_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
