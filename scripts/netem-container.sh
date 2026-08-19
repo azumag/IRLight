@@ -9,14 +9,20 @@ Usage:
   netem-container.sh show <container>
 
 Options for apply:
-  --loss <percent>       Packet loss percentage (0-100), e.g. 5
-  --delay-ms <ms>        Added latency in milliseconds, e.g. 100
-  --jitter-ms <ms>       Delay jitter in milliseconds; requires --delay-ms > 0
-  --rate <rate>          Netem rate, e.g. 4mbit, 800kbit
-  --interface <name>     Interface inside the container namespace (default: eth0)
+  --loss <percent>             Packet loss percentage (0-100), e.g. 5
+  --loss-correlation <percent> Correlate adjacent losses to model burst loss; requires --loss
+  --delay-ms <ms>              Added latency in milliseconds, e.g. 100
+  --jitter-ms <ms>             Delay jitter in milliseconds; requires --delay-ms > 0
+  --rate <rate>                Netem rate, e.g. 4mbit, 800kbit
+  --interface <name>           Interface inside the container namespace (default: eth0)
+
+`NETEM_LOSS_CORRELATION` can provide the loss correlation for harnesses that
+already supply `--loss`; an explicit `--loss-correlation` overrides it.
 
 Examples:
   ./scripts/netem-container.sh apply publisher --loss 5
+  ./scripts/netem-container.sh apply publisher --loss 10 --loss-correlation 75
+  NETEM_LOSS_CORRELATION=75 ./scripts/netem-container.sh apply publisher --loss 10
   ./scripts/netem-container.sh apply publisher --delay-ms 100 --jitter-ms 20 --rate 4mbit
   ./scripts/netem-container.sh show publisher
   ./scripts/netem-container.sh clear publisher
@@ -48,6 +54,18 @@ require_command() {
 validate_number() {
   local name="$1" value="$2"
   [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "$name must be a non-negative number: $value"
+}
+
+validate_percent() {
+  local name="$1" value="$2"
+  validate_number "$name" "$value"
+  python3 - "$name" "$value" <<'PY'
+import sys
+name, raw = sys.argv[1:3]
+value = float(raw)
+if not 0 <= value <= 100:
+    raise SystemExit(f"{name} must be between 0 and 100")
+PY
 }
 
 [[ $# -ge 2 ]] || { usage >&2; exit 2; }
@@ -86,6 +104,7 @@ case "$ACTION" in
 
   apply)
     LOSS=""
+    LOSS_CORRELATION="${NETEM_LOSS_CORRELATION:-}"
     DELAY_MS=""
     JITTER_MS=""
     RATE=""
@@ -95,6 +114,11 @@ case "$ACTION" in
         --loss)
           [[ $# -ge 2 ]] || fail "--loss requires a value"
           LOSS="$2"
+          shift 2
+          ;;
+        --loss-correlation)
+          [[ $# -ge 2 ]] || fail "--loss-correlation requires a value"
+          LOSS_CORRELATION="$2"
           shift 2
           ;;
         --delay-ms)
@@ -128,13 +152,11 @@ case "$ACTION" in
     done
 
     if [[ -n "$LOSS" ]]; then
-      validate_number "loss" "$LOSS"
-      python3 - "$LOSS" <<'PY'
-import sys
-v = float(sys.argv[1])
-if not 0 <= v <= 100:
-    raise SystemExit("loss must be between 0 and 100")
-PY
+      validate_percent "loss" "$LOSS"
+    fi
+    if [[ -n "$LOSS_CORRELATION" ]]; then
+      [[ -n "$LOSS" ]] || fail "--loss-correlation/NETEM_LOSS_CORRELATION requires --loss"
+      validate_percent "loss-correlation" "$LOSS_CORRELATION"
     fi
     if [[ -n "$DELAY_MS" ]]; then
       validate_number "delay-ms" "$DELAY_MS"
@@ -163,6 +185,9 @@ PY
     fi
     if [[ -n "$LOSS" ]]; then
       ARGS+=(loss "${LOSS}%")
+      if [[ -n "$LOSS_CORRELATION" ]]; then
+        ARGS+=("${LOSS_CORRELATION}%")
+      fi
     fi
     if [[ -n "$RATE" ]]; then
       ARGS+=(rate "$RATE")
