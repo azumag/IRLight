@@ -27,7 +27,10 @@ services:
       NODE_BOOTSTRAP_TOKEN: unusable-media-node-token
       NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
       NODE_BOOT_ID: unusable-media-boot
-      NODE_HEARTBEAT_INTERVAL: "1"
+      # Keep the next quality probe well outside the 3s recovery window after
+      # a recovered heartbeat, so the format-handoff pause cannot catch an
+      # already-running probe and replay a stale timeout after unpause.
+      NODE_HEARTBEAT_INTERVAL: "5"
       NODE_INGEST_SAMPLE_SECONDS: "2"
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
