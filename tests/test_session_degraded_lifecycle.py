@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,7 @@ class SessionDegradedLifecycleTest(unittest.TestCase):
     def test_manual_stop_wins_while_degraded(self) -> None:
         provider = FakeProvider()
         workflow = ProvisioningWorkflow(self.store, provider, WorkflowConfig())
-        session_id = "degraded-stop-session"
+        session_id = str(uuid.uuid4())
         workflow.prepare(session_id, user_id="user-1", environment="dev")
         self.store.transition(session_id, "DEGRADED")
 
