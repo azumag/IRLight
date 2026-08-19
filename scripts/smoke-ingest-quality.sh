@@ -126,7 +126,7 @@ start_publisher() {
   local duration="${2:-35}"
   local key_int=$((fps * 2))
   "${compose[@]}" exec -T continuity sh -c "
-    timeout --signal=INT ${duration}s gst-launch-1.0 -q -e \
+    timeout --signal=INT --kill-after=5s ${duration}s gst-launch-1.0 -q -e \
       flvmux name=mux streamable=true ! \
         rtmp2sink location='rtmp://mediamtx:1935/live/input?user=${ingest_username}&pass=${ingest_secret}' \
       videotestsrc is-live=true pattern=smpte ! \
@@ -147,14 +147,17 @@ setup_ingest
 
 # 10fps is valid H.264/AAC/720p, so the hard policy must not kick it. The
 # quality sampler should instead surface DEGRADED/FPS_OUT_OF_RANGE.
-start_publisher 10 35
+# Let this publisher stop through its in-container timeout. Killing the local
+# `docker compose exec` client can leave gst-launch alive inside the container
+# and would make an OFFLINE assertion test the client process instead of the
+# actual ingest lifecycle.
+start_publisher 10 18
 wait_node_status DEGRADED FPS_OUT_OF_RANGE 45
 wait_node_event ingest.degraded 20
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "DEGRADED publisher was unexpectedly kicked" >&2
   exit 1
 fi
-kill "$publisher_pid" 2>/dev/null || true
 wait "$publisher_pid" 2>/dev/null || true
 publisher_pid=""
 wait_node_status OFFLINE "" 25
