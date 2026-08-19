@@ -33,8 +33,11 @@ jobs:
       SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.disconnect_seconds || '10' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify SRT publisher dependency
-        run: ffmpeg -hide_banner -protocols | grep -x '  srt'
+      - name: Install SRT publisher dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -hide_banner -protocols 2>/dev/null | grep -Eq '(^|[[:space:]])srt([[:space:]]|$)'
       - name: Validate smoke syntax
         run: bash -n ./scripts/smoke-srt-ingest-recovery.sh
       - name: Publish over authenticated SRT, disconnect, and recover
