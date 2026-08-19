@@ -10,6 +10,8 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/smoke-ingest-disconnect-recovery.sh"
       - ".github/workflows/disconnect-recovery.yml"
+  schedule:
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       disconnect_seconds:
@@ -31,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      DISCONNECT_SECONDS: ${{ github.event.inputs.disconnect_seconds || '10' }}
+      DISCONNECT_SECONDS: ${{ github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
     steps:
       - uses: actions/checkout@v4
       - name: Exercise complete ingest disconnect and stable recovery
