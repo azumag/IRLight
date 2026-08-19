@@ -375,51 +375,6 @@ def _append_egress_events(
     return event_types
 
 
-def _egress_payload(node_id: str, current: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "node_id": node_id,
-        "status": current.get("status"),
-        "connected": bool(current.get("connected", False)),
-        "attempt": current.get("attempt"),
-        "reason_code": current.get("reason_code"),
-        "rendered_buffers": current.get("rendered_buffers"),
-        "next_retry_at": current.get("next_retry_at"),
-        "destination_scheme": current.get("destination_scheme"),
-        "destination_host": current.get("destination_host"),
-        "observed_at": current.get("observed_at"),
-    }
-
-
-def _append_egress_events(
-    node: dict[str, Any], previous: object, current: dict[str, Any]
-) -> list[str]:
-    event_types = _egress_event_types(
-        previous,
-        current,
-        had_connection=bool(node.get("egress_ever_connected", False)),
-    )
-    if not event_types:
-        return []
-    events = list(node.get("events", []))
-    next_sequence = int(node.get("next_event_seq", len(events) + 1))
-    payload = _egress_payload(str(node.get("node_id", "")), current)
-    for event_type in event_types:
-        events.append(
-            {
-                "sequence": next_sequence,
-                "type": event_type,
-                "occurred_at": time.time(),
-                "payload": dict(payload),
-            }
-        )
-        next_sequence += 1
-    node["events"] = events[-100:]
-    node["next_event_seq"] = next_sequence
-    if current.get("connected") and current.get("status") == "CONNECTED":
-        node["egress_ever_connected"] = True
-    return event_types
-
-
 def _apply_egress_to_session(
     *,
     session_id: str,
