@@ -90,17 +90,18 @@ wait_egress_status() {
   local expected="$1"
   local timeout="${2:-45}"
   local deadline=$((SECONDS + timeout))
+  local payload=""
   while (( SECONDS < deadline )); do
     payload="$(read_egress_status)"
     if python3 -c '
 import json,sys
-+expected=sys.argv[1]
-+try:
-+    value=json.load(sys.stdin)
-+except Exception:
-+    raise SystemExit(1)
-+raise SystemExit(0 if value.get("status") == expected else 1)
-+' "$expected" <<<"$payload" 2>/dev/null; then
+expected=sys.argv[1]
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if value.get("status") == expected else 1)
+' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -112,18 +113,19 @@ import json,sys
 wait_target_path() {
   local timeout="${1:-45}"
   local deadline=$((SECONDS + timeout))
+  local payload=""
   while (( SECONDS < deadline )); do
     payload="$(curl -fsS --max-time 3 http://127.0.0.1:19997/v3/paths/list 2>/dev/null || true)"
     if python3 -c '
 import json,sys
-+name=sys.argv[1]
-+try:
-+    value=json.load(sys.stdin)
-+except Exception:
-+    raise SystemExit(1)
-+items=value.get("items", [])
-+raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True for item in items) else 1)
-+' "live/$stream_key" <<<"$payload" 2>/dev/null; then
+name=sys.argv[1]
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+items=value.get("items", [])
+raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True for item in items) else 1)
+' "live/$stream_key" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
