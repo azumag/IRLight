@@ -535,7 +535,7 @@ def heartbeat(
         current = request.ingest.model_dump()
         event_types = _append_ingest_events(node, previous, current)
         node["ingest"] = current
-        if node.get("session_assigned") and event_types:
+        if node.get("session_assigned"):
             try:
                 default_store().apply_ingest_observation(
                     str(node["session_id"]),
