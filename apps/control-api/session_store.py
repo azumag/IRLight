@@ -44,15 +44,9 @@ ACTIVE_STATES = {
 }
 
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
-
-# Sessions that still occupy a concurrent-session entitlement. STOPPING and
-# FAILED_CLEANUP remain counted until provider resources have actually been
-# reclaimed; allowing a replacement before cleanup completes can exceed the
-# provider/resource cap even though the old stream is no longer LIVE.
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
+SESSION_EVENT_LIMIT = 1000
 
-# Allowed transitions from each state. Idempotent retries of the same
-# operation are handled by the caller, not by widening these sets.
 TRANSITIONS: dict[str, set[str]] = {
     "STOPPED": {"PROVISIONING"},
     "PROVISIONING": {"BOOTSTRAPPING", "STOPPING", "FAILED_CLEANUP"},
@@ -99,6 +93,9 @@ def new_session(
         "provider_volume_id": None,
         "provider_server_id": None,
         "provider_public_ipv4": None,
+        "node_id": None,
+        "node_boot_id": None,
+        "node_registered_at": None,
         "provisioning_started_at": None,
         "ready_at": None,
         "first_ingest_at": None,
@@ -112,17 +109,14 @@ def new_session(
         "cleanup_pending": False,
         "failure_reason": None,
         "events": [],
+        "next_event_seq": 1,
         "created_at": now,
         "updated_at": now,
     }
 
 
 class SessionStore:
-    """JSON-file persisted session store with an in-process lock.
-
-    One lock protects both the in-memory cache and the file, matching the
-    existing control-api pattern (single uvicorn worker).
-    """
+    """JSON-file persisted session store with an in-process lock."""
 
     def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
@@ -164,6 +158,49 @@ class SessionStore:
             except FileNotFoundError:
                 pass
 
+    @staticmethod
+    def _next_event_sequence(session: dict[str, Any]) -> int:
+        try:
+            configured = int(session.get("next_event_seq", 0))
+        except (TypeError, ValueError):
+            configured = 0
+        if configured > 0:
+            return configured
+        maximum = 0
+        for event in session.get("events", []):
+            if not isinstance(event, dict):
+                continue
+            try:
+                maximum = max(maximum, int(event.get("sequence", 0)))
+            except (TypeError, ValueError):
+                continue
+        return maximum + 1
+
+    def _append_event_locked(
+        self,
+        session: dict[str, Any],
+        *,
+        event_type: str,
+        reason_code: str | None,
+        payload: dict[str, Any],
+        origin: str,
+        occurred_at: float,
+    ) -> dict[str, Any]:
+        sequence = self._next_event_sequence(session)
+        event = {
+            "sequence": sequence,
+            "type": event_type[:100],
+            "reason_code": reason_code[:100] if reason_code else None,
+            "payload": payload,
+            "occurred_at": occurred_at,
+            "origin": origin[:50],
+        }
+        events = list(session.get("events", []))
+        events.append(event)
+        session["events"] = events[-SESSION_EVENT_LIMIT:]
+        session["next_event_seq"] = sequence + 1
+        return dict(event)
+
     def create(self, session_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
         with self.lock:
             session = new_session(**kwargs)
@@ -184,14 +221,6 @@ class SessionStore:
         entitlement_id: str,
         max_concurrent_sessions: int,
     ) -> dict[str, Any]:
-        """Atomically reserve one concurrent-session slot before prepare.
-
-        The reservation flag closes the small race between creating a STOPPED
-        session and transitioning it to PROVISIONING. Existing active sessions
-        without the flag (state written by an older version) are still counted
-        by status, so deploying this change does not accidentally grant an
-        extra slot.
-        """
         if max_concurrent_sessions < 1:
             raise EntitlementExceeded("concurrent session entitlement is disabled")
 
@@ -199,13 +228,8 @@ class SessionStore:
             existing = self._sessions.get(session_id)
             if existing is not None and existing.get("user_id") != user_id:
                 raise KeyError(session_id)
-
             if existing is not None and existing.get("status") in {"FINISHED", "FAILED"}:
                 return dict(existing)
-
-            # Retrying prepare for a session that already occupies a slot must
-            # not be treated as a new allocation, even if the user's plan was
-            # downgraded after the session started.
             if existing is not None and (
                 existing.get("entitlement_reserved")
                 or existing.get("status") in CAPACITY_STATES
@@ -222,7 +246,6 @@ class SessionStore:
                     continue
                 if session.get("entitlement_reserved") or session.get("status") in CAPACITY_STATES:
                     occupied += 1
-
             if occupied >= max_concurrent_sessions:
                 raise EntitlementExceeded(
                     f"concurrent session limit exceeded ({occupied}/{max_concurrent_sessions})"
@@ -236,7 +259,6 @@ class SessionStore:
                 )
                 existing["session_id"] = session_id
                 self._sessions[session_id] = existing
-
             existing["entitlement_id"] = entitlement_id
             existing["entitlement_reserved"] = True
             existing["updated_at"] = time.time()
@@ -252,6 +274,20 @@ class SessionStore:
         with self.lock:
             return [dict(value) for value in self._sessions.values()]
 
+    def find_by_provider_server_id(
+        self,
+        provider_server_id: str,
+        *,
+        states: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.lock:
+            return [
+                dict(session)
+                for session in self._sessions.values()
+                if session.get("provider_server_id") == provider_server_id
+                and (states is None or session.get("status") in states)
+            ]
+
     def update(self, session_id: str, **changes: Any) -> dict[str, Any]:
         with self.lock:
             session = self._sessions.get(session_id)
@@ -259,6 +295,129 @@ class SessionStore:
                 raise KeyError(session_id)
             session.update(changes)
             session["updated_at"] = time.time()
+            self._persist()
+            return dict(session)
+
+    def append_event(
+        self,
+        session_id: str,
+        *,
+        event_type: str,
+        reason_code: str | None = None,
+        payload: dict[str, Any] | None = None,
+        origin: str = "control-api",
+        occurred_at: float | None = None,
+    ) -> dict[str, Any]:
+        current = time.time() if occurred_at is None else occurred_at
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            event = self._append_event_locked(
+                session,
+                event_type=event_type,
+                reason_code=reason_code,
+                payload=dict(payload or {}),
+                origin=origin,
+                occurred_at=current,
+            )
+            session["updated_at"] = current
+            self._persist()
+            return event
+
+    def bind_node(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        boot_id: str,
+        provider_server_id: str,
+        registered_at: float | None = None,
+    ) -> dict[str, Any]:
+        current = time.time() if registered_at is None else registered_at
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("provider_server_id") != provider_server_id:
+                raise RuntimeError("node provider server does not match session")
+            if session.get("status") not in ACTIVE_STATES:
+                raise RuntimeError(f"session {session_id} is not active")
+            session["node_id"] = node_id
+            session["node_boot_id"] = boot_id
+            session["node_registered_at"] = current
+            session["updated_at"] = current
+            self._persist()
+            return dict(session)
+
+    def apply_ingest_observation(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        event_types: list[str],
+        observation: dict[str, Any],
+        occurred_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically append Node ingest events and update Session lifecycle."""
+        current = time.time() if occurred_at is None else occurred_at
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("node_id") not in {None, node_id}:
+                raise RuntimeError("node is not assigned to session")
+            if session.get("status") not in ACTIVE_STATES:
+                return dict(session)
+
+            payload = {
+                "node_id": node_id,
+                "status": observation.get("status"),
+                "path": observation.get("path"),
+                "online": bool(observation.get("online", False)),
+                "source_type": observation.get("source_type"),
+                "source_id": observation.get("source_id"),
+                "bitrate_bps": observation.get("bitrate_bps"),
+                "max_bitrate_bps": observation.get("max_bitrate_bps"),
+                "tracks": observation.get("tracks", []),
+                "quality": observation.get("quality"),
+                "reasons": observation.get("reasons", []),
+                "warnings": observation.get("warnings", []),
+                "enforced": observation.get("enforced", False),
+                "observed_at": observation.get("observed_at"),
+            }
+            for event_type in event_types:
+                reasons = payload.get("reasons") or []
+                reason_code = (
+                    str(reasons[0])[:100]
+                    if event_type in {"ingest.rejected", "ingest.degraded"} and reasons
+                    else None
+                )
+                self._append_event_locked(
+                    session,
+                    event_type=event_type,
+                    reason_code=reason_code,
+                    payload=dict(payload),
+                    origin="node-agent",
+                    occurred_at=current,
+                )
+
+            online = bool(observation.get("online", False))
+            ingest_status = str(observation.get("status", ""))
+            state = str(session.get("status", ""))
+            usable_online = online and ingest_status in {"ACCEPTED", "WARNING", "DEGRADED"}
+            if usable_online and state in {"READY_WAIT_INGEST", "HOLDING"}:
+                session["status"] = "LIVE"
+                if session.get("first_ingest_at") is None:
+                    session["first_ingest_at"] = current
+                session["last_ingest_at"] = current
+                session["hold_deadline_at"] = None
+            elif not online and state == "LIVE":
+                session["status"] = "HOLDING"
+                session["last_ingest_at"] = current
+
+            session["node_id"] = node_id
+            session["updated_at"] = current
             self._persist()
             return dict(session)
 

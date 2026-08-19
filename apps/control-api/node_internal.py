@@ -19,6 +19,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from fake_provider_for_api import default_store, provider_mode
+from session_store import ACTIVE_STATES
+
 
 STATE_DIR = Path(os.getenv("NODE_STATE_DIR", "/state"))
 NODES_PATH = STATE_DIR / "nodes.json"
@@ -123,7 +126,36 @@ def _issue_node_id(state: dict[str, Any]) -> str:
     return node_id
 
 
-def _ingest_event_types(previous: object, current: dict[str, Any]) -> list[str]:
+def _require_session_assignment() -> bool:
+    configured = os.getenv("NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT")
+    if configured is not None:
+        return configured.strip().lower() not in {"0", "false", "no", "off"}
+    # Real provider nodes must never silently bootstrap into a synthetic,
+    # user-less Session. The fake provider keeps the legacy fallback for local
+    # component tests and the Phase 0 PoC.
+    return provider_mode() == "conoha"
+
+
+def _resolve_assigned_session(provider_server_id: str) -> dict[str, Any] | None:
+    matches = default_store().find_by_provider_server_id(
+        provider_server_id,
+        states=ACTIVE_STATES,
+    )
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="provider server matches multiple sessions")
+    if matches:
+        return matches[0]
+    if _require_session_assignment():
+        raise HTTPException(status_code=409, detail="provider server is not assigned to an active session")
+    return None
+
+
+def _ingest_event_types(
+    previous: object,
+    current: dict[str, Any],
+    *,
+    had_connection: bool = False,
+) -> list[str]:
     previous = previous if isinstance(previous, dict) else {}
     previous_status = previous.get("status")
     previous_source = previous.get("source_id")
@@ -137,7 +169,11 @@ def _ingest_event_types(previous: object, current: dict[str, Any]) -> list[str]:
         events.append("ingest.disconnected")
         return events
 
-    if current_online and (not previous_online or previous_source != current_source):
+    if current_online and not previous_online:
+        events.append("ingest.reconnected" if had_connection else "ingest.connected")
+        events.append("ingest.format_detected")
+    elif current_online and previous_source != current_source:
+        events.append("ingest.reconnected" if had_connection else "ingest.connected")
         events.append("ingest.format_detected")
 
     if current_status == "REJECTED" and previous_status != "REJECTED":
@@ -158,20 +194,26 @@ def _ingest_event_types(previous: object, current: dict[str, Any]) -> list[str]:
 
 def _append_ingest_events(
     node: dict[str, Any], previous: object, current: dict[str, Any]
-) -> None:
-    event_types = _ingest_event_types(previous, current)
+) -> list[str]:
+    event_types = _ingest_event_types(
+        previous,
+        current,
+        had_connection=bool(node.get("ingest_ever_online", False)),
+    )
     if not event_types:
-        return
+        return []
     events = list(node.get("events", []))
+    next_sequence = int(node.get("next_event_seq", len(events) + 1))
     for event_type in event_types:
         events.append(
             {
-                "sequence": len(events) + 1,
+                "sequence": next_sequence,
                 "type": event_type,
                 "occurred_at": time.time(),
                 "payload": {
                     "status": current.get("status"),
                     "source_type": current.get("source_type"),
+                    "source_id": current.get("source_id"),
                     "bitrate_bps": current.get("bitrate_bps"),
                     "tracks": current.get("tracks", []),
                     "quality": current.get("quality"),
@@ -181,7 +223,12 @@ def _append_ingest_events(
                 },
             }
         )
+        next_sequence += 1
     node["events"] = events[-100:]
+    node["next_event_seq"] = next_sequence
+    if current.get("online"):
+        node["ingest_ever_online"] = True
+    return event_types
 
 
 router = APIRouter(prefix="/internal")
@@ -205,15 +252,40 @@ def bootstrap(
     if tokens["tokens"].get(digest, {}).get("consumed"):
         raise HTTPException(status_code=409, detail="bootstrap token already consumed")
 
+    assigned_session = _resolve_assigned_session(request.provider_server_id)
     nodes = read_json(NODES_PATH, _default_nodes())
     node_id = _issue_node_id(nodes)
-    session_id = str(uuid.uuid4())
-    absolute_deadline = time.time() + float(
+    session_id = (
+        str(assigned_session["session_id"])
+        if assigned_session is not None
+        else str(uuid.uuid4())
+    )
+    configured_deadline = time.time() + float(
         os.getenv("NODE_ABSOLUTE_DEADLINE_HOURS", "12")
     ) * 3600
+    if assigned_session is not None and assigned_session.get("absolute_deadline_at") is not None:
+        try:
+            absolute_deadline = float(assigned_session["absolute_deadline_at"])
+        except (TypeError, ValueError):
+            absolute_deadline = configured_deadline
+    else:
+        absolute_deadline = configured_deadline
+
+    if assigned_session is not None:
+        try:
+            default_store().bind_node(
+                session_id,
+                node_id=node_id,
+                boot_id=request.boot_id,
+                provider_server_id=request.provider_server_id,
+            )
+        except (KeyError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     node = {
         "node_id": node_id,
         "session_id": session_id,
+        "session_assigned": assigned_session is not None,
         "provider_server_id": request.provider_server_id,
         "boot_id": request.boot_id,
         "agent_version": request.agent_version,
@@ -224,7 +296,9 @@ def bootstrap(
         "absolute_deadline": absolute_deadline,
         "last_heartbeat_at": None,
         "ingest": None,
+        "ingest_ever_online": False,
         "events": [],
+        "next_event_seq": 1,
         "created_at": time.time(),
     }
     nodes["nodes"][node_id] = node
@@ -234,12 +308,14 @@ def bootstrap(
         "consumed": True,
         "consumed_at": time.time(),
         "node_id": node_id,
+        "session_id": session_id,
     }
     atomic_write_json(TOKENS_PATH, tokens)
 
     return {
         "node_id": node_id,
         "session_id": session_id,
+        "session_assigned": assigned_session is not None,
         "status": "BOOTSTRAPPING",
         "absolute_deadline": absolute_deadline,
         "egress_url": os.getenv("NODE_EGRESS_URL", ""),
@@ -273,8 +349,22 @@ def heartbeat(
     if request.ingest is not None:
         previous = node.get("ingest")
         current = request.ingest.model_dump()
-        _append_ingest_events(node, previous, current)
+        event_types = _append_ingest_events(node, previous, current)
         node["ingest"] = current
+        if node.get("session_assigned") and event_types:
+            try:
+                default_store().apply_ingest_observation(
+                    str(node["session_id"]),
+                    node_id=node_id,
+                    event_types=event_types,
+                    observation=current,
+                )
+                node.pop("session_event_error", None)
+            except (KeyError, RuntimeError) as exc:
+                # Heartbeats must keep flowing even if the user-facing Session
+                # has concurrently entered cleanup. Preserve the diagnostic on
+                # the node instead of causing an Agent restart loop.
+                node["session_event_error"] = str(exc)[:200]
     atomic_write_json(NODES_PATH, nodes)
 
     return {"desired_state": node.get("desired_state", "RUNNING")}

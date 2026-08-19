@@ -161,6 +161,35 @@ def _raise_auth_blocked(decision: Any) -> None:
     )
 
 
+def _record_session_auth_failure(request: MediaMTXAuthRequest, decision: Any) -> None:
+    """Add a secret-free auth audit when the supplied username is a real Session."""
+    store = default_store()
+    session = store.get(request.user)
+    append_event = getattr(store, "append_event", None)
+    if session is None or not callable(append_event):
+        return
+    try:
+        append_event(
+            request.user,
+            event_type="ingest.auth_failed",
+            reason_code=(
+                "RATE_LIMITED"
+                if getattr(decision, "blocked", False)
+                else "INVALID_CREDENTIAL"
+            ),
+            payload={
+                "node_id": session.get("node_id"),
+                "source_ip": request.ip[:128] if request.ip else None,
+                "protocol": request.protocol.lower()[:32],
+                "publisher_id": request.id[:128] if request.id else None,
+                "locked_scopes": list(getattr(decision, "locked_scopes", ()) or ()),
+            },
+            origin="ingest-auth",
+        )
+    except KeyError:
+        return
+
+
 def _reject_invalid_ingest_credential(request: MediaMTXAuthRequest, guard: Any) -> None:
     decision = guard.record_failure(
         source_ip=request.ip,
@@ -168,6 +197,7 @@ def _reject_invalid_ingest_credential(request: MediaMTXAuthRequest, guard: Any) 
         protocol=request.protocol,
         publisher_id=request.id,
     )
+    _record_session_auth_failure(request, decision)
     if decision.blocked:
         _raise_auth_blocked(decision)
     raise HTTPException(status_code=401, detail="invalid ingest credential")
