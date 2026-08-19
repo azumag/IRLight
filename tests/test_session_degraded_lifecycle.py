@@ -24,7 +24,7 @@ class SessionDegradedLifecycleTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _ready(self) -> str:
-        session = self.store.create(user_id="user-1", environment="dev")
+        session = self.store.create(user_id="deadbeef", environment="dev")
         session_id = str(session["session_id"])
         self.store.transition(session_id, "PROVISIONING")
         self.store.transition(session_id, "BOOTSTRAPPING")
@@ -47,7 +47,7 @@ class SessionDegradedLifecycleTest(unittest.TestCase):
         provider = FakeProvider()
         workflow = ProvisioningWorkflow(self.store, provider, WorkflowConfig())
         session_id = str(uuid.uuid4())
-        workflow.prepare(session_id, user_id="user-1", environment="dev")
+        workflow.prepare(session_id, user_id="deadbeef", environment="dev")
         self.store.transition(session_id, "DEGRADED")
 
         finished = workflow.stop(session_id)
