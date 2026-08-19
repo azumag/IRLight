@@ -158,6 +158,34 @@ raise SystemExit(0 if any(
   return 1
 }
 
+wait_recovery_candidate() {
+  local timeout="${1:-45}"
+  local deadline=$((SECONDS + timeout))
+  local payload candidate
+  while (( SECONDS < deadline )); do
+    payload="$(session_json 2>/dev/null || true)"
+    candidate="$(python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+since=d.get("recovery_candidate_since")
+source=d.get("recovery_candidate_source_id")
+if d.get("status") == "HOLDING" and since is not None and source:
+    print(f"{since}\t{source}")
+else:
+    raise SystemExit(1)
+' <<<"$payload" 2>/dev/null || true)"
+    if [[ -n "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "Recovery candidate did not become observable while HOLDING" >&2
+  session_json >&2 || true
+  session_events >&2 || true
+  return 1
+}
+
 stop_publisher() {
   "${compose[@]}" exec -T continuity sh -c 'touch /tmp/irlight-stop-disconnect-publisher'
   if [[ -n "$publisher_pid" ]]; then
@@ -215,6 +243,8 @@ PY
 }
 
 assert_recovery_sequence() {
+  local candidate_since="$1"
+  local candidate_source_id="$2"
   local events_payload
   events_payload="$(session_events)"
   python3 -c '
@@ -222,6 +252,8 @@ import json
 import sys
 
 stable = float(sys.argv[1])
+candidate_since = float(sys.argv[2])
+candidate_source_id = sys.argv[3]
 events = json.load(sys.stdin).get("events", [])
 holding_indexes = [
     i for i, e in enumerate(events)
@@ -231,20 +263,24 @@ if not holding_indexes:
     raise SystemExit("missing INGEST_DISCONNECTED session.holding event")
 start = holding_indexes[-1]
 window = events[start + 1:]
-# A reconnect from OFFLINE is represented as ingest.reconnected. The separate
-# ingest.recovered event is reserved for DEGRADED -> usable transitions.
-ingest = next((e for e in window if e.get("type") == "ingest.reconnected"), None)
-session = next((e for e in window if e.get("type") == "session.recovered"), None)
-if ingest is None:
+reconnected = next((e for e in window if e.get("type") == "ingest.reconnected"), None)
+recovered = next((e for e in window if e.get("type") == "session.recovered"), None)
+if reconnected is None:
     raise SystemExit("missing ingest.reconnected after disconnect")
-if session is None:
+if recovered is None:
     raise SystemExit("missing session.recovered after disconnect")
-delta = float(session["occurred_at"]) - float(ingest["occurred_at"])
+reconnected_source = (reconnected.get("payload") or {}).get("source_id")
+recovered_source = (recovered.get("payload") or {}).get("source_id")
+if reconnected_source != candidate_source_id:
+    raise SystemExit(f"candidate source differs from reconnect source: {candidate_source_id} != {reconnected_source}")
+if recovered_source != candidate_source_id:
+    raise SystemExit(f"recovered source differs from candidate source: {candidate_source_id} != {recovered_source}")
+delta = float(recovered["occurred_at"]) - candidate_since
 minimum = max(0.0, stable - 0.5)
 if delta < minimum:
     raise SystemExit(f"recovery stability window too short: {delta:.3f}s < {minimum:.3f}s")
-print(f"recovery stability event gap: {delta:.3f}s")
-' "$recovery_stable_seconds" <<<"$events_payload"
+print(f"recovery stability candidate gap: {delta:.3f}s")
+' "$recovery_stable_seconds" "$candidate_since" "$candidate_source_id" <<<"$events_payload"
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -302,7 +338,6 @@ assert not any(e.get("type") in {"session.failed", "session.finished"} for e in 
 echo "holding for ${disconnect_seconds}s before publisher reconnect"
 sleep "$disconnect_seconds"
 
-# The Session must remain alive throughout the requested disconnect interval.
 pre_reconnect="$(session_json)"
 python3 -c '
 import json,sys
@@ -312,12 +347,15 @@ assert not any(e.get("type") in {"session.failed", "session.finished"} for e in 
 ' <<<"$pre_reconnect"
 
 start_publisher
+candidate_info="$(wait_recovery_candidate 45)"
+candidate_since="${candidate_info%%$'\t'*}"
+candidate_source_id="${candidate_info#*$'\t'}"
 wait_session_status LIVE 75
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher exited before recovered LIVE" >&2
   exit 1
 fi
-assert_recovery_sequence
+assert_recovery_sequence "$candidate_since" "$candidate_source_id"
 
 final_payload="$(session_json)"
 python3 -c '
