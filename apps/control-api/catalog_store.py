@@ -101,6 +101,7 @@ def create_destination(
             "display_name": display_name,
             "server_url": server_url,
             "secret_ref": secret_ref,
+            "enabled": True,
             "verification_status": "UNVERIFIED",
             "last_verified_at": None,
             "last_verification_error": None,
@@ -135,6 +136,7 @@ def update_destination(
     display_name: str | None = None,
     server_url: str | None = None,
     secret_ref: str | None = None,
+    enabled: bool | None = None,
 ) -> dict[str, Any]:
     with LOCK:
         catalog = _load()
@@ -150,6 +152,8 @@ def update_destination(
             item["server_url"] = server_url
         if secret_ref is not None:
             item["secret_ref"] = secret_ref
+        if enabled is not None:
+            item["enabled"] = enabled
         item["updated_at"] = time.time()
         catalog["destinations"][destination_id] = item
         _save(catalog)
@@ -189,8 +193,6 @@ def verify_destination(
         _record_verification_failure(destination_id, user_id, url, str(exc))
         raise CatalogVerifyFailed(str(exc)) from exc
     except Exception as exc:
-        # Custom/injected probes should not leak arbitrary exception details to
-        # API clients. The production probe raises DestinationProbeError.
         _record_verification_failure(
             destination_id, user_id, url, "destination verification failed"
         )

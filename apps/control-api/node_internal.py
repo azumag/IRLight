@@ -19,6 +19,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from catalog_store import CatalogNotFound, get_destination as store_get_destination
+from destination_secret_store import (
+    DestinationSecretConfigurationError,
+    DestinationSecretError,
+    DestinationSecretNotFound,
+    default_destination_secret_store,
+)
+from egress_destination import EgressDestinationError, build_egress_url
 from fake_provider_for_api import default_store, provider_mode
 from session_store import ACTIVE_STATES
 
@@ -130,9 +138,6 @@ def _require_session_assignment() -> bool:
     configured = os.getenv("NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT")
     if configured is not None:
         return configured.strip().lower() not in {"0", "false", "no", "off"}
-    # Real provider nodes must never silently bootstrap into a synthetic,
-    # user-less Session. The fake provider keeps the legacy fallback for local
-    # component tests and the Phase 0 PoC.
     return provider_mode() == "conoha"
 
 
@@ -148,6 +153,46 @@ def _resolve_assigned_session(provider_server_id: str) -> dict[str, Any] | None:
     if _require_session_assignment():
         raise HTTPException(status_code=409, detail="provider server is not assigned to an active session")
     return None
+
+
+def _resolve_egress_url(assigned_session: dict[str, Any] | None) -> str:
+    """Resolve a Session Destination only for the bootstrap response.
+
+    The fully credentialed URL is never copied into Session or Node state. The
+    Node Agent immediately writes it into its tmpfs secret file.
+    """
+    if assigned_session is None or not assigned_session.get("destination_id"):
+        return os.getenv("NODE_EGRESS_URL", "")
+
+    user_id = str(assigned_session.get("user_id", ""))
+    destination_id = str(assigned_session["destination_id"])
+    try:
+        destination = store_get_destination(destination_id, user_id)
+    except CatalogNotFound as exc:
+        raise HTTPException(status_code=409, detail="session destination does not exist") from exc
+    if destination.get("enabled", True) is not True:
+        raise HTTPException(status_code=409, detail="session destination is disabled")
+    if destination.get("verification_status") != "VERIFIED":
+        raise HTTPException(status_code=409, detail="session destination is not verified")
+
+    try:
+        secret = default_destination_secret_store().resolve(
+            user_id=user_id,
+            secret_ref=str(destination.get("secret_ref", "")),
+        )
+    except DestinationSecretConfigurationError as exc:
+        raise HTTPException(
+            status_code=503, detail="destination secret store is not configured"
+        ) from exc
+    except DestinationSecretNotFound as exc:
+        raise HTTPException(status_code=409, detail="session destination secret is missing") from exc
+    except DestinationSecretError as exc:
+        raise HTTPException(status_code=500, detail="session destination secret is unavailable") from exc
+
+    try:
+        return build_egress_url(destination, secret)
+    except EgressDestinationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _ingest_event_types(
@@ -253,6 +298,7 @@ def bootstrap(
         raise HTTPException(status_code=409, detail="bootstrap token already consumed")
 
     assigned_session = _resolve_assigned_session(request.provider_server_id)
+    egress_url = _resolve_egress_url(assigned_session)
     nodes = read_json(NODES_PATH, _default_nodes())
     node_id = _issue_node_id(nodes)
     session_id = (
@@ -286,6 +332,9 @@ def bootstrap(
         "node_id": node_id,
         "session_id": session_id,
         "session_assigned": assigned_session is not None,
+        "destination_id": (
+            assigned_session.get("destination_id") if assigned_session is not None else None
+        ),
         "provider_server_id": request.provider_server_id,
         "boot_id": request.boot_id,
         "agent_version": request.agent_version,
@@ -318,7 +367,7 @@ def bootstrap(
         "session_assigned": assigned_session is not None,
         "status": "BOOTSTRAPPING",
         "absolute_deadline": absolute_deadline,
-        "egress_url": os.getenv("NODE_EGRESS_URL", ""),
+        "egress_url": egress_url,
         "media_mtx_config_ref": "config/mediamtx.yml",
     }
 
@@ -361,9 +410,6 @@ def heartbeat(
                 )
                 node.pop("session_event_error", None)
             except (KeyError, RuntimeError) as exc:
-                # Heartbeats must keep flowing even if the user-facing Session
-                # has concurrently entered cleanup. Preserve the diagnostic on
-                # the node instead of causing an Agent restart loop.
                 node["session_event_error"] = str(exc)[:200]
     atomic_write_json(NODES_PATH, nodes)
 
