@@ -43,7 +43,10 @@ services:
 
   egress-gateway:
     image: ${NODE_EGRESS_GATEWAY_IMAGE:-ghcr.io/azumag/irlight-egress-gateway:phase-b-spike}
-    restart: unless-stopped
+    # Transient reconnect is handled inside the Gateway. A terminal
+    # AUTH_FAILED/PUBLISH_CONFLICT must remain stopped instead of being turned
+    # into an infinite Docker restart loop.
+    restart: "no"
     depends_on:
       - mediamtx
       - continuity
