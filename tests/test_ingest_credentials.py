@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from ingest_api import MediaMTXAuthRequest, authorize_mediamtx_publish  # noqa: E402
+from ingest_auth_guard import IngestAuthGuard  # noqa: E402
 from ingest_store import IngestCredentialStore  # noqa: E402
 
 
@@ -133,6 +134,7 @@ class MediaMTXAuthTest(unittest.TestCase):
     def test_valid_publish_is_authorized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             credential_store = IngestCredentialStore(tmp)
+            auth_guard = IngestAuthGuard(tmp)
             session_id = "11111111-1111-4111-8111-111111111111"
             record, secret = credential_store.issue(
                 session_id=session_id,
@@ -152,7 +154,7 @@ class MediaMTXAuthTest(unittest.TestCase):
             )
             with patch("ingest_api.default_store", return_value=session_store), patch(
                 "ingest_api.default_ingest_store", return_value=credential_store
-            ):
+            ), patch("ingest_api.default_ingest_auth_guard", return_value=auth_guard):
                 result = authorize_mediamtx_publish(request)
             self.assertTrue(result["authorized"])
             self.assertEqual(result["credential_id"], record["id"])
@@ -160,6 +162,7 @@ class MediaMTXAuthTest(unittest.TestCase):
     def test_wrong_secret_and_finished_session_are_rejected_generically(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             credential_store = IngestCredentialStore(tmp)
+            auth_guard = IngestAuthGuard(tmp)
             session_id = "11111111-1111-4111-8111-111111111111"
             _record, secret = credential_store.issue(
                 session_id=session_id,
@@ -178,7 +181,7 @@ class MediaMTXAuthTest(unittest.TestCase):
             )
             with patch("ingest_api.default_store", return_value=ready_store), patch(
                 "ingest_api.default_ingest_store", return_value=credential_store
-            ):
+            ), patch("ingest_api.default_ingest_auth_guard", return_value=auth_guard):
                 with self.assertRaises(HTTPException) as wrong:
                     authorize_mediamtx_publish(request)
             self.assertEqual(wrong.exception.status_code, 401)
@@ -190,7 +193,7 @@ class MediaMTXAuthTest(unittest.TestCase):
             )
             with patch("ingest_api.default_store", return_value=finished_store), patch(
                 "ingest_api.default_ingest_store", return_value=credential_store
-            ):
+            ), patch("ingest_api.default_ingest_auth_guard", return_value=auth_guard):
                 with self.assertRaises(HTTPException) as finished:
                     authorize_mediamtx_publish(request)
             self.assertEqual(finished.exception.status_code, 401)
