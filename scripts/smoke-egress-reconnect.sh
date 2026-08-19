@@ -21,6 +21,10 @@ services:
     environment:
       MTX_API: "yes"
       MTX_APIADDRESS: ":9997"
+      # MediaMTX grants API access to localhost only by default. This target is
+      # isolated inside the smoke-test Compose network, so extend the existing
+      # anonymous test user with API permission for cross-container inspection.
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_3_ACTION: "api"
 
   egress-gateway:
     build:
@@ -72,7 +76,9 @@ target_api() {
 import sys
 import urllib.request
 try:
-    with urllib.request.urlopen("http://egress-target:9997/v3/paths/list", timeout=3) as response:
+    with urllib.request.urlopen(
+        "http://egress-target:9997/v3/paths/list?itemsPerPage=100", timeout=3
+    ) as response:
         sys.stdout.write(response.read().decode("utf-8"))
 except Exception:
     raise SystemExit(1)
