@@ -33,6 +33,22 @@ class BootstrapRequest(BaseModel):
     private_address: str | None = Field(default=None, max_length=200)
 
 
+class IngestObservationRequest(BaseModel):
+    status: str = Field(pattern="^(OFFLINE|UNKNOWN|PENDING|ACCEPTED|WARNING|REJECTED)$")
+    path: str = Field(min_length=1, max_length=200)
+    online: bool = False
+    source_type: str | None = Field(default=None, max_length=50)
+    source_id: str | None = Field(default=None, max_length=200)
+    bitrate_bps: float | None = Field(default=None, ge=0)
+    max_bitrate_bps: int | None = Field(default=None, ge=0)
+    tracks: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    reasons: list[str] = Field(default_factory=list, max_length=16)
+    warnings: list[str] = Field(default_factory=list, max_length=16)
+    enforced: bool = False
+    enforcement_error: str | None = Field(default=None, max_length=200)
+    observed_at: float
+
+
 class HeartbeatRequest(BaseModel):
     status: str = Field(default="READY", pattern="^(BOOTSTRAPPING|READY|STOPPING|STOPPED|FAILED)$")
     media_health: str = Field(default="unknown", max_length=200)
@@ -42,6 +58,7 @@ class HeartbeatRequest(BaseModel):
     memory_mb: float | None = Field(default=None, ge=0)
     software_version: str | None = Field(default=None, max_length=100)
     deadline_remaining_seconds: float | None = Field(default=None, ge=0)
+    ingest: IngestObservationRequest | None = None
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -101,6 +118,47 @@ def _issue_node_id(state: dict[str, Any]) -> str:
     return node_id
 
 
+def _append_ingest_event(node: dict[str, Any], previous: object, current: dict[str, Any]) -> None:
+    previous = previous if isinstance(previous, dict) else {}
+    previous_status = previous.get("status")
+    previous_source = previous.get("source_id")
+    current_status = current.get("status")
+    current_source = current.get("source_id")
+    previous_online = bool(previous.get("online", False))
+    current_online = bool(current.get("online", False))
+
+    event_type: str | None = None
+    if current_status == "REJECTED" and previous_status != "REJECTED":
+        event_type = "ingest.rejected"
+    elif previous_online and not current_online:
+        event_type = "ingest.disconnected"
+    elif current_online and (not previous_online or previous_source != current_source):
+        event_type = "ingest.format_detected"
+    elif current_status != previous_status:
+        event_type = "ingest.policy_changed"
+    if event_type is None:
+        return
+
+    events = list(node.get("events", []))
+    events.append(
+        {
+            "sequence": len(events) + 1,
+            "type": event_type,
+            "occurred_at": time.time(),
+            "payload": {
+                "status": current_status,
+                "source_type": current.get("source_type"),
+                "bitrate_bps": current.get("bitrate_bps"),
+                "tracks": current.get("tracks", []),
+                "reasons": current.get("reasons", []),
+                "warnings": current.get("warnings", []),
+                "enforced": current.get("enforced", False),
+            },
+        }
+    )
+    node["events"] = events[-100:]
+
+
 router = APIRouter(prefix="/internal")
 
 
@@ -138,6 +196,8 @@ def bootstrap(
         "desired_state": "RUNNING",
         "absolute_deadline": absolute_deadline,
         "last_heartbeat_at": None,
+        "ingest": None,
+        "events": [],
         "created_at": time.time(),
     }
     nodes["nodes"][node_id] = node
@@ -185,6 +245,11 @@ def heartbeat(
         node["memory_mb"] = request.memory_mb
     if request.deadline_remaining_seconds is not None:
         node["deadline_remaining_seconds"] = request.deadline_remaining_seconds
+    if request.ingest is not None:
+        previous = node.get("ingest")
+        current = request.ingest.model_dump()
+        _append_ingest_event(node, previous, current)
+        node["ingest"] = current
     atomic_write_json(NODES_PATH, nodes)
 
     return {"desired_state": node.get("desired_state", "RUNNING")}
