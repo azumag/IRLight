@@ -82,7 +82,6 @@ services:
       NODE_BOOT_ID: poc-boot
       NODE_AGENT_VERSION: 0.4.0-spike
       NODE_SECRET_DIR: /tmp/irlight-node-secrets
-      NODE_EGRESS_URL: rtmp://mediamtx:1935/output/relay
       NODE_HEARTBEAT_INTERVAL: "2"
       NODE_SUPERVISOR: fake
       NODE_INGEST_AUTH_PROXY_ENABLED: "1"
