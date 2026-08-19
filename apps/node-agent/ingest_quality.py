@@ -155,12 +155,17 @@ class IngestQualitySampler:
         )
 
     def _sample_track(self, media_type: str, selector: str) -> dict[str, Any]:
+        # Restrict the RTSP demuxer itself to the requested media type. Merely
+        # selecting ffprobe output still subscribes to every RTSP track, allowing
+        # a stalled sibling track to block an otherwise healthy probe.
         command = [
             self.config.ffprobe_path,
             "-v",
             "error",
             "-rtsp_transport",
             "tcp",
+            "-allowed_media_types",
+            media_type,
             "-read_intervals",
             f"%+{self.config.sample_seconds:g}",
             "-select_streams",
