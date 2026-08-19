@@ -103,16 +103,14 @@ assert_status_reason() {
   local expected_reason="$2"
   local payload
   payload="$(read_egress_status)"
-  python3 - "$expected_status" "$expected_reason" <<'PY' <<<"$payload"
-import json
-import sys
-
-value = json.load(sys.stdin)
-expected_status = sys.argv[1]
-expected_reason = sys.argv[2]
+  python3 -c '
+import json,sys
+value=json.loads(sys.argv[1])
+expected_status=sys.argv[2]
+expected_reason=sys.argv[3]
 assert value.get("status") == expected_status, value
 assert value.get("reason_code") == expected_reason, value
-PY
+' "$payload" "$expected_status" "$expected_reason"
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -126,14 +124,14 @@ wait_egress_status CONNECTED 60
 wait_egress_status RECONNECTING 45
 
 before_stop="$(read_egress_status)"
-python3 - <<'PY' <<<"$before_stop"
-import json, sys, time
-value = json.load(sys.stdin)
+python3 -c '
+import json,sys,time
+value=json.loads(sys.argv[1])
 assert value.get("status") == "RECONNECTING", value
-next_retry = value.get("next_retry_at")
+next_retry=value.get("next_retry_at")
 assert isinstance(next_retry, (int, float)), value
 assert next_retry - time.time() > 10, value
-PY
+' "$before_stop"
 
 "${compose[@]}" stop -t 5 egress-gateway >/dev/null
 wait_egress_status STOPPED 10
