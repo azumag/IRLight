@@ -17,8 +17,6 @@ cleanup() {
     "${test_compose[@]}" ps -a >&2 || true
     echo "--- continuity logs ---" >&2
     "${test_compose[@]}" logs --no-color --tail=180 continuity >&2 || true
-    echo "--- publisher logs ---" >&2
-    "${test_compose[@]}" logs --no-color --tail=120 restart-publisher >&2 || true
     echo "--- mediamtx logs ---" >&2
     "${test_compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
     echo "--- status ---" >&2
