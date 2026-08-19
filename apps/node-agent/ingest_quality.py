@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -95,48 +96,45 @@ class IngestQualitySampler:
             self._low_bitrate_samples = 0
 
     def sample(self) -> dict[str, Any]:
-        command = [
-            self.config.ffprobe_path,
-            "-v",
-            "error",
-            "-rtsp_transport",
-            "tcp",
-            "-read_intervals",
-            f"%+{self.config.sample_seconds:g}",
-            "-show_frames",
-            "-show_entries",
-            "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
-            "-of",
-            "compact=p=0:nk=0",
-            self.config.input_url,
-        ]
+        # Probe tracks independently. With a single ffprobe process, one stalled
+        # track can keep the process alive until our wall-clock timeout and some
+        # ffprobe builds do not flush the other track's line-oriented output to a
+        # pipe before they are terminated. Independent probes make one-sided media
+        # loss observable without relying on partial stdout buffering behavior.
         started = time.monotonic()
-        try:
-            result = self._runner(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            elapsed = time.monotonic() - started
-            # A single stalled track can keep ffprobe waiting past read_intervals even
-            # while the other track continues to produce frames. Preserve the compact
-            # line-oriented output captured before timeout so VIDEO_TIMEOUT and
-            # AUDIO_TIMEOUT remain distinguishable instead of collapsing everything
-            # into MEDIA_SAMPLE_TIMEOUT.
-            partial = _decode_subprocess_output(exc.stdout)
-            payload = _parse_frame_output(partial)
-            if payload.get("frames"):
-                evaluated = evaluate_frame_sample(
-                    payload,
-                    self.config,
-                    sample_elapsed_seconds=elapsed,
-                )
-                if not evaluated.get("reasons"):
-                    evaluated["reasons"] = ["MEDIA_SAMPLE_TIMEOUT"]
-                return evaluated
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            video_future = executor.submit(self._sample_track, "video", "v:0")
+            audio_future = executor.submit(self._sample_track, "audio", "a:0")
+            video = video_future.result()
+            audio = audio_future.result()
+        elapsed = time.monotonic() - started
+
+        frames = [*video["frames"], *audio["frames"]]
+        failures = [
+            probe.get("error")
+            for probe in (video, audio)
+            if probe.get("failed")
+        ]
+        if failures:
+            return {
+                "sample_elapsed_seconds": round(elapsed, 3),
+                "video_frames": sum(
+                    1 for frame in frames if frame.get("media_type") == "video"
+                ),
+                "audio_frames": sum(
+                    1 for frame in frames if frame.get("media_type") == "audio"
+                ),
+                "video_fps": None,
+                "video_timestamp_span_seconds": None,
+                "audio_timestamp_span_seconds": None,
+                "keyframes": 0,
+                "max_gop_seconds": None,
+                "reasons": ["MEDIA_SAMPLE_FAILED"],
+                "warnings": [],
+                "error": "; ".join(str(value) for value in failures if value)[:160],
+            }
+
+        if not frames and video.get("timed_out") and audio.get("timed_out"):
             return {
                 "sample_elapsed_seconds": round(elapsed, 3),
                 "video_frames": 0,
@@ -150,41 +148,68 @@ class IngestQualitySampler:
                 "warnings": [],
             }
 
-        elapsed = time.monotonic() - started
-        if result.returncode != 0:
-            detail = (result.stderr or "ffprobe failed").strip().replace("\n", " ")[:160]
-            return {
-                "sample_elapsed_seconds": round(elapsed, 3),
-                "video_frames": 0,
-                "audio_frames": 0,
-                "video_fps": None,
-                "video_timestamp_span_seconds": None,
-                "audio_timestamp_span_seconds": None,
-                "keyframes": 0,
-                "max_gop_seconds": None,
-                "reasons": ["MEDIA_SAMPLE_FAILED"],
-                "warnings": [],
-                "error": detail,
-            }
-        payload = _parse_frame_output(result.stdout or "")
-        if payload.get("invalid"):
-            return {
-                "sample_elapsed_seconds": round(elapsed, 3),
-                "video_frames": 0,
-                "audio_frames": 0,
-                "video_fps": None,
-                "video_timestamp_span_seconds": None,
-                "audio_timestamp_span_seconds": None,
-                "keyframes": 0,
-                "max_gop_seconds": None,
-                "reasons": ["MEDIA_SAMPLE_INVALID_JSON"],
-                "warnings": [],
-            }
         return evaluate_frame_sample(
-            payload,
+            {"frames": frames},
             self.config,
             sample_elapsed_seconds=elapsed,
         )
+
+    def _sample_track(self, media_type: str, selector: str) -> dict[str, Any]:
+        command = [
+            self.config.ffprobe_path,
+            "-v",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-read_intervals",
+            f"%+{self.config.sample_seconds:g}",
+            "-select_streams",
+            selector,
+            "-show_frames",
+            "-show_entries",
+            "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
+            "-of",
+            "compact=p=0:nk=0",
+            self.config.input_url,
+        ]
+        try:
+            result = self._runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            payload = _parse_frame_output(_decode_subprocess_output(exc.stdout))
+            return {
+                "frames": _frames_for_media_type(payload, media_type),
+                "timed_out": True,
+                "failed": False,
+            }
+
+        payload = _parse_frame_output(result.stdout or "")
+        frames = _frames_for_media_type(payload, media_type)
+        if result.returncode != 0:
+            detail = (result.stderr or "ffprobe failed").strip().replace("\n", " ")[:160]
+            return {
+                "frames": frames,
+                "timed_out": False,
+                "failed": True,
+                "error": detail,
+            }
+        if payload.get("invalid"):
+            return {
+                "frames": [],
+                "timed_out": False,
+                "failed": True,
+                "error": "ffprobe returned invalid frame data",
+            }
+        return {
+            "frames": frames,
+            "timed_out": False,
+            "failed": False,
+        }
 
     def augment(self, observation: dict[str, Any]) -> dict[str, Any]:
         """Merge live quality results into a MediaMTX policy observation."""
@@ -364,6 +389,17 @@ def _parse_frame_output(output: str) -> dict[str, Any]:
         if frame.get("media_type") in {"video", "audio"}:
             frames.append(frame)
     return {"frames": frames}
+
+
+def _frames_for_media_type(payload: dict[str, Any], media_type: str) -> list[dict[str, Any]]:
+    frames = payload.get("frames", [])
+    if not isinstance(frames, list):
+        return []
+    return [
+        frame
+        for frame in frames
+        if isinstance(frame, dict) and frame.get("media_type") == media_type
+    ]
 
 
 def _decode_subprocess_output(value: object) -> str:
