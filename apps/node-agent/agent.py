@@ -7,11 +7,12 @@ Responsibilities:
 - start the media stack through the configured supervisor
 - inspect and enforce the ingest format/bitrate policy through MediaMTX
 - sample FPS/GOP/timestamp health without exposing the RTSP path publicly
+- report safe Egress Gateway status without copying destination credentials
 - send heartbeats and honour STOP / absolute deadline
 
 Secrets are never placed in process arguments or container environment
-variables. The production compose file mounts the tmpfs secret as
-``EGRESS_URL_FILE`` for the continuity container.
+variables. The production compose file mounts the tmpfs secret read-only into
+the dedicated Egress Gateway.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from egress_status import read_egress_status
 from ingest_policy import IngestPolicyInspector
 from ingest_quality import IngestQualitySampler
 from supervisor import ComposeSupervisor, FakeSupervisor, MediaSupervisor
@@ -106,6 +108,7 @@ class NodeAgent:
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         ingest_inspector: IngestPolicyInspector | None = None,
         ingest_quality_sampler: IngestQualitySampler | None = None,
+        egress_status_file: Path | None = None,
     ) -> None:
         self.control_base_url = control_base_url.rstrip("/")
         self.bootstrap_token = bootstrap_token
@@ -117,6 +120,7 @@ class NodeAgent:
         self.heartbeat_interval = heartbeat_interval
         self.ingest_inspector = ingest_inspector
         self.ingest_quality_sampler = ingest_quality_sampler
+        self.egress_status_file = egress_status_file
         self.node_id: str | None = None
         self.session_id: str | None = None
         self.absolute_deadline: float | None = None
@@ -145,15 +149,37 @@ class NodeAgent:
         return response
 
     def write_secret(self, response: dict[str, object]) -> Path:
-        """Persist the delivered secret to tmpfs with 0600 permissions."""
-        self.secret_dir.mkdir(parents=True, exist_ok=True)
+        """Persist the delivered secret to tmpfs, created as 0600 immediately."""
+        self.secret_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            self.secret_dir.chmod(0o700)
+        except OSError:
+            pass
         egress_url = str(response.get("egress_url", ""))
         if not egress_url:
             raise RuntimeError("bootstrap response missing egress_url")
         secret_path = self.secret_dir / "egress_url"
-        secret_path.write_text(egress_url + "\n", encoding="utf-8")
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(egress_url + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                secret_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         secret_path.chmod(0o600)
         return secret_path
+
+    @staticmethod
+    def remove_secret(secret_path: Path) -> None:
+        try:
+            secret_path.unlink()
+        except FileNotFoundError:
+            pass
 
     # -- heartbeat ---------------------------------------------------------
 
@@ -193,27 +219,38 @@ class NodeAgent:
                     degraded["status"] = "WARNING"
             return degraded
 
+    def _egress_observation(self) -> dict[str, object] | None:
+        if self.egress_status_file is None:
+            return None
+        return read_egress_status(self.egress_status_file)
+
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:
             raise RuntimeError("heartbeat before bootstrap")
         health = self.supervisor.health()
         ingest = self._ingest_observation()
+        egress = self._egress_observation()
         remaining = None
         if self.absolute_deadline is not None:
             remaining = max(0.0, self.absolute_deadline - time.time())
         active_publisher = bool(health.get("active_publisher", False))
         if ingest is not None:
             active_publisher = bool(ingest.get("online", False))
+        egress_connected = bool(health.get("egress_connected", False))
+        if egress is not None:
+            egress_connected = bool(egress.get("connected", False))
         payload: dict[str, object] = {
             "status": "READY" if health.get("media_stack") == "running" else "STOPPING",
             "media_health": str(health.get("media_stack", "unknown")),
             "active_publisher": active_publisher,
-            "egress_connected": bool(health.get("egress_connected", False)),
+            "egress_connected": egress_connected,
             "software_version": self.agent_version,
             "deadline_remaining_seconds": remaining,
         }
         if ingest is not None:
             payload["ingest"] = ingest
+        if egress is not None:
+            payload["egress"] = egress
         return http_json(
             f"{self.control_base_url}/internal/nodes/{self.node_id}/heartbeat",
             method="POST",
@@ -243,35 +280,37 @@ class NodeAgent:
             flush=True,
         )
 
+        exit_code = 0
         result = self.supervisor.start(self.session_id or "unknown")
         if not result.ok:
             print(f"[agent] supervisor start failed: {result.detail}", file=sys.stderr, flush=True)
-            return 1
-        print(f"[agent] media stack started: {result.detail}", flush=True)
+            exit_code = 1
+        else:
+            print(f"[agent] media stack started: {result.detail}", flush=True)
+            while not (self._stop_requested or self._received_signal):
+                try:
+                    heartbeat_response = self.heartbeat()
+                    desired = str(heartbeat_response.get("desired_state", "RUNNING"))
+                    if desired == "STOPPED":
+                        self._stop_requested = True
+                        break
+                except RuntimeError as exc:
+                    print(f"[agent] heartbeat failed: {exc}", file=sys.stderr, flush=True)
 
-        while not (self._stop_requested or self._received_signal):
-            try:
-                response = self.heartbeat()
-                desired = str(response.get("desired_state", "RUNNING"))
-                if desired == "STOPPED":
-                    self._stop_requested = True
+                if (
+                    self.absolute_deadline is not None
+                    and time.time() >= self.absolute_deadline
+                ):
+                    print("[agent] absolute deadline reached; stopping media", flush=True)
                     break
-            except RuntimeError as exc:
-                print(f"[agent] heartbeat failed: {exc}", file=sys.stderr, flush=True)
-
-            if (
-                self.absolute_deadline is not None
-                and time.time() >= self.absolute_deadline
-            ):
-                print("[agent] absolute deadline reached; stopping media", flush=True)
-                break
-            time.sleep(self.heartbeat_interval)
+                time.sleep(self.heartbeat_interval)
 
         stop_result = self.supervisor.stop(self.session_id or "unknown")
         print(f"[agent] media stack stopped: {stop_result.detail}", flush=True)
         if not stop_result.ok:
-            return 1
-        return 0
+            exit_code = 1
+        self.remove_secret(secret_path)
+        return exit_code
 
 
 def _as_float(value: object) -> float | None:
@@ -304,16 +343,18 @@ def build_ingest_quality_sampler() -> IngestQualitySampler | None:
 
 def main() -> int:
     secret_dir = Path(_env("NODE_SECRET_DIR", required=False) or "/run/irlight/secrets")
+    egress_status_path = _env("NODE_EGRESS_STATUS_FILE", required=False)
     agent = NodeAgent(
         control_base_url=_env("NODE_CONTROL_PLANE_URL"),
         bootstrap_token=_secret_from_file_or_env("NODE_BOOTSTRAP_TOKEN"),
         provider_server_id=_env("NODE_PROVIDER_SERVER_ID"),
         boot_id=_env("NODE_BOOT_ID", required=False) or "local-boot",
-        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.4.0-spike",
+        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.5.0-spike",
         secret_dir=secret_dir,
         supervisor=build_supervisor(),
         ingest_inspector=build_ingest_inspector(),
         ingest_quality_sampler=build_ingest_quality_sampler(),
+        egress_status_file=Path(egress_status_path) if egress_status_path else None,
     )
     return agent.run()
 
