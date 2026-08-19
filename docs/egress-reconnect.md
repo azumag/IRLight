@@ -40,6 +40,26 @@ Egress Gatewayは `rtsp://mediamtx:8554/output/relay` を読み、H.264 / AACを
 - `egress.json`: stream key / credentialed URLを含めない
 - Node / Session event: scheme / host / status / reason codeのみ
 
+## Runtime destination DNS guard
+
+Destination verification時だけでなく、Egress Gatewayは**各publish / reconnect attemptの直前**にも実際のhostnameをDNS解決し直します。
+
+既定では解決結果の全addressがpublic/globalであることを要求します。1件でもprivate、loopback、link-local、unspecified、multicast等が混じる場合は接続を開始しません。これによりCustom URLをControl Plane内部やcloud metadata endpointへ向けるSSRFをfail closedにします。
+
+- DNS lookup自体の一時失敗: `DNS_FAILED` としてretry
+- unsafe address: `DESTINATION_UNSAFE` としてterminal
+- `EGRESS_VERIFIED_PEER_IP_FILE` が存在する場合、verify済みpeer IPが現在のDNS answer setから消えていれば `DESTINATION_DNS_CHANGED` としてterminal
+- peer metadataが不正なら `DESTINATION_GUARD_INVALID` としてterminal
+- `EGRESS_ALLOW_PRIVATE_TARGETS=1` はlocal/self-hosted用途の明示overrideで、production既定は`0`
+
+`type=rtmp` / `server_url=rtmps://...` のようなDestination typeとURL scheme不一致はverification前に拒否し、probe結果のprotocolもtypeと一致することを必須にします。
+
+### DNS rebindingの残余リスク
+
+現在のGStreamer `rtmpsink` / librtmpはguard後に自身でもhostnameを解決します。そのため「guardのDNS lookup」と「sink内部のDNS lookup」の極短い間にanswerを切り替える理論上のTOCTOU windowは残ります。
+
+この実装は各attempt直前の再検証とoptionalなverify済みpeer IP照合でpersistentなDNS driftを検知しますが、完全なtransport-IP pinningではありません。完全に塞ぐには、validated IPへsocketを固定しつつRTMPSのTLS SNI / hostname verificationには元hostnameを使えるconnector/proxy、または同等のsink実装が必要です。
+
 ## Connection detection
 
 `rtmpsink` は `GstBaseSink` 派生です。Gatewayはsinkの `stats.rendered` を短周期で確認し、1 buffer以上がrenderされた時点を `CONNECTED` とします。
@@ -96,6 +116,9 @@ EGRESS_MAX_RETRY_SECONDS=0
 - `PUBLISH_CONFLICT`: publish name / key競合。terminal、無限retryしない
 - `TLS_FAILED`: TLS / certificate failure
 - `DNS_FAILED`: hostname解決失敗
+- `DESTINATION_UNSAFE`: runtime DNSがnon-public addressを含む。terminal
+- `DESTINATION_DNS_CHANGED`: verify済みpeer IPがruntime DNSから消失。terminal
+- `DESTINATION_GUARD_INVALID`: runtime guard metadata不正。terminal
 - `TIMEOUT`: 接続待ち / transport timeout
 - `UNREACHABLE`: connection refused / route / reset等
 - `UPSTREAM_UNAVAILABLE`: 内部 `output/relay` を読めない
@@ -126,6 +149,8 @@ Node Agentはsafeな `egress.json` をheartbeatへ含め、Control Planeは変�
 
 `scripts/smoke-egress-reconnect.sh` は2台目のMediaMTXを外部Destination代替として起動します。
 
+このtargetはisolated Compose networkのprivate addressを使うため、smoke overrideだけ `EGRESS_ALLOW_PRIVATE_TARGETS=1` を明示します。production defaultはfail closedのままです。
+
 1. Continuityが内部 `output/relay` へstandby映像/無音を継続publish
 2. Egress Gatewayが別MediaMTXへpublishし `CONNECTED`
 3. target MediaMTXを停止
@@ -145,3 +170,4 @@ Node Agentはsafeな `egress.json` をheartbeatへ含め、Control Planeは変�
 - Kick実publish（MVP対象）
 - 各platformでinvalid stream key / duplicate publish等の実reason確認
 - RTMPS実Destinationでcertificate validationを含むpublish確認
+- 完全なDNS transport-IP pinningが必要なら専用connector/proxyを実装
