@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "node-agent"))
 
-from agent import NodeAgent  # noqa: E402
+from agent import NodeAgent, http_json  # noqa: E402
 from supervisor import FakeSupervisor  # noqa: E402
 
 
@@ -124,6 +124,19 @@ class NodeAgentTest(unittest.TestCase):
         heartbeat = self.agent.heartbeat()
         self.assertEqual(heartbeat["desired_state"], "RUNNING")
         self.assertEqual(self.control.heartbeat_count, 1)
+
+    def test_transport_failure_is_wrapped_as_runtime_error(self) -> None:
+        unused = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        port = int(unused.server_address[1])
+        unused.server_close()
+        with self.assertRaises(RuntimeError) as failure:
+            http_json(
+                f"http://127.0.0.1:{port}/unavailable",
+                method="POST",
+                payload={},
+                timeout=0.2,
+            )
+        self.assertIn("control plane unavailable", str(failure.exception))
 
     def test_run_starts_media_and_stops_on_signal(self) -> None:
         response = self.agent.bootstrap()
