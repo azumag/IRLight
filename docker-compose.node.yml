@@ -3,7 +3,7 @@ name: irlight-node
 # Production compose for one on-demand Media Node.
 #
 # - Prebuilt images only: nothing here uses `build:` for the media stack.
-# - MediaMTX API / metrics stay on the internal network (no ports published).
+# - MediaMTX API / metrics / RTSP stay on the internal network.
 # - Public exposure lives in docker-compose.node.public.yml.
 # - Destination secrets are delivered as tmpfs files, never as env vars or
 #   process arguments.
@@ -26,14 +26,9 @@ services:
     image: bluenviron/mediamtx:1.20.0
     restart: unless-stopped
     environment:
-      # MediaMTX external authentication calls the Control Plane for every
-      # public publish attempt. Set this to the routable internal/mTLS URL in
-      # production; the default is only useful in a composed control network.
       MTX_AUTHHTTPADDRESS: ${NODE_INGEST_AUTH_URL:-http://control-plane:8080/internal/ingest/auth}
     volumes:
       - ./config/mediamtx.yml:/mediamtx.yml:ro
-    # No ports: RTMP/RTSP/HLS/API/metrics stay internal. The public overlay
-    # publishes only ingest ports when explicitly requested.
 
   continuity:
     image: ${NODE_CONTINUITY_IMAGE:-ghcr.io/azumag/irlight-continuity:phase-b-spike}
@@ -61,7 +56,7 @@ services:
       NODE_BOOTSTRAP_TOKEN_FILE: ${NODE_BOOTSTRAP_TOKEN_FILE:-/run/secrets/bootstrap_token}
       NODE_PROVIDER_SERVER_ID: ${NODE_PROVIDER_SERVER_ID:-local-node}
       NODE_BOOT_ID: ${NODE_BOOT_ID:-compose-boot}
-      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.3.0-spike}
+      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.4.0-spike}
       NODE_SECRET_DIR: /run/irlight/secrets
       NODE_HEARTBEAT_INTERVAL: ${NODE_HEARTBEAT_INTERVAL:-10}
       NODE_SUPERVISOR: compose
@@ -72,13 +67,22 @@ services:
       NODE_INGEST_PATH: ${NODE_INGEST_PATH:-live/input}
       NODE_INGEST_MAX_BITRATE_BPS: ${NODE_INGEST_MAX_BITRATE_BPS:-6000000}
       NODE_INGEST_BITRATE_VIOLATION_SAMPLES: ${NODE_INGEST_BITRATE_VIOLATION_SAMPLES:-2}
+      NODE_INGEST_QUALITY_ENABLED: ${NODE_INGEST_QUALITY_ENABLED:-1}
+      NODE_INGEST_SAMPLE_URL: ${NODE_INGEST_SAMPLE_URL:-rtsp://mediamtx:8554/live/input}
+      NODE_INGEST_SAMPLE_SECONDS: ${NODE_INGEST_SAMPLE_SECONDS:-4}
+      NODE_INGEST_MIN_FPS: ${NODE_INGEST_MIN_FPS:-20}
+      NODE_INGEST_PREFERRED_MIN_FPS: ${NODE_INGEST_PREFERRED_MIN_FPS:-24}
+      NODE_INGEST_PREFERRED_MAX_FPS: ${NODE_INGEST_PREFERRED_MAX_FPS:-35}
+      NODE_INGEST_MAX_FPS: ${NODE_INGEST_MAX_FPS:-40}
+      NODE_INGEST_MAX_GOP_SECONDS: ${NODE_INGEST_MAX_GOP_SECONDS:-4}
+      NODE_INGEST_MIN_PROGRESS_RATIO: ${NODE_INGEST_MIN_PROGRESS_RATIO:-0.60}
+      NODE_INGEST_MIN_BITRATE_BPS: ${NODE_INGEST_MIN_BITRATE_BPS:-500000}
+      NODE_INGEST_LOW_BITRATE_SAMPLES: ${NODE_INGEST_LOW_BITRATE_SAMPLES:-2}
     volumes:
       - irlight-secrets:/run/irlight/secrets
       - /var/run/docker.sock:/var/run/docker.sock:ro
     secrets:
       - bootstrap_token
-    # The agent only needs read-only docker.sock to manage the media stack it
-    # shares a project with. No other host paths are mounted.
 
 volumes:
   irlight-state:
