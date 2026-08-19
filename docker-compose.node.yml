@@ -61,12 +61,17 @@ services:
       NODE_BOOTSTRAP_TOKEN_FILE: ${NODE_BOOTSTRAP_TOKEN_FILE:-/run/secrets/bootstrap_token}
       NODE_PROVIDER_SERVER_ID: ${NODE_PROVIDER_SERVER_ID:-local-node}
       NODE_BOOT_ID: ${NODE_BOOT_ID:-compose-boot}
-      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.2.0-spike}
+      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.3.0-spike}
       NODE_SECRET_DIR: /run/irlight/secrets
       NODE_HEARTBEAT_INTERVAL: ${NODE_HEARTBEAT_INTERVAL:-10}
       NODE_SUPERVISOR: compose
       NODE_COMPOSE_FILE: /opt/irlight/docker-compose.node.yml
       NODE_COMPOSE_PROJECT: irlight-node
+      NODE_INGEST_POLICY_ENABLED: ${NODE_INGEST_POLICY_ENABLED:-1}
+      NODE_MEDIAMTX_API_URL: ${NODE_MEDIAMTX_API_URL:-http://mediamtx:9997}
+      NODE_INGEST_PATH: ${NODE_INGEST_PATH:-live/input}
+      NODE_INGEST_MAX_BITRATE_BPS: ${NODE_INGEST_MAX_BITRATE_BPS:-6000000}
+      NODE_INGEST_BITRATE_VIOLATION_SAMPLES: ${NODE_INGEST_BITRATE_VIOLATION_SAMPLES:-2}
     volumes:
       - irlight-secrets:/run/irlight/secrets
       - /var/run/docker.sock:/var/run/docker.sock:ro

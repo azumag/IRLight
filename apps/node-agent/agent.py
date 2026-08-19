@@ -5,6 +5,7 @@ Responsibilities:
 - exchange the one-time bootstrap token with the Control Plane
 - write the delivered egress secret to a tmpfs file with 0600 permissions
 - start the media stack through the configured supervisor
+- inspect and enforce the ingest media policy through MediaMTX's internal API
 - send heartbeats and honour STOP / absolute deadline
 
 Secrets are never placed in process arguments or container environment
@@ -23,6 +24,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ingest_policy import IngestPolicyInspector
 from supervisor import ComposeSupervisor, FakeSupervisor, MediaSupervisor
 
 
@@ -93,6 +95,7 @@ class NodeAgent:
         secret_dir: Path,
         supervisor: MediaSupervisor,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        ingest_inspector: IngestPolicyInspector | None = None,
     ) -> None:
         self.control_base_url = control_base_url.rstrip("/")
         self.bootstrap_token = bootstrap_token
@@ -102,6 +105,7 @@ class NodeAgent:
         self.secret_dir = secret_dir
         self.supervisor = supervisor
         self.heartbeat_interval = heartbeat_interval
+        self.ingest_inspector = ingest_inspector
         self.node_id: str | None = None
         self.session_id: str | None = None
         self.absolute_deadline: float | None = None
@@ -142,21 +146,48 @@ class NodeAgent:
 
     # -- heartbeat ---------------------------------------------------------
 
+    def _ingest_observation(self) -> dict[str, object] | None:
+        if self.ingest_inspector is None:
+            return None
+        try:
+            return self.ingest_inspector.observe_and_enforce()
+        except RuntimeError as exc:
+            print(f"[agent] ingest inspection failed: {exc}", file=sys.stderr, flush=True)
+            return {
+                "status": "UNKNOWN",
+                "path": os.getenv("NODE_INGEST_PATH", "live/input"),
+                "online": False,
+                "source_type": None,
+                "source_id": None,
+                "bitrate_bps": None,
+                "tracks": [],
+                "reasons": ["MEDIAMTX_API_UNAVAILABLE"],
+                "warnings": [],
+                "enforced": False,
+                "observed_at": time.time(),
+            }
+
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:
             raise RuntimeError("heartbeat before bootstrap")
         health = self.supervisor.health()
+        ingest = self._ingest_observation()
         remaining = None
         if self.absolute_deadline is not None:
             remaining = max(0.0, self.absolute_deadline - time.time())
-        payload = {
+        active_publisher = bool(health.get("active_publisher", False))
+        if ingest is not None:
+            active_publisher = bool(ingest.get("online", False))
+        payload: dict[str, object] = {
             "status": "READY" if health.get("media_stack") == "running" else "STOPPING",
             "media_health": str(health.get("media_stack", "unknown")),
-            "active_publisher": bool(health.get("active_publisher", False)),
+            "active_publisher": active_publisher,
             "egress_connected": bool(health.get("egress_connected", False)),
             "software_version": self.agent_version,
             "deadline_remaining_seconds": remaining,
         }
+        if ingest is not None:
+            payload["ingest"] = ingest
         return http_json(
             f"{self.control_base_url}/internal/nodes/{self.node_id}/heartbeat",
             method="POST",
@@ -233,6 +264,12 @@ def build_supervisor() -> MediaSupervisor:
     raise RuntimeError(f"unsupported NODE_SUPERVISOR: {mode}")
 
 
+def build_ingest_inspector() -> IngestPolicyInspector | None:
+    if os.getenv("NODE_INGEST_POLICY_ENABLED", "1") == "0":
+        return None
+    return IngestPolicyInspector()
+
+
 def main() -> int:
     secret_dir = Path(_env("NODE_SECRET_DIR", required=False) or "/run/irlight/secrets")
     agent = NodeAgent(
@@ -240,9 +277,10 @@ def main() -> int:
         bootstrap_token=_secret_from_file_or_env("NODE_BOOTSTRAP_TOKEN"),
         provider_server_id=_env("NODE_PROVIDER_SERVER_ID"),
         boot_id=_env("NODE_BOOT_ID", required=False) or "local-boot",
-        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.2.0-spike",
+        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.3.0-spike",
         secret_dir=secret_dir,
         supervisor=build_supervisor(),
+        ingest_inspector=build_ingest_inspector(),
     )
     return agent.run()
 
