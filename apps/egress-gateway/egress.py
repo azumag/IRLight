@@ -132,11 +132,9 @@ class EgressAttempt:
         sink = self._make("rtmpsink", "egress_sink")
 
         source.set_property("location", self.input_uri)
-        source.set_property("protocols", 4)  # GstRTSPLowerTrans.TCP
+        source.set_property("protocols", 4)
         source.set_property("latency", env_int("EGRESS_INPUT_LATENCY_MS", 500))
-        source.set_property(
-            "tcp-timeout", env_int("EGRESS_INPUT_TCP_TIMEOUT_US", 3_000_000)
-        )
+        source.set_property("tcp-timeout", env_int("EGRESS_INPUT_TCP_TIMEOUT_US", 3_000_000))
         mux.set_property("streamable", True)
         sink.set_property("location", self.destination_url)
         sink.set_property("sync", False)
@@ -151,11 +149,6 @@ class EgressAttempt:
         self.pipeline = pipeline
         self.sink = sink
         self.mux = mux
-
-        # Request and link both FLV tracks before PLAYING. The queue source
-        # pads are blocked until rtspsrc has exposed and attached both media
-        # tracks, preventing an audio-only or video-only FLV header from being
-        # emitted while the second dynamic RTSP pad is still being discovered.
         self._prepare_track("video")
         self._prepare_track("audio")
         source.connect("pad-added", self._on_source_pad)
@@ -165,50 +158,30 @@ class EgressAttempt:
         mux = self.mux
         if pipeline is None or mux is None:
             raise RuntimeError("egress pipeline is not initialized")
-
         mux_pad = mux.request_pad_simple(kind)
         if mux_pad is None:
             raise RuntimeError(f"cannot request flvmux {kind} pad")
         self._requested_mux_pads.append(mux_pad)
-
         if kind == "video":
             depay = self._make("rtph264depay", "video_depay")
             parser = self._make("h264parse", "video_parse")
             parser.set_property("config-interval", -1)
             capsfilter = self._make("capsfilter", "video_caps")
-            capsfilter.set_property(
-                "caps",
-                Gst.Caps.from_string(
-                    "video/x-h264,stream-format=avc,alignment=au"
-                ),
-            )
+            capsfilter.set_property("caps", Gst.Caps.from_string("video/x-h264,stream-format=avc,alignment=au"))
         else:
             depay = self._make("rtpmp4gdepay", "audio_depay")
             parser = self._make("aacparse", "audio_parse")
             capsfilter = self._make("capsfilter", "audio_caps")
-            capsfilter.set_property(
-                "caps",
-                Gst.Caps.from_string(
-                    "audio/mpeg,mpegversion=4,stream-format=raw"
-                ),
-            )
+            capsfilter.set_property("caps", Gst.Caps.from_string("audio/mpeg,mpegversion=4,stream-format=raw"))
         queue = self._make("queue", f"{kind}_queue")
-
         for element in (depay, parser, capsfilter, queue):
             pipeline.add(element)
-        if (
-            not depay.link(parser)
-            or not parser.link(capsfilter)
-            or not capsfilter.link(queue)
-        ):
+        if not depay.link(parser) or not parser.link(capsfilter) or not capsfilter.link(queue):
             raise RuntimeError(f"failed to link {kind} egress chain")
         queue_src = queue.get_static_pad("src")
         if queue_src is None or queue_src.link(mux_pad) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"failed to link {kind} to flvmux")
-        probe_id = queue_src.add_probe(
-            Gst.PadProbeType.BLOCK_DOWNSTREAM,
-            lambda _pad, _info: Gst.PadProbeReturn.OK,
-        )
+        probe_id = queue_src.add_probe(Gst.PadProbeType.BLOCK_DOWNSTREAM, lambda _pad, _info: Gst.PadProbeReturn.OK)
         self._track_block_probes[kind] = (queue_src, probe_id)
         depay_sink = depay.get_static_pad("sink")
         if depay_sink is None:
@@ -228,15 +201,8 @@ class EgressAttempt:
             elif media == "audio" and encoding == "MPEG4-GENERIC":
                 self._attach_track(pad, "audio")
         except Exception:
-            # Do not render exception text: a downstream plugin error can embed
-            # the credentialed destination URL.
             LOG.error("failed to attach an internal RTSP track to egress")
-            self.result = AttemptResult(
-                "LOCAL_PIPELINE_FAILED",
-                self.connected_once,
-                self.rendered_buffers,
-                terminal=True,
-            )
+            self.result = AttemptResult("LOCAL_PIPELINE_FAILED", self.connected_once, self.rendered_buffers, terminal=True)
             self.loop.quit()
 
     def _attach_track(self, source_pad: Gst.Pad, kind: str) -> None:
@@ -259,19 +225,11 @@ class EgressAttempt:
 
     def _poll_sink(self) -> bool:
         if self.stop_event.is_set():
-            self.result = AttemptResult(
-                "STOPPED", self.connected_once, self.rendered_buffers
-            )
+            self.result = AttemptResult("STOPPED", self.connected_once, self.rendered_buffers)
             self.loop.quit()
             return False
-        if (
-            not self.connected_once
-            and self.connect_timeout_seconds > 0
-            and time.monotonic() - self._attempt_started >= self.connect_timeout_seconds
-        ):
-            self.result = AttemptResult(
-                "TIMEOUT", self.connected_once, self.rendered_buffers
-            )
+        if not self.connected_once and self.connect_timeout_seconds > 0 and time.monotonic() - self._attempt_started >= self.connect_timeout_seconds:
+            self.result = AttemptResult("TIMEOUT", self.connected_once, self.rendered_buffers)
             self.loop.quit()
             return False
         sink = self.sink
@@ -290,12 +248,7 @@ class EgressAttempt:
             self._last_reported_rendered = rendered
             if self.on_connected is not None:
                 self.on_connected(rendered)
-        elif (
-            self.connected_once
-            and rendered > self._last_reported_rendered
-            and self.status_heartbeat_seconds > 0
-            and now - self._last_progress_at >= self.status_heartbeat_seconds
-        ):
+        elif self.connected_once and rendered > self._last_reported_rendered and self.status_heartbeat_seconds > 0 and now - self._last_progress_at >= self.status_heartbeat_seconds:
             self._last_progress_at = now
             self._last_reported_rendered = rendered
             if self.on_progress is not None:
@@ -305,44 +258,38 @@ class EgressAttempt:
     def _on_bus_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
         if message.type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
-            source_name = (
-                message.src.get_name() if message.src is not None else "unknown"
-            )
+            source_name = message.src.get_name() if message.src is not None else "unknown"
+            error_domain = str(getattr(error, "domain", "")) or None
+            error_code = int(getattr(error, "code", 0))
             reason = classify_error(
                 source_name=source_name,
                 message=str(getattr(error, "message", "")),
                 debug=debug,
+                error_domain=error_domain,
+                error_code=error_code,
+                connected_once=self.connected_once,
             )
             self.result = AttemptResult(
                 reason,
                 self.connected_once,
                 self.rendered_buffers,
                 terminal=reason in TERMINAL_REASON_CODES,
-                error_domain=str(getattr(error, "domain", "")) or None,
-                error_code=int(getattr(error, "code", 0)),
+                error_domain=error_domain,
+                error_code=error_code,
             )
             self.loop.quit()
         elif message.type == Gst.MessageType.EOS:
-            self.result = AttemptResult(
-                "UPSTREAM_EOS", self.connected_once, self.rendered_buffers
-            )
+            self.result = AttemptResult("UPSTREAM_EOS", self.connected_once, self.rendered_buffers)
             self.loop.quit()
 
-    def run(
-        self,
-        *,
-        on_connected: Callable[[int], None] | None = None,
-        on_progress: Callable[[int], None] | None = None,
-    ) -> AttemptResult:
+    def run(self, *, on_connected: Callable[[int], None] | None = None, on_progress: Callable[[int], None] | None = None) -> AttemptResult:
         self.on_connected = on_connected
         self.on_progress = on_progress
         try:
             self._build()
         except Exception:
             LOG.error("failed to build egress pipeline")
-            return AttemptResult(
-                "LOCAL_PIPELINE_FAILED", False, 0, terminal=True
-            )
+            return AttemptResult("LOCAL_PIPELINE_FAILED", False, 0, terminal=True)
         assert self.pipeline is not None
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
@@ -377,27 +324,14 @@ class EgressAttempt:
 
 class EgressGateway:
     def __init__(self) -> None:
-        self.input_uri = os.getenv(
-            "EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay"
-        )
-        self.destination_file = Path(
-            os.getenv("EGRESS_URL_FILE", "/run/irlight/secrets/egress_url")
-        )
-        verified_peer_file = os.getenv(
-            "EGRESS_VERIFIED_PEER_IP_FILE",
-            "/run/irlight/secrets/egress_verified_peer_ip",
-        )
+        self.input_uri = os.getenv("EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay")
+        self.destination_file = Path(os.getenv("EGRESS_URL_FILE", "/run/irlight/secrets/egress_url"))
+        verified_peer_file = os.getenv("EGRESS_VERIFIED_PEER_IP_FILE", "/run/irlight/secrets/egress_verified_peer_ip")
         self.verified_peer_ip_file = Path(verified_peer_file) if verified_peer_file else None
         self.allow_private_targets = os.getenv("EGRESS_ALLOW_PRIVATE_TARGETS", "") == "1"
-        self.status_file = Path(
-            os.getenv("EGRESS_STATUS_FILE", "/state/egress.json")
-        )
-        self.connect_timeout_seconds = env_float(
-            "EGRESS_CONNECT_TIMEOUT_SECONDS", 15.0
-        )
-        self.status_heartbeat_seconds = env_float(
-            "EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0
-        )
+        self.status_file = Path(os.getenv("EGRESS_STATUS_FILE", "/state/egress.json"))
+        self.connect_timeout_seconds = env_float("EGRESS_CONNECT_TIMEOUT_SECONDS", 15.0)
+        self.status_heartbeat_seconds = env_float("EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0)
         self.policy = ReconnectPolicy(
             initial_seconds=env_float("EGRESS_RETRY_INITIAL_SECONDS", 1.0),
             max_seconds=env_float("EGRESS_RETRY_MAX_SECONDS", 30.0),
@@ -416,17 +350,7 @@ class EgressGateway:
     def request_stop(self, _signum: int, _frame: object) -> None:
         self.stop_event.set()
 
-    def _write_status(
-        self,
-        status: str,
-        *,
-        connected: bool,
-        reason_code: str | None = None,
-        rendered_buffers: int = 0,
-        next_retry_at: float | None = None,
-        error_domain: str | None = None,
-        error_code: int | None = None,
-    ) -> None:
+    def _write_status(self, status: str, *, connected: bool, reason_code: str | None = None, rendered_buffers: int = 0, next_retry_at: float | None = None, error_domain: str | None = None, error_code: int | None = None) -> None:
         if status not in ALLOWED_STATUSES:
             raise ValueError(f"invalid egress status: {status}")
         atomic_write_json(
@@ -453,13 +377,9 @@ class EgressGateway:
             destination_url = read_destination_url(self.destination_file)
         except RuntimeError:
             LOG.error("egress destination secret file is unavailable or invalid")
-            self._write_status(
-                "FAILED", connected=False, reason_code="SECRET_UNAVAILABLE"
-            )
+            self._write_status("FAILED", connected=False, reason_code="SECRET_UNAVAILABLE")
             return 1
-        self.destination_scheme, self.destination_host = safe_destination(
-            destination_url
-        )
+        self.destination_scheme, self.destination_host = safe_destination(destination_url)
         self._write_status("STARTING", connected=False)
 
         while not self.stop_event.is_set():
@@ -472,16 +392,8 @@ class EgressGateway:
                     allow_private_targets=self.allow_private_targets,
                 )
             except DestinationGuardError as exc:
-                LOG.warning(
-                    "egress destination runtime guard blocked attempt reason=%s",
-                    exc.reason_code,
-                )
-                result = AttemptResult(
-                    exc.reason_code,
-                    False,
-                    0,
-                    terminal=exc.terminal,
-                )
+                LOG.warning("egress destination runtime guard blocked attempt reason=%s", exc.reason_code)
+                result = AttemptResult(exc.reason_code, False, 0, terminal=exc.terminal)
             else:
                 attempt = EgressAttempt(
                     self.input_uri,
@@ -494,27 +406,15 @@ class EgressGateway:
                 def connected(rendered: int) -> None:
                     self.failure_count = 0
                     self.outage_started_monotonic = None
-                    self._write_status(
-                        "CONNECTED", connected=True, rendered_buffers=rendered
-                    )
+                    self._write_status("CONNECTED", connected=True, rendered_buffers=rendered)
 
                 def progress(rendered: int) -> None:
-                    self._write_status(
-                        "CONNECTED", connected=True, rendered_buffers=rendered
-                    )
+                    self._write_status("CONNECTED", connected=True, rendered_buffers=rendered)
 
-                result = attempt.run(
-                    on_connected=connected,
-                    on_progress=progress,
-                )
+                result = attempt.run(on_connected=connected, on_progress=progress)
 
             if self.stop_event.is_set() or result.reason_code == "STOPPED":
-                self._write_status(
-                    "STOPPED",
-                    connected=False,
-                    reason_code="USER_STOPPED",
-                    rendered_buffers=result.rendered_buffers,
-                )
+                self._write_status("STOPPED", connected=False, reason_code="USER_STOPPED", rendered_buffers=result.rendered_buffers)
                 return 0
 
             self.failure_count += 1
@@ -522,11 +422,7 @@ class EgressGateway:
                 self.outage_started_monotonic = time.monotonic()
 
             if result.terminal:
-                status = (
-                    "AUTH_FAILED"
-                    if result.reason_code in {"AUTH_FAILED", "PUBLISH_CONFLICT"}
-                    else "FAILED"
-                )
+                status = "AUTH_FAILED" if result.reason_code in {"AUTH_FAILED", "PUBLISH_CONFLICT", "PUBLISH_REJECTED"} else "FAILED"
                 self._write_status(
                     status,
                     connected=False,
@@ -562,9 +458,7 @@ class EgressGateway:
             if self.stop_event.wait(delay):
                 break
 
-        self._write_status(
-            "STOPPED", connected=False, reason_code="USER_STOPPED"
-        )
+        self._write_status("STOPPED", connected=False, reason_code="USER_STOPPED")
         return 0
 
 
