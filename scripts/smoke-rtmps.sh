@@ -68,7 +68,7 @@ csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' 
 destination="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST "$base_url/v1/destinations" \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $csrf" \
-  --data '{"type":"rtmp","display_name":"Local RTMPS probe","server_url":"rtmps://mediamtx:1936/live/input","secret_ref":"smoke/rtmps"}')"
+  --data '{"type":"rtmps","display_name":"Local RTMPS probe","server_url":"rtmps://mediamtx:1936/live/input","secret_ref":"smoke/rtmps"}')"
 destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
 verified="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/destinations/$destination_id/verify" \
