@@ -21,8 +21,6 @@ services:
     environment:
       MTX_API: "yes"
       MTX_APIADDRESS: ":9997"
-    ports:
-      - "127.0.0.1:19997:9997"
 
   egress-gateway:
     build:
@@ -69,13 +67,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-wait_http() {
-  local url="$1"
-  local timeout="${2:-60}"
+target_api() {
+  "${compose[@]}" exec -T egress-gateway python3 -c '
+import sys
+import urllib.request
+try:
+    with urllib.request.urlopen("http://egress-target:9997/v3/paths/list", timeout=3) as response:
+        sys.stdout.write(response.read().decode("utf-8"))
+except Exception:
+    raise SystemExit(1)
+' 2>/dev/null
+}
+
+wait_target_api() {
+  local timeout="${1:-60}"
   local deadline=$((SECONDS + timeout))
-  until curl -fsS --max-time 3 "$url" >/dev/null 2>&1; do
+  until target_api >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
-      echo "HTTP endpoint did not become ready: $url" >&2
+      echo "target Control API did not become ready" >&2
       return 1
     fi
     sleep 1
@@ -115,7 +124,7 @@ wait_target_path() {
   local deadline=$((SECONDS + timeout))
   local payload=""
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 http://127.0.0.1:19997/v3/paths/list 2>/dev/null || true)"
+    payload="$(target_api 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 name=sys.argv[1]
@@ -136,7 +145,7 @@ raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" up -d --build mediamtx continuity egress-target egress-gateway
-wait_http http://127.0.0.1:19997/v3/paths/list 60
+wait_target_api 60
 wait_egress_status CONNECTED 60
 wait_target_path 60
 
@@ -160,7 +169,7 @@ if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
 fi
 
 "${compose[@]}" start egress-target >/dev/null
-wait_http http://127.0.0.1:19997/v3/paths/list 45
+wait_target_api 45
 wait_egress_status CONNECTED 60
 wait_target_path 60
 
