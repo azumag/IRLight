@@ -217,31 +217,34 @@ PY
 assert_recovery_sequence() {
   local events_payload
   events_payload="$(session_events)"
-  python3 - "$recovery_stable_seconds" <<'PY' <<<"$events_payload"
+  python3 -c '
 import json
 import sys
 
 stable = float(sys.argv[1])
 events = json.load(sys.stdin).get("events", [])
-holding_indexes = [i for i, e in enumerate(events) if e.get("type") == "session.holding" and e.get("reason_code") == "INGEST_DISCONNECTED"]
+holding_indexes = [
+    i for i, e in enumerate(events)
+    if e.get("type") == "session.holding" and e.get("reason_code") == "INGEST_DISCONNECTED"
+]
 if not holding_indexes:
     raise SystemExit("missing INGEST_DISCONNECTED session.holding event")
 start = holding_indexes[-1]
 window = events[start + 1:]
-ingest = next((e for e in window if e.get("type") == "ingest.recovered"), None)
+# A reconnect from OFFLINE is represented as ingest.reconnected. The separate
+# ingest.recovered event is reserved for DEGRADED -> usable transitions.
+ingest = next((e for e in window if e.get("type") == "ingest.reconnected"), None)
 session = next((e for e in window if e.get("type") == "session.recovered"), None)
 if ingest is None:
-    raise SystemExit("missing ingest.recovered after disconnect")
+    raise SystemExit("missing ingest.reconnected after disconnect")
 if session is None:
     raise SystemExit("missing session.recovered after disconnect")
 delta = float(session["occurred_at"]) - float(ingest["occurred_at"])
-# Heartbeat/event timestamps have scheduling jitter. Keep enough tolerance to
-# catch an immediate recovery while not making the test timing-fragile.
 minimum = max(0.0, stable - 0.5)
 if delta < minimum:
     raise SystemExit(f"recovery stability window too short: {delta:.3f}s < {minimum:.3f}s")
 print(f"recovery stability event gap: {delta:.3f}s")
-PY
+' "$recovery_stable_seconds" <<<"$events_payload"
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
