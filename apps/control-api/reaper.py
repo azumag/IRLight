@@ -50,6 +50,20 @@ class Reaper:
     def now(self) -> float:
         return self._now if self._now is not None else time.time()
 
+    @staticmethod
+    def _has_holding_event_since(session: dict[str, Any], started: float) -> bool:
+        """Return whether this HOLDING interval is already lifecycle-audited."""
+        for event in reversed(session.get("events", [])):
+            if not isinstance(event, dict) or event.get("type") != "session.holding":
+                continue
+            try:
+                occurred_at = float(event.get("occurred_at"))
+            except (TypeError, ValueError):
+                continue
+            if occurred_at >= started:
+                return True
+        return False
+
     def run(self) -> dict[str, Any]:
         """One sweep; returns counts for tests and logs."""
         result = {
@@ -93,22 +107,28 @@ class Reaper:
                     started = session.get("updated_at")
                 if started is None:
                     started = now
-                hold_deadline = float(started) + self.config.hold_timeout_seconds
+                started = float(started)
+                hold_deadline = started + self.config.hold_timeout_seconds
                 self.store.update(
                     str(session["session_id"]),
                     hold_deadline_at=hold_deadline,
                 )
-                self.store.append_event(
-                    str(session["session_id"]),
-                    event_type="session.holding",
-                    reason_code="INGEST_DISCONNECTED",
-                    payload={
-                        "hold_started_at": float(started),
-                        "hold_deadline_at": hold_deadline,
-                    },
-                    origin="reaper",
-                    occurred_at=now,
-                )
+                # Newer SessionStore versions emit session.holding at the
+                # LIVE/DEGRADED -> HOLDING transition itself. Older persisted
+                # sessions can legitimately lack that audit. Recover the event
+                # only when this hold interval has not already emitted one.
+                if not self._has_holding_event_since(session, started):
+                    self.store.append_event(
+                        str(session["session_id"]),
+                        event_type="session.holding",
+                        reason_code="INGEST_DISCONNECTED",
+                        payload={
+                            "hold_started_at": started,
+                            "hold_deadline_at": hold_deadline,
+                        },
+                        origin="reaper",
+                        occurred_at=now,
+                    )
                 result["hold_deadlines_recovered"] += 1
 
             if now > float(hold_deadline):

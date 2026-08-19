@@ -43,6 +43,25 @@ class ContinuityHoldLifecycleTest(unittest.TestCase):
         self.assertEqual(session["hold_deadline_at"], 130.0)
         self.assertEqual(session["events"][-1]["type"], "session.holding")
 
+    def test_deadline_recovery_does_not_duplicate_existing_holding_event(self) -> None:
+        session_id = self._holding_session()
+        self.store.append_event(
+            session_id,
+            event_type="session.holding",
+            reason_code="INGEST_DISCONNECTED",
+            payload={"from_state": "LIVE", "to_state": "HOLDING"},
+            origin="node-agent",
+            occurred_at=100.0,
+        )
+        result = Reaper(self.store, self.provider, self.config, now=110.0).run()
+        self.assertEqual(result["hold_deadlines_recovered"], 1)
+        session = self.store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["hold_deadline_at"], 130.0)
+        holding_events = [event for event in session["events"] if event["type"] == "session.holding"]
+        self.assertEqual(len(holding_events), 1)
+        self.assertEqual(holding_events[0]["origin"], "node-agent")
+
     def test_recovered_deadline_survives_store_restart_without_extending_window(self) -> None:
         session_id = self._holding_session()
         Reaper(self.store, self.provider, self.config, now=110.0).run()

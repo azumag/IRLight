@@ -3,7 +3,9 @@
 The state machine follows the Phase B design:
 
     STOPPED -> PROVISIONING -> BOOTSTRAPPING -> READY_WAIT_INGEST
-             -> LIVE -> HOLDING -> STOPPING -> FINISHED
+             -> LIVE <-> DEGRADED -> HOLDING -> STOPPING -> FINISHED
+                ^          ^           |
+                +----------+-----------+
 
 Any active state can fail into FAILED_CLEANUP (reaper still owns provider
 resources) and then FAILED once cleanup completed. STOPPING is terminal for
@@ -28,6 +30,7 @@ SESSION_STATES = {
     "BOOTSTRAPPING",
     "READY_WAIT_INGEST",
     "LIVE",
+    "DEGRADED",
     "HOLDING",
     "STOPPING",
     "FINISHED",
@@ -40,6 +43,7 @@ ACTIVE_STATES = {
     "BOOTSTRAPPING",
     "READY_WAIT_INGEST",
     "LIVE",
+    "DEGRADED",
     "HOLDING",
 }
 
@@ -51,9 +55,10 @@ TRANSITIONS: dict[str, set[str]] = {
     "STOPPED": {"PROVISIONING"},
     "PROVISIONING": {"BOOTSTRAPPING", "STOPPING", "FAILED_CLEANUP"},
     "BOOTSTRAPPING": {"READY_WAIT_INGEST", "STOPPING", "FAILED_CLEANUP"},
-    "READY_WAIT_INGEST": {"LIVE", "STOPPING", "FAILED_CLEANUP"},
-    "LIVE": {"HOLDING", "STOPPING", "FAILED_CLEANUP"},
-    "HOLDING": {"LIVE", "STOPPING", "FAILED_CLEANUP"},
+    "READY_WAIT_INGEST": {"LIVE", "DEGRADED", "STOPPING", "FAILED_CLEANUP"},
+    "LIVE": {"DEGRADED", "HOLDING", "STOPPING", "FAILED_CLEANUP"},
+    "DEGRADED": {"LIVE", "HOLDING", "STOPPING", "FAILED_CLEANUP"},
+    "HOLDING": {"LIVE", "DEGRADED", "STOPPING", "FAILED_CLEANUP"},
     "STOPPING": {"FINISHED", "FAILED_CLEANUP"},
     "FAILED_CLEANUP": {"FAILED", "STOPPING"},
     "FINISHED": set(),
@@ -405,16 +410,59 @@ class SessionStore:
             online = bool(observation.get("online", False))
             ingest_status = str(observation.get("status", ""))
             state = str(session.get("status", ""))
-            usable_online = online and ingest_status in {"ACCEPTED", "WARNING", "DEGRADED"}
-            if usable_online and state in {"READY_WAIT_INGEST", "HOLDING"}:
-                session["status"] = "LIVE"
-                if session.get("first_ingest_at") is None:
-                    session["first_ingest_at"] = current
-                session["last_ingest_at"] = current
-                session["hold_deadline_at"] = None
-            elif not online and state == "LIVE":
-                session["status"] = "HOLDING"
-                session["last_ingest_at"] = current
+            reasons = payload.get("reasons") or []
+            degraded_reason = str(reasons[0])[:100] if reasons else None
+
+            target_state: str | None = None
+            lifecycle_event: str | None = None
+            lifecycle_reason: str | None = None
+
+            if online and ingest_status == "DEGRADED" and state in {
+                "READY_WAIT_INGEST",
+                "LIVE",
+                "HOLDING",
+            }:
+                target_state = "DEGRADED"
+                lifecycle_event = (
+                    "session.recovered" if state == "HOLDING" else "session.degraded"
+                )
+                lifecycle_reason = degraded_reason
+            elif online and ingest_status in {"ACCEPTED", "WARNING"} and state in {
+                "READY_WAIT_INGEST",
+                "DEGRADED",
+                "HOLDING",
+            }:
+                target_state = "LIVE"
+                lifecycle_event = (
+                    "session.live" if state == "READY_WAIT_INGEST" else "session.recovered"
+                )
+            elif not online and state in {"LIVE", "DEGRADED"}:
+                target_state = "HOLDING"
+                lifecycle_event = "session.holding"
+                lifecycle_reason = "INGEST_DISCONNECTED"
+
+            if target_state is not None and target_state != state:
+                session["status"] = target_state
+                if online:
+                    if session.get("first_ingest_at") is None:
+                        session["first_ingest_at"] = current
+                    session["last_ingest_at"] = current
+                    session["hold_deadline_at"] = None
+                else:
+                    session["last_ingest_at"] = current
+
+                lifecycle_payload = dict(payload)
+                lifecycle_payload["from_state"] = state
+                lifecycle_payload["to_state"] = target_state
+                assert lifecycle_event is not None
+                self._append_event_locked(
+                    session,
+                    event_type=lifecycle_event,
+                    reason_code=lifecycle_reason,
+                    payload=lifecycle_payload,
+                    origin="node-agent",
+                    occurred_at=current,
+                )
 
             session["node_id"] = node_id
             session["updated_at"] = current
