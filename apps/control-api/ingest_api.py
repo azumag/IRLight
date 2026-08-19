@@ -145,10 +145,11 @@ def _record_session_auth_failure(request: MediaMTXAuthRequest, decision: Any) ->
     """Add a secret-free auth audit to a real Session when the username resolves."""
     store = default_store()
     session = store.get(request.user)
-    if session is None:
+    append_event = getattr(store, "append_event", None)
+    if session is None or not callable(append_event):
         return
     try:
-        store.append_event(
+        append_event(
             request.user,
             event_type="ingest.auth_failed",
             reason_code=("RATE_LIMITED" if getattr(decision, "blocked", False) else "INVALID_CREDENTIAL"),
