@@ -103,11 +103,11 @@ session_events() {
   curl -fsS --max-time 5 -b "$cookie_jar" "$base_url/v1/sessions/$session_id/events"
 }
 
-latest_event_seq() {
+latest_event_sequence() {
   session_events | python3 -c '
 import json,sys
 events=json.load(sys.stdin).get("events", [])
-print(max((int(e.get("seq", 0)) for e in events), default=0))
+print(max((int(e.get("sequence", 0)) for e in events), default=0))
 '
 }
 
@@ -129,7 +129,7 @@ wait_session_status() {
 }
 
 wait_stall_holding_after() {
-  local after_seq="$1"
+  local after_sequence="$1"
   local timeout="${2:-45}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
@@ -142,18 +142,18 @@ after=int(sys.argv[2])
 events=json.load(sys.stdin).get("events", [])
 reasons={"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}
 ok=session.get("status") == "HOLDING" and any(
-    int(e.get("seq", 0)) > after
+    int(e.get("sequence", 0)) > after
     and e.get("type") == "session.holding"
     and e.get("reason_code") in reasons
     for e in events
 )
 raise SystemExit(0 if ok else 1)
-' "$status_payload" "$after_seq" <<<"$events_payload" 2>/dev/null; then
+' "$status_payload" "$after_sequence" <<<"$events_payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "Session did not enter media-timeout HOLDING after seq $after_seq" >&2
+  echo "Session did not enter media-timeout HOLDING after sequence $after_sequence" >&2
   session_json >&2 || true
   session_events >&2 || true
   return 1
@@ -301,20 +301,20 @@ PY
 }
 
 assert_monitoring_sequence() {
-  local after_seq="$1"
+  local after_sequence="$1"
   local events_payload
   events_payload="$(session_events)"
   python3 -c '
 import json,sys
 after=int(sys.argv[1])
-events=[e for e in json.load(sys.stdin).get("events", []) if int(e.get("seq", 0)) > after]
+events=[e for e in json.load(sys.stdin).get("events", []) if int(e.get("sequence", 0)) > after]
 holding=next((e for e in events if e.get("type") == "session.holding" and e.get("reason_code") in {"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}), None)
 if holding is None:
     raise SystemExit(f"monitoring missing media-timeout session.holding: {events!r}")
-recovered=next((e for e in events if int(e.get("seq", 0)) > int(holding.get("seq", 0)) and e.get("type") == "session.recovered"), None)
+recovered=next((e for e in events if int(e.get("sequence", 0)) > int(holding.get("sequence", 0)) and e.get("type") == "session.recovered"), None)
 if recovered is None:
     raise SystemExit(f"monitoring missing session.recovered after stall: {events!r}")
-if any(e.get("type") == "ingest.disconnected" for e in events if int(e.get("seq", 0)) <= int(recovered.get("seq", 0))):
+if any(e.get("type") == "ingest.disconnected" for e in events if int(e.get("sequence", 0)) <= int(recovered.get("sequence", 0))):
     raise SystemExit(f"short media stall unexpectedly disconnected RTMP ingest: {events!r}")
 ingest_recovered=next((e for e in events if e.get("type") == "ingest.recovered"), None)
 if ingest_recovered is None:
@@ -324,7 +324,7 @@ print(
     holding.get("reason_code"),
     "-> ingest.recovered -> session.recovered",
 )
-' "$after_seq" <<<"$events_payload"
+' "$after_sequence" <<<"$events_payload"
 }
 
 stage "start control plane"
@@ -384,11 +384,11 @@ if ! kill -0 "$publisher_pid" 2>/dev/null; then
   exit 1
 fi
 
-baseline_seq="$(latest_event_seq)"
+baseline_sequence="$(latest_event_sequence)"
 stall_started_at="$(date +%s)"
 set_media_stall 1
 stage "video+audio stall enabled"
-wait_stall_holding_after "$baseline_seq" 45
+wait_stall_holding_after "$baseline_sequence" 45
 stage "session HOLDING on media timeout"
 wait_continuity_state HOLDING STANDBY SILENT_FALLBACK 45
 stage "continuity HOLDING/STANDBY/SILENT_FALLBACK"
@@ -418,7 +418,7 @@ if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher exited before recovered LIVE" >&2
   exit 1
 fi
-assert_monitoring_sequence "$baseline_seq"
+assert_monitoring_sequence "$baseline_sequence"
 stage "monitoring sequence verified"
 
 echo "short full-media stall smoke passed (${stall_seconds}s stall, standby output continuous)"
