@@ -269,8 +269,7 @@ credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
 ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 streamid="publish:live/input:${ingest_username}:${ingest_secret}"
-encoded_streamid="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe=""))' "$streamid")"
-srt_url="srt://127.0.0.1:8890?mode=caller&streamid=${encoded_streamid}"
+srt_url="srt://127.0.0.1:8890?mode=caller&streamid=${streamid}"
 
 baseline_sequence="$(latest_event_sequence)"
 start_publisher
