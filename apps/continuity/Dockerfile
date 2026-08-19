@@ -19,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY state.py continuity.py secret_files.py ./
+COPY state.py continuity.py secret_files.py standby_asset.py runner.py make_default_standby.py ./
 
-CMD ["python3", "-u", "/app/continuity.py"]
+RUN mkdir -p /opt/irlight/assets \
+    && python3 /app/make_default_standby.py /opt/irlight/assets/default-standby.png
+
+CMD ["python3", "-u", "/app/runner.py"]
