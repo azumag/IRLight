@@ -17,6 +17,7 @@ from destination_secret_store import (
     DestinationSecretNotFound,
     default_destination_secret_store,
 )
+from egress_destination import EgressDestinationError, build_egress_url
 from entitlement_store import default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
 from ingest_store import default_ingest_store
@@ -73,10 +74,11 @@ def _validated_destination(destination_id: str | None, user_id: str) -> dict[str
 
     secret_ref = str(destination.get("secret_ref", ""))
     try:
-        # Decrypt once before entitlement reservation/provider allocation so a
-        # wrong master key or corrupt ciphertext cannot create a billable node.
-        # The plaintext is intentionally not retained.
-        default_destination_secret_store().resolve(
+        # Decrypt before entitlement reservation/provider allocation so a wrong
+        # master key or corrupt ciphertext cannot create a billable node. Keep
+        # the plaintext only long enough to validate the final publish URL; it
+        # is never persisted in Session or returned by this API.
+        secret = default_destination_secret_store().resolve(
             user_id=user_id,
             secret_ref=secret_ref,
         )
@@ -88,6 +90,11 @@ def _validated_destination(destination_id: str | None, user_id: str) -> dict[str
         raise HTTPException(status_code=409, detail="destination secret is not configured") from exc
     except DestinationSecretError as exc:
         raise HTTPException(status_code=503, detail="destination secret is unavailable") from exc
+
+    try:
+        build_egress_url(destination, secret)
+    except EgressDestinationError as exc:
+        raise HTTPException(status_code=409, detail="destination configuration is invalid") from exc
     return destination
 
 
