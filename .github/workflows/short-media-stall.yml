@@ -1,0 +1,39 @@
+name: Short media stall E2E
+
+on:
+  pull_request:
+    paths:
+      - "apps/continuity/**"
+      - "apps/node-agent/**"
+      - "apps/control-api/ingest_store.py"
+      - "apps/control-api/node_internal.py"
+      - "apps/control-api/session_store.py"
+      - "config/mediamtx.yml"
+      - "docker-compose.poc.yml"
+      - "scripts/smoke-short-media-stall.sh"
+      - ".github/workflows/short-media-stall.yml"
+  workflow_dispatch:
+    inputs:
+      stall_seconds:
+        description: "Seconds to suppress all publisher media while keeping RTMP connected"
+        required: true
+        default: "10"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "30"
+
+permissions:
+  contents: read
+
+jobs:
+  short-media-stall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      MEDIA_STALL_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.stall_seconds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Suppress all media without disconnecting publisher
+        run: bash ./scripts/smoke-short-media-stall.sh
