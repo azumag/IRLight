@@ -1,0 +1,44 @@
+name: SRT ingest recovery E2E
+
+on:
+  pull_request:
+    paths:
+      - "apps/control-api/**"
+      - "apps/node-agent/**"
+      - "apps/continuity/**"
+      - "config/mediamtx.yml"
+      - "docker-compose.poc.yml"
+      - "scripts/smoke-srt-ingest-recovery.sh"
+      - ".github/workflows/srt-ingest-recovery.yml"
+  workflow_dispatch:
+    inputs:
+      disconnect_seconds:
+        description: "Seconds to keep the SRT publisher disconnected"
+        required: true
+        default: "10"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "30"
+
+permissions:
+  contents: read
+
+jobs:
+  srt-ingest-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.disconnect_seconds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SRT publisher dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -hide_banner -protocols 2>/dev/null | grep -Eq '(^|[[:space:]])srt([[:space:]]|$)'
+      - name: Validate smoke syntax
+        run: bash -n ./scripts/smoke-srt-ingest-recovery.sh
+      - name: Publish over authenticated SRT, disconnect, and recover
+        run: bash ./scripts/smoke-srt-ingest-recovery.sh
