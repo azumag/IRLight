@@ -5,12 +5,14 @@ name: irlight-node
 # - Prebuilt images only: nothing here uses `build:` for the media stack.
 # - MediaMTX API / metrics / RTSP stay on the internal network.
 # - Public exposure lives in docker-compose.node.public.yml.
+# - Continuity always publishes to the local MediaMTX relay. External
+#   destination failures are isolated in the Egress Gateway.
 # - Destination secrets are delivered as tmpfs files, never as env vars or
 #   process arguments.
 
 x-media-env: &media-env
   INPUT_URI: ${INPUT_URI:-rtsp://mediamtx:8554/live/input}
-  EGRESS_URL_FILE: /run/irlight/secrets/egress_url
+  EGRESS_URL: rtmp://mediamtx:1935/output/relay
   STATE_DIR: /state
   VIDEO_WIDTH: ${VIDEO_WIDTH:-1280}
   VIDEO_HEIGHT: ${VIDEO_HEIGHT:-720}
@@ -38,6 +40,26 @@ services:
     environment: *media-env
     volumes:
       - irlight-state:/state
+
+  egress-gateway:
+    image: ${NODE_EGRESS_GATEWAY_IMAGE:-ghcr.io/azumag/irlight-egress-gateway:phase-b-spike}
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+      - continuity
+    environment:
+      EGRESS_INPUT_URI: ${EGRESS_INPUT_URI:-rtsp://mediamtx:8554/output/relay}
+      EGRESS_URL_FILE: /run/irlight/secrets/egress_url
+      EGRESS_STATUS_FILE: /state/egress.json
+      EGRESS_CONNECT_TIMEOUT_SECONDS: ${EGRESS_CONNECT_TIMEOUT_SECONDS:-15}
+      EGRESS_RETRY_INITIAL_SECONDS: ${EGRESS_RETRY_INITIAL_SECONDS:-1}
+      EGRESS_RETRY_MAX_SECONDS: ${EGRESS_RETRY_MAX_SECONDS:-30}
+      EGRESS_RETRY_MULTIPLIER: ${EGRESS_RETRY_MULTIPLIER:-2}
+      EGRESS_RETRY_JITTER_RATIO: ${EGRESS_RETRY_JITTER_RATIO:-0.2}
+      EGRESS_MAX_ATTEMPTS: ${EGRESS_MAX_ATTEMPTS:-0}
+      EGRESS_MAX_RETRY_SECONDS: ${EGRESS_MAX_RETRY_SECONDS:-0}
+    volumes:
+      - irlight-state:/state
       - type: volume
         source: irlight-secrets
         target: /run/irlight/secrets
@@ -51,13 +73,15 @@ services:
     depends_on:
       - mediamtx
       - continuity
+      - egress-gateway
     environment:
       NODE_CONTROL_PLANE_URL: ${NODE_CONTROL_PLANE_URL:-http://control-plane:8080}
       NODE_BOOTSTRAP_TOKEN_FILE: ${NODE_BOOTSTRAP_TOKEN_FILE:-/run/secrets/bootstrap_token}
       NODE_PROVIDER_SERVER_ID: ${NODE_PROVIDER_SERVER_ID:-local-node}
       NODE_BOOT_ID: ${NODE_BOOT_ID:-compose-boot}
-      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.4.0-spike}
+      NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.5.0-spike}
       NODE_SECRET_DIR: /run/irlight/secrets
+      NODE_EGRESS_STATUS_FILE: /state/egress.json
       NODE_HEARTBEAT_INTERVAL: ${NODE_HEARTBEAT_INTERVAL:-10}
       NODE_SUPERVISOR: compose
       NODE_COMPOSE_FILE: /opt/irlight/docker-compose.node.yml
@@ -86,6 +110,7 @@ services:
       NODE_INGEST_MIN_BITRATE_BPS: ${NODE_INGEST_MIN_BITRATE_BPS:-500000}
       NODE_INGEST_LOW_BITRATE_SAMPLES: ${NODE_INGEST_LOW_BITRATE_SAMPLES:-2}
     volumes:
+      - irlight-state:/state:ro
       - irlight-secrets:/run/irlight/secrets
       - /var/run/docker.sock:/var/run/docker.sock:ro
     secrets:
