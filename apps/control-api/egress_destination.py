@@ -25,8 +25,11 @@ def build_egress_url(destination: dict[str, Any], stream_key: str) -> str:
         raise EgressDestinationError("egress protocol is not supported yet")
     server_url = str(destination.get("server_url", "")).strip()
     parsed = urlsplit(server_url)
-    if parsed.scheme.lower() not in {"rtmp", "rtmps"} or not parsed.hostname:
+    scheme = parsed.scheme.lower()
+    if scheme not in {"rtmp", "rtmps"} or not parsed.hostname:
         raise EgressDestinationError("destination server URL is invalid")
+    if scheme != destination_type:
+        raise EgressDestinationError("destination type does not match server URL scheme")
     if parsed.username is not None or parsed.password is not None:
         raise EgressDestinationError("destination URL must not contain credentials")
     if parsed.fragment:

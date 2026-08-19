@@ -18,6 +18,11 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
+from destination_guard import (
+    DestinationGuardError,
+    read_verified_peer_ip,
+    validate_destination_runtime,
+)
 from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
 
 
@@ -378,6 +383,12 @@ class EgressGateway:
         self.destination_file = Path(
             os.getenv("EGRESS_URL_FILE", "/run/irlight/secrets/egress_url")
         )
+        verified_peer_file = os.getenv(
+            "EGRESS_VERIFIED_PEER_IP_FILE",
+            "/run/irlight/secrets/egress_verified_peer_ip",
+        )
+        self.verified_peer_ip_file = Path(verified_peer_file) if verified_peer_file else None
+        self.allow_private_targets = os.getenv("EGRESS_ALLOW_PRIVATE_TARGETS", "") == "1"
         self.status_file = Path(
             os.getenv("EGRESS_STATUS_FILE", "/state/egress.json")
         )
@@ -452,30 +463,51 @@ class EgressGateway:
         self._write_status("STARTING", connected=False)
 
         while not self.stop_event.is_set():
-            attempt = EgressAttempt(
-                self.input_uri,
-                destination_url,
-                self.stop_event,
-                connect_timeout_seconds=self.connect_timeout_seconds,
-                status_heartbeat_seconds=self.status_heartbeat_seconds,
-            )
-
-            def connected(rendered: int) -> None:
-                self.failure_count = 0
-                self.outage_started_monotonic = None
-                self._write_status(
-                    "CONNECTED", connected=True, rendered_buffers=rendered
+            result: AttemptResult
+            try:
+                expected_peer_ip = read_verified_peer_ip(self.verified_peer_ip_file)
+                validate_destination_runtime(
+                    destination_url,
+                    expected_peer_ip=expected_peer_ip,
+                    allow_private_targets=self.allow_private_targets,
+                )
+            except DestinationGuardError as exc:
+                LOG.warning(
+                    "egress destination runtime guard blocked attempt reason=%s",
+                    exc.reason_code,
+                )
+                result = AttemptResult(
+                    exc.reason_code,
+                    False,
+                    0,
+                    terminal=exc.terminal,
+                )
+            else:
+                attempt = EgressAttempt(
+                    self.input_uri,
+                    destination_url,
+                    self.stop_event,
+                    connect_timeout_seconds=self.connect_timeout_seconds,
+                    status_heartbeat_seconds=self.status_heartbeat_seconds,
                 )
 
-            def progress(rendered: int) -> None:
-                self._write_status(
-                    "CONNECTED", connected=True, rendered_buffers=rendered
+                def connected(rendered: int) -> None:
+                    self.failure_count = 0
+                    self.outage_started_monotonic = None
+                    self._write_status(
+                        "CONNECTED", connected=True, rendered_buffers=rendered
+                    )
+
+                def progress(rendered: int) -> None:
+                    self._write_status(
+                        "CONNECTED", connected=True, rendered_buffers=rendered
+                    )
+
+                result = attempt.run(
+                    on_connected=connected,
+                    on_progress=progress,
                 )
 
-            result = attempt.run(
-                on_connected=connected,
-                on_progress=progress,
-            )
             if self.stop_event.is_set() or result.reason_code == "STOPPED":
                 self._write_status(
                     "STOPPED",

@@ -39,6 +39,9 @@ services:
       EGRESS_INPUT_URI: rtsp://mediamtx:8554/output/relay
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
+      # This target deliberately lives on the isolated Compose RFC1918 network.
+      # Production keeps the runtime DNS guard fail-closed by default.
+      EGRESS_ALLOW_PRIVATE_TARGETS: "1"
       EGRESS_CONNECT_TIMEOUT_SECONDS: "10"
       EGRESS_RETRY_INITIAL_SECONDS: "1"
       EGRESS_RETRY_MAX_SECONDS: "2"

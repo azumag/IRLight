@@ -113,6 +113,13 @@ class EgressDestinationTest(unittest.TestCase):
             "rtmp://example.invalid/app/stream-key?mode=publish",
         )
 
+    def test_type_must_match_server_url_scheme(self) -> None:
+        with self.assertRaisesRegex(EgressDestinationError, "does not match"):
+            build_egress_url(
+                {"type": "rtmp", "server_url": "rtmps://example.invalid/app"},
+                "stream-key",
+            )
+
     def test_unsupported_srt_egress_is_rejected_for_now(self) -> None:
         with self.assertRaises(EgressDestinationError):
             build_egress_url(

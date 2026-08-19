@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from destination_probe import DestinationProbeError, probe_destination
 
@@ -186,6 +187,13 @@ def verify_destination(
         catalog = _load()
         item = dict(_get_owned(catalog, "destinations", destination_id, user_id))
         url = str(item.get("server_url", ""))
+        destination_type = str(item.get("type", "")).lower()
+
+    url_scheme = urlsplit(url).scheme.lower()
+    if url_scheme != destination_type:
+        reason = "destination type does not match server URL scheme"
+        _record_verification_failure(destination_id, user_id, url, reason)
+        raise CatalogVerifyFailed(reason)
 
     try:
         result = verifier(url)
@@ -197,6 +205,11 @@ def verify_destination(
             destination_id, user_id, url, "destination verification failed"
         )
         raise CatalogVerifyFailed("destination verification failed") from exc
+
+    if str(result.get("protocol", "")).lower() != destination_type:
+        reason = "destination probe protocol does not match destination type"
+        _record_verification_failure(destination_id, user_id, url, reason)
+        raise CatalogVerifyFailed(reason)
 
     with LOCK:
         catalog = _load()
