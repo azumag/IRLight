@@ -285,32 +285,47 @@ Gst.init(None)
 user = os.environ["IRLIGHT_PUBLISH_USER"]
 password = os.environ["IRLIGHT_PUBLISH_PASS"]
 url = f"rtmp://mediamtx:1935/live/input?user={user}&pass={password}"
-pipeline = Gst.parse_launch(
-    f'''flvmux name=mux streamable=true ! rtmp2sink location="{url}"
-    videotestsrc is-live=true pattern=smpte !
-      video/x-raw,width=1280,height=720,framerate=30/1,format=I420 !
-      x264enc tune=zerolatency speed-preset=veryfast bitrate=1200 key-int-max=60 bframes=0 !
-      video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux.
-    audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample !
-      audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.'''
-)
-bus = pipeline.get_bus()
-if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
-    raise SystemExit("publisher failed to start")
-try:
-    while True:
-        message = bus.timed_pop_filtered(
-            100 * Gst.MSECOND,
-            Gst.MessageType.ERROR | Gst.MessageType.EOS,
-        )
-        if message is not None:
+description = f'''flvmux name=mux streamable=true ! rtmp2sink location="{url}"
+videotestsrc is-live=true pattern=smpte !
+  video/x-raw,width=1280,height=720,framerate=30/1,format=I420 !
+  x264enc tune=zerolatency speed-preset=veryfast bitrate=1200 key-int-max=60 bframes=0 !
+  video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux.
+audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample !
+  audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.'''
+
+attempt = 0
+while True:
+    attempt += 1
+    pipeline = Gst.parse_launch(description)
+    bus = pipeline.get_bus()
+    started = pipeline.set_state(Gst.State.PLAYING)
+    if started == Gst.StateChangeReturn.FAILURE:
+        print(f"publisher attempt {attempt} failed to start; retrying", flush=True)
+        pipeline.set_state(Gst.State.NULL)
+        time.sleep(1)
+        continue
+    print(f"publisher attempt {attempt} started", flush=True)
+    try:
+        while True:
+            message = bus.timed_pop_filtered(
+                100 * Gst.MSECOND,
+                Gst.MessageType.ERROR | Gst.MessageType.EOS,
+            )
+            if message is None:
+                time.sleep(0.05)
+                continue
             if message.type == Gst.MessageType.ERROR:
                 err, debug = message.parse_error()
-                raise SystemExit(f"publisher error: {err}; {debug}")
-            raise SystemExit("publisher reached EOS unexpectedly")
-        time.sleep(0.05)
-finally:
-    pipeline.set_state(Gst.State.NULL)
+                print(
+                    f"publisher attempt {attempt} error: {err}; {debug}; retrying",
+                    flush=True,
+                )
+            else:
+                print(f"publisher attempt {attempt} reached EOS; retrying", flush=True)
+            break
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+    time.sleep(1)
 PY
   publisher_pid=$!
 }
@@ -392,7 +407,7 @@ wait_session_status LIVE 60
 wait_continuity_state LIVE LIVE LIVE 60
 assert_output_relay_online
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
-  echo "publisher exited before initial LIVE" >&2
+  echo "publisher supervisor exited before initial LIVE" >&2
   exit 1
 fi
 stage "initial LIVE and relay online"
@@ -408,10 +423,10 @@ stage "session HOLDING reason=$holding_reason"
 wait_continuity_state HOLDING STANDBY SILENT_FALLBACK 90
 assert_output_relay_online
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
-  echo "publisher process exited during network blackhole" >&2
+  echo "publisher supervisor exited during network blackhole" >&2
   exit 1
 fi
-stage "standby relay continuous while publisher process remains alive"
+stage "standby relay continuous while publisher supervisor remains alive"
 
 elapsed=$(( $(date +%s) - fault_started_at ))
 if (( elapsed < fault_seconds )); then
@@ -419,7 +434,7 @@ if (( elapsed < fault_seconds )); then
 fi
 assert_output_relay_online
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
-  echo "publisher process exited before netem clear" >&2
+  echo "publisher supervisor exited before netem clear" >&2
   exit 1
 fi
 
@@ -430,7 +445,7 @@ wait_session_status LIVE 90
 wait_continuity_state LIVE LIVE LIVE 60
 assert_output_relay_online
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
-  echo "publisher process exited before recovered LIVE" >&2
+  echo "publisher supervisor exited before recovered LIVE" >&2
   exit 1
 fi
 assert_recovery_sequence "$baseline_sequence"
