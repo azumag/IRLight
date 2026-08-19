@@ -13,6 +13,8 @@ from auth_api import require_csrf, require_user
 from catalog_store import CatalogNotFound, get_destination as store_get_destination
 from destination_secret_store import (
     DestinationSecretConfigurationError,
+    DestinationSecretError,
+    DestinationSecretNotFound,
     default_destination_secret_store,
 )
 from entitlement_store import default_entitlement_store
@@ -68,17 +70,24 @@ def _validated_destination(destination_id: str | None, user_id: str) -> dict[str
         raise HTTPException(status_code=409, detail="destination egress protocol is not supported")
     if destination.get("verification_status") != "VERIFIED":
         raise HTTPException(status_code=409, detail="destination must be verified before prepare")
+
+    secret_ref = str(destination.get("secret_ref", ""))
     try:
-        configured = default_destination_secret_store().configured(
+        # Decrypt once before entitlement reservation/provider allocation so a
+        # wrong master key or corrupt ciphertext cannot create a billable node.
+        # The plaintext is intentionally not retained.
+        default_destination_secret_store().resolve(
             user_id=user_id,
-            secret_ref=str(destination.get("secret_ref", "")),
+            secret_ref=secret_ref,
         )
     except DestinationSecretConfigurationError as exc:
         raise HTTPException(
             status_code=503, detail="destination secret store is not configured"
         ) from exc
-    if not configured:
-        raise HTTPException(status_code=409, detail="destination secret is not configured")
+    except DestinationSecretNotFound as exc:
+        raise HTTPException(status_code=409, detail="destination secret is not configured") from exc
+    except DestinationSecretError as exc:
+        raise HTTPException(status_code=503, detail="destination secret is unavailable") from exc
     return destination
 
 
