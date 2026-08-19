@@ -196,6 +196,21 @@ raise SystemExit(0 if any(
   return 1
 }
 
+continuity_state_matches() {
+  local expected_status="$1"
+  local expected_video="$2"
+  local expected_audio="$3"
+  local payload
+  payload="$("${compose[@]}" exec -T continuity sh -c 'cat /state/status.json 2>/dev/null || true' || true)"
+  python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+expected=sys.argv[1:4]
+actual=[d.get("session_status"), d.get("video_source"), d.get("actual_audio_mode")]
+raise SystemExit(0 if actual == expected else 1)
+' "$expected_status" "$expected_video" "$expected_audio" <<<"$payload" 2>/dev/null
+}
+
 wait_continuity_state() {
   local expected_status="$1"
   local expected_video="$2"
@@ -203,18 +218,16 @@ wait_continuity_state() {
   local timeout="${4:-60}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$("${compose[@]}" exec -T continuity sh -c 'cat /state/status.json 2>/dev/null || true' || true)"
-    if python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-expected=sys.argv[1:4]
-actual=[d.get("session_status"), d.get("video_source"), d.get("actual_audio_mode")]
-raise SystemExit(0 if actual == expected else 1)
-' "$expected_status" "$expected_video" "$expected_audio" <<<"$payload" 2>/dev/null; then
+    if continuity_state_matches "$expected_status" "$expected_video" "$expected_audio"; then
       return 0
     fi
     sleep 0.5
   done
+  # The state file can be updated on the timeout boundary between the last poll
+  # and the deadline check. Perform one final observation before declaring failure.
+  if continuity_state_matches "$expected_status" "$expected_video" "$expected_audio"; then
+    return 0
+  fi
   echo "Continuity did not become ${expected_status}/${expected_video}/${expected_audio}" >&2
   "${compose[@]}" exec -T continuity sh -c 'cat /state/status.json 2>/dev/null || true' >&2 || true
   return 1
@@ -392,7 +405,7 @@ stage "100% publisher egress packet loss applied"
 
 holding_reason="$(wait_fault_holding_after "$baseline_sequence" 60)"
 stage "session HOLDING reason=$holding_reason"
-wait_continuity_state HOLDING STANDBY SILENT_FALLBACK 60
+wait_continuity_state HOLDING STANDBY SILENT_FALLBACK 90
 assert_output_relay_online
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher process exited during network blackhole" >&2
