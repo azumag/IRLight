@@ -18,6 +18,9 @@ from reaper import Reaper, ReaperConfig  # noqa: E402
 from session_store import SessionStore  # noqa: E402
 
 
+TEST_USER_ID = "11111111-1111-4111-8111-111111111111"
+
+
 class NodeHeartbeatReaperTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -40,7 +43,7 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
         provider_server_id = f"provider-{session_id}"
         self.store.create(
             session_id=session_id,
-            user_id="user-heartbeat-reaper",
+            user_id=TEST_USER_ID,
             environment="dev",
             absolute_deadline_hours=12.0,
         )
@@ -62,7 +65,7 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
 
         tags = SessionMetadata(
             session_id=session_id,
-            user_id="user-heartbeat-reaper",
+            user_id=TEST_USER_ID,
             environment="dev",
         ).as_tags()
         volume = self.provider.create_volume("boot", 20, tags)
