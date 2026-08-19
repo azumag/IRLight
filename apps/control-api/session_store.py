@@ -50,6 +50,7 @@ ACTIVE_STATES = {
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
 SESSION_EVENT_LIMIT = 1000
+DEFAULT_RECOVERY_STABILITY_SECONDS = 3.0
 UNUSABLE_MEDIA_REASONS = {"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}
 FORMAT_REJECTION_REASONS = {
     "VIDEO_CODEC_UNSUPPORTED",
@@ -113,6 +114,7 @@ def new_session(
         "first_ingest_at": None,
         "last_ingest_at": None,
         "hold_deadline_at": None,
+        "recovery_candidate_since": None,
         "absolute_deadline_at": (
             now + absolute_deadline_hours * 3600 if absolute_deadline_hours else None
         ),
@@ -130,11 +132,27 @@ def new_session(
 class SessionStore:
     """JSON-file persisted session store with an in-process lock."""
 
-    def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
+    def __init__(
+        self,
+        state_dir: str | os.PathLike[str] | None = None,
+        *,
+        recovery_stability_seconds: float | None = None,
+    ) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "sessions.json"
         self.lock = threading.Lock()
         self._sessions: dict[str, dict[str, Any]] = {}
+        if recovery_stability_seconds is None:
+            try:
+                recovery_stability_seconds = float(
+                    os.getenv(
+                        "IRLIGHT_RECOVERY_STABILITY_SECONDS",
+                        str(DEFAULT_RECOVERY_STABILITY_SECONDS),
+                    )
+                )
+            except (TypeError, ValueError):
+                recovery_stability_seconds = DEFAULT_RECOVERY_STABILITY_SECONDS
+        self.recovery_stability_seconds = max(0.0, float(recovery_stability_seconds))
         self._load()
 
     def _load(self) -> None:
@@ -425,6 +443,23 @@ class SessionStore:
             )
             format_changed = any(reason in FORMAT_REJECTION_REASONS for reason in reasons)
 
+            recovery_usable = online and (
+                ingest_status in {"ACCEPTED", "WARNING"}
+                or (ingest_status == "DEGRADED" and unusable_reason is None)
+            )
+            recovery_stable = False
+            if state == "HOLDING":
+                if recovery_usable:
+                    candidate_since = session.get("recovery_candidate_since")
+                    if not isinstance(candidate_since, (int, float)):
+                        candidate_since = current
+                        session["recovery_candidate_since"] = current
+                    recovery_stable = (
+                        current - float(candidate_since) >= self.recovery_stability_seconds
+                    )
+                else:
+                    session["recovery_candidate_since"] = None
+
             target_state: str | None = None
             lifecycle_event: str | None = None
             lifecycle_reason: str | None = None
@@ -439,11 +474,13 @@ class SessionStore:
                     target_state = "HOLDING"
                     lifecycle_event = "session.holding"
                     lifecycle_reason = unusable_reason
-                elif not unusable_reason:
+                elif not unusable_reason and state != "HOLDING":
                     target_state = "DEGRADED"
-                    lifecycle_event = (
-                        "session.recovered" if state == "HOLDING" else "session.degraded"
-                    )
+                    lifecycle_event = "session.degraded"
+                    lifecycle_reason = degraded_reason
+                elif not unusable_reason and recovery_stable:
+                    target_state = "DEGRADED"
+                    lifecycle_event = "session.recovered"
                     lifecycle_reason = degraded_reason
             elif online and ingest_status == "REJECTED" and state in {"LIVE", "DEGRADED"}:
                 target_state = "HOLDING"
@@ -458,10 +495,11 @@ class SessionStore:
                 "DEGRADED",
                 "HOLDING",
             }:
-                target_state = "LIVE"
-                lifecycle_event = (
-                    "session.live" if state == "READY_WAIT_INGEST" else "session.recovered"
-                )
+                if state != "HOLDING" or recovery_stable:
+                    target_state = "LIVE"
+                    lifecycle_event = (
+                        "session.live" if state == "READY_WAIT_INGEST" else "session.recovered"
+                    )
             elif not online and state in {"LIVE", "DEGRADED"}:
                 target_state = "HOLDING"
                 lifecycle_event = "session.holding"
@@ -471,11 +509,13 @@ class SessionStore:
                 session["status"] = target_state
                 if target_state == "HOLDING":
                     session["last_ingest_at"] = current
+                    session["recovery_candidate_since"] = None
                 elif online:
                     if session.get("first_ingest_at") is None:
                         session["first_ingest_at"] = current
                     session["last_ingest_at"] = current
                     session["hold_deadline_at"] = None
+                    session["recovery_candidate_since"] = None
                 else:
                     session["last_ingest_at"] = current
 
@@ -523,6 +563,8 @@ class SessionStore:
             session["status"] = new_state
             if new_state in {"FINISHED", "FAILED"}:
                 session["entitlement_reserved"] = False
+            if new_state != "HOLDING":
+                session["recovery_candidate_since"] = None
             session["updated_at"] = time.time()
             self._persist()
             return dict(session)
