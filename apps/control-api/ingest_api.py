@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Annotated, Any, Iterable, Literal
@@ -17,6 +18,7 @@ from ingest_store import default_ingest_store
 
 ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "HOLDING"}
 INGEST_PATH = "live/input"
+DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
 
 
 class IssueIngestCredentialRequest(BaseModel):
@@ -124,6 +126,30 @@ def _connection_info(
             f"?streamid=publish:{INGEST_PATH}:{username}:{secret}"
         )
     return {"rtmp": rtmp, "rtmps": rtmps, "srt": srt}
+
+
+def _auth_cache_max_age_seconds() -> float:
+    try:
+        value = float(
+            os.getenv(
+                "IRLIGHT_INGEST_AUTH_CACHE_MAX_AGE_SECONDS",
+                str(DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS),
+            )
+        )
+    except (TypeError, ValueError):
+        value = DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS
+    if not math.isfinite(value):
+        value = DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS
+    return min(3600.0, max(1.0, value))
+
+
+def _cache_valid_until(record: dict[str, Any], *, now: float | None = None) -> float:
+    current = time.time() if now is None else now
+    try:
+        credential_expires_at = float(record.get("expires_at", current))
+    except (TypeError, ValueError):
+        credential_expires_at = current
+    return min(credential_expires_at, current + _auth_cache_max_age_seconds())
 
 
 def _raise_auth_blocked(decision: Any) -> None:
@@ -270,4 +296,7 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
         "authorized": True,
         "session_id": request.user,
         "credential_id": record["id"],
+        # Node-local auth proxies can use a previously successful decision only
+        # during upstream transport/5xx failures, and never beyond this bound.
+        "cache_valid_until": _cache_valid_until(record),
     }
