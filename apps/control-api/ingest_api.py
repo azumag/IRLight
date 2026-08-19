@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from auth_api import require_csrf, require_user
 from fake_provider_for_api import default_store
+from ingest_auth_guard import default_ingest_auth_guard
 from ingest_store import default_ingest_store
 
 
@@ -125,6 +126,27 @@ def _connection_info(
     return {"rtmp": rtmp, "rtmps": rtmps, "srt": srt}
 
 
+def _raise_auth_blocked(decision: Any) -> None:
+    retry_after = max(1, int(getattr(decision, "retry_after_seconds", 1) or 1))
+    raise HTTPException(
+        status_code=429,
+        detail="ingest authentication temporarily blocked",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _reject_invalid_ingest_credential(request: MediaMTXAuthRequest, guard: Any) -> None:
+    decision = guard.record_failure(
+        source_ip=request.ip,
+        username=request.user,
+        protocol=request.protocol,
+        publisher_id=request.id,
+    )
+    if decision.blocked:
+        _raise_auth_blocked(decision)
+    raise HTTPException(status_code=401, detail="invalid ingest credential")
+
+
 @user_router.post("/{session_id}/ingest-credentials")
 def issue_ingest_credential(
     session_id: str,
@@ -220,9 +242,20 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
     if protocol not in {"rtmp", "srt"}:
         raise HTTPException(status_code=403, detail="unsupported ingest protocol")
 
+    guard = default_ingest_auth_guard()
+    decision = guard.check(source_ip=request.ip, username=request.user)
+    if decision.blocked:
+        guard.record_blocked(
+            source_ip=request.ip,
+            username=request.user,
+            protocol=protocol,
+            publisher_id=request.id,
+        )
+        _raise_auth_blocked(decision)
+
     session = default_store().get(request.user)
     if session is None or str(session.get("status", "")) not in ACCEPTING_INGEST_STATES:
-        raise HTTPException(status_code=401, detail="invalid ingest credential")
+        _reject_invalid_ingest_credential(request, guard)
 
     record = default_ingest_store().verify(
         username=request.user,
@@ -230,8 +263,9 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
         protocol=protocol,
     )
     if record is None or record.get("session_id") != request.user:
-        raise HTTPException(status_code=401, detail="invalid ingest credential")
+        _reject_invalid_ingest_credential(request, guard)
 
+    guard.record_success(username=request.user)
     return {
         "authorized": True,
         "session_id": request.user,
