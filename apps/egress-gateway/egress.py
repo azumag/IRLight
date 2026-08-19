@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import gi
@@ -18,11 +18,11 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
+from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
+
 
 LOG = logging.getLogger("irlight.egress")
 
-
-TERMINAL_REASON_CODES = {"AUTH_FAILED", "PUBLISH_CONFLICT", "LOCAL_PIPELINE_FAILED"}
 ALLOWED_STATUSES = {
     "STARTING",
     "CONNECTED",
@@ -70,65 +70,6 @@ def read_destination_url(path: Path) -> str:
     return value
 
 
-def safe_destination(url: str) -> tuple[str, str]:
-    parsed = urlsplit(url)
-    return parsed.scheme.lower(), parsed.hostname or ""
-
-
-def classify_error(
-    *,
-    source_name: str,
-    message: str,
-    debug: str | None = None,
-) -> str:
-    """Map GStreamer/librtmp errors to stable, secret-safe reason codes.
-
-    The raw message/debug text may contain the destination URL or stream key,
-    so callers must not persist or log those strings.
-    """
-    if source_name.startswith("src") or "rtspsrc" in source_name:
-        return "UPSTREAM_UNAVAILABLE"
-
-    haystack = f"{message}\n{debug or ''}".lower()
-    if any(token in haystack for token in ("unauthorized", "forbidden", "auth failed", "authfailed", "401", "403", "invalid stream key")):
-        return "AUTH_FAILED"
-    if any(token in haystack for token in ("badname", "already publishing", "publish conflict", "stream already")):
-        return "PUBLISH_CONFLICT"
-    if any(token in haystack for token in ("certificate", "tls", "ssl")):
-        return "TLS_FAILED"
-    if any(token in haystack for token in ("could not resolve", "name or service not known", "temporary failure in name resolution", "dns")):
-        return "DNS_FAILED"
-    if "timeout" in haystack or "timed out" in haystack:
-        return "TIMEOUT"
-    if any(token in haystack for token in ("connection refused", "network is unreachable", "no route to host", "could not connect", "connection reset")):
-        return "UNREACHABLE"
-    return "EGRESS_PIPELINE_FAILED"
-
-
-@dataclass(frozen=True)
-class ReconnectPolicy:
-    initial_seconds: float = 1.0
-    max_seconds: float = 30.0
-    multiplier: float = 2.0
-    jitter_ratio: float = 0.2
-    max_attempts: int = 0
-    max_elapsed_seconds: float = 0.0
-
-    def delay_for(self, failure_count: int, random_value: float = 0.5) -> float:
-        exponent = max(0, failure_count - 1)
-        base = min(self.max_seconds, self.initial_seconds * (self.multiplier**exponent))
-        bounded_random = min(1.0, max(0.0, random_value))
-        factor = 1.0 + ((bounded_random * 2.0) - 1.0) * self.jitter_ratio
-        return max(0.0, base * factor)
-
-    def exhausted(self, failure_count: int, elapsed_seconds: float) -> bool:
-        if self.max_attempts > 0 and failure_count >= self.max_attempts:
-            return True
-        if self.max_elapsed_seconds > 0 and elapsed_seconds >= self.max_elapsed_seconds:
-            return True
-        return False
-
-
 @dataclass
 class AttemptResult:
     reason_code: str
@@ -140,10 +81,18 @@ class AttemptResult:
 
 
 class EgressAttempt:
-    def __init__(self, input_uri: str, destination_url: str, stop_event: threading.Event) -> None:
+    def __init__(
+        self,
+        input_uri: str,
+        destination_url: str,
+        stop_event: threading.Event,
+        *,
+        connect_timeout_seconds: float,
+    ) -> None:
         self.input_uri = input_uri
         self.destination_url = destination_url
         self.stop_event = stop_event
+        self.connect_timeout_seconds = max(0.0, connect_timeout_seconds)
         self.pipeline: Gst.Pipeline | None = None
         self.loop = GLib.MainLoop()
         self.sink: Gst.Element | None = None
@@ -152,7 +101,9 @@ class EgressAttempt:
         self.rendered_buffers = 0
         self.result = AttemptResult("EGRESS_PIPELINE_FAILED", False, 0)
         self._requested_mux_pads: list[Gst.Pad] = []
-        self.on_connected: callable | None = None
+        self._poll_source_id: int | None = None
+        self._attempt_started = time.monotonic()
+        self.on_connected: Callable[[int], None] | None = None
 
     @staticmethod
     def _make(factory: str, name: str) -> Gst.Element:
@@ -168,9 +119,11 @@ class EgressAttempt:
         sink = self._make("rtmpsink", "egress_sink")
 
         source.set_property("location", self.input_uri)
-        source.set_property("protocols", 4)  # TCP
+        source.set_property("protocols", 4)  # GstRTSPLowerTrans.TCP
         source.set_property("latency", env_int("EGRESS_INPUT_LATENCY_MS", 500))
-        source.set_property("tcp-timeout", env_int("EGRESS_INPUT_TCP_TIMEOUT_US", 3_000_000))
+        source.set_property(
+            "tcp-timeout", env_int("EGRESS_INPUT_TCP_TIMEOUT_US", 3_000_000)
+        )
         mux.set_property("streamable", True)
         sink.set_property("location", self.destination_url)
         sink.set_property("sync", False)
@@ -194,18 +147,30 @@ class EgressAttempt:
             return
         media = (structure.get_string("media") or "").lower()
         encoding = (structure.get_string("encoding-name") or "").upper()
-        if media == "video" and encoding == "H264":
-            self._attach_track(pad, "video")
-        elif media == "audio" and encoding in {"MPEG4-GENERIC", "MP4A-LATM"}:
-            self._attach_track(pad, "audio")
+        try:
+            if media == "video" and encoding == "H264":
+                self._attach_track(pad, "video")
+            elif media == "audio" and encoding == "MPEG4-GENERIC":
+                self._attach_track(pad, "audio")
+        except Exception:
+            # Do not render exception text: a downstream plugin error can embed
+            # the credentialed destination URL.
+            LOG.error("failed to attach an internal RTSP track to egress")
+            self.result = AttemptResult(
+                "LOCAL_PIPELINE_FAILED",
+                self.connected_once,
+                self.rendered_buffers,
+                terminal=True,
+            )
+            self.loop.quit()
 
     def _attach_track(self, source_pad: Gst.Pad, kind: str) -> None:
         pipeline = self.pipeline
         mux = self.mux
         if pipeline is None or mux is None:
             return
-        mux_pad = mux.get_static_pad(kind)
-        if mux_pad is not None and mux_pad.is_linked():
+        existing = mux.get_static_pad(kind)
+        if existing is not None and existing.is_linked():
             return
         mux_pad = mux.request_pad_simple(kind)
         if mux_pad is None:
@@ -218,20 +183,30 @@ class EgressAttempt:
             parser.set_property("config-interval", -1)
             capsfilter = self._make("capsfilter", "video_caps")
             capsfilter.set_property(
-                "caps", Gst.Caps.from_string("video/x-h264,stream-format=avc,alignment=au")
+                "caps",
+                Gst.Caps.from_string(
+                    "video/x-h264,stream-format=avc,alignment=au"
+                ),
             )
         else:
             depay = self._make("rtpmp4gdepay", "audio_depay")
             parser = self._make("aacparse", "audio_parse")
             capsfilter = self._make("capsfilter", "audio_caps")
             capsfilter.set_property(
-                "caps", Gst.Caps.from_string("audio/mpeg,mpegversion=4,stream-format=raw")
+                "caps",
+                Gst.Caps.from_string(
+                    "audio/mpeg,mpegversion=4,stream-format=raw"
+                ),
             )
         queue = self._make("queue", f"{kind}_queue")
 
         for element in (depay, parser, capsfilter, queue):
             pipeline.add(element)
-        if not depay.link(parser) or not parser.link(capsfilter) or not capsfilter.link(queue):
+        if (
+            not depay.link(parser)
+            or not parser.link(capsfilter)
+            or not capsfilter.link(queue)
+        ):
             raise RuntimeError(f"failed to link {kind} egress chain")
         queue_src = queue.get_static_pad("src")
         if queue_src is None or queue_src.link(mux_pad) != Gst.PadLinkReturn.OK:
@@ -244,7 +219,19 @@ class EgressAttempt:
 
     def _poll_sink(self) -> bool:
         if self.stop_event.is_set():
-            self.result = AttemptResult("STOPPED", self.connected_once, self.rendered_buffers)
+            self.result = AttemptResult(
+                "STOPPED", self.connected_once, self.rendered_buffers
+            )
+            self.loop.quit()
+            return False
+        if (
+            not self.connected_once
+            and self.connect_timeout_seconds > 0
+            and time.monotonic() - self._attempt_started >= self.connect_timeout_seconds
+        ):
+            self.result = AttemptResult(
+                "TIMEOUT", self.connected_once, self.rendered_buffers
+            )
             self.loop.quit()
             return False
         sink = self.sink
@@ -265,7 +252,9 @@ class EgressAttempt:
     def _on_bus_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
         if message.type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
-            source_name = message.src.get_name() if message.src is not None else "unknown"
+            source_name = (
+                message.src.get_name() if message.src is not None else "unknown"
+            )
             reason = classify_error(
                 source_name=source_name,
                 message=str(getattr(error, "message", "")),
@@ -281,28 +270,45 @@ class EgressAttempt:
             )
             self.loop.quit()
         elif message.type == Gst.MessageType.EOS:
-            self.result = AttemptResult("UPSTREAM_EOS", self.connected_once, self.rendered_buffers)
+            self.result = AttemptResult(
+                "UPSTREAM_EOS", self.connected_once, self.rendered_buffers
+            )
             self.loop.quit()
 
-    def run(self, on_connected: callable | None = None) -> AttemptResult:
+    def run(
+        self, on_connected: Callable[[int], None] | None = None
+    ) -> AttemptResult:
         self.on_connected = on_connected
         try:
             self._build()
         except Exception:
-            LOG.exception("failed to build egress pipeline")
-            return AttemptResult("LOCAL_PIPELINE_FAILED", False, 0, terminal=True)
+            LOG.error("failed to build egress pipeline")
+            return AttemptResult(
+                "LOCAL_PIPELINE_FAILED", False, 0, terminal=True
+            )
         assert self.pipeline is not None
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
-        GLib.timeout_add(250, self._poll_sink)
+        self._poll_source_id = GLib.timeout_add(250, self._poll_sink)
         state_result = self.pipeline.set_state(Gst.State.PLAYING)
         if state_result == Gst.StateChangeReturn.FAILURE:
             self.pipeline.set_state(Gst.State.NULL)
+            if self._poll_source_id is not None:
+                GLib.source_remove(self._poll_source_id)
+                self._poll_source_id = None
+            bus.remove_signal_watch()
             return AttemptResult("EGRESS_PIPELINE_FAILED", False, 0)
         try:
             self.loop.run()
         finally:
+            if self._poll_source_id is not None:
+                try:
+                    GLib.source_remove(self._poll_source_id)
+                except Exception:
+                    pass
+                self._poll_source_id = None
+            bus.remove_signal_watch()
             self.pipeline.set_state(Gst.State.NULL)
             for pad in self._requested_mux_pads:
                 if self.mux is not None:
@@ -312,11 +318,18 @@ class EgressAttempt:
 
 class EgressGateway:
     def __init__(self) -> None:
-        self.input_uri = os.getenv("EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay")
+        self.input_uri = os.getenv(
+            "EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay"
+        )
         self.destination_file = Path(
             os.getenv("EGRESS_URL_FILE", "/run/irlight/secrets/egress_url")
         )
-        self.status_file = Path(os.getenv("EGRESS_STATUS_FILE", "/state/egress.json"))
+        self.status_file = Path(
+            os.getenv("EGRESS_STATUS_FILE", "/state/egress.json")
+        )
+        self.connect_timeout_seconds = env_float(
+            "EGRESS_CONNECT_TIMEOUT_SECONDS", 15.0
+        )
         self.policy = ReconnectPolicy(
             initial_seconds=env_float("EGRESS_RETRY_INITIAL_SECONDS", 1.0),
             max_seconds=env_float("EGRESS_RETRY_MAX_SECONDS", 30.0),
@@ -328,9 +341,9 @@ class EgressGateway:
         self.stop_event = threading.Event()
         self.started_at = time.time()
         self.failure_count = 0
-        self.had_connection = False
         self.destination_scheme = ""
         self.destination_host = ""
+        self.outage_started_monotonic: float | None = None
 
     def request_stop(self, _signum: int, _frame: object) -> None:
         self.stop_event.set()
@@ -372,28 +385,50 @@ class EgressGateway:
             destination_url = read_destination_url(self.destination_file)
         except RuntimeError:
             LOG.error("egress destination secret file is unavailable or invalid")
-            self._write_status("FAILED", connected=False, reason_code="SECRET_UNAVAILABLE")
+            self._write_status(
+                "FAILED", connected=False, reason_code="SECRET_UNAVAILABLE"
+            )
             return 1
-        self.destination_scheme, self.destination_host = safe_destination(destination_url)
+        self.destination_scheme, self.destination_host = safe_destination(
+            destination_url
+        )
         self._write_status("STARTING", connected=False)
-        monotonic_started = time.monotonic()
 
         while not self.stop_event.is_set():
-            attempt = EgressAttempt(self.input_uri, destination_url, self.stop_event)
+            attempt = EgressAttempt(
+                self.input_uri,
+                destination_url,
+                self.stop_event,
+                connect_timeout_seconds=self.connect_timeout_seconds,
+            )
 
             def connected(rendered: int) -> None:
-                self.had_connection = True
                 self.failure_count = 0
-                self._write_status("CONNECTED", connected=True, rendered_buffers=rendered)
+                self.outage_started_monotonic = None
+                self._write_status(
+                    "CONNECTED", connected=True, rendered_buffers=rendered
+                )
 
             result = attempt.run(on_connected=connected)
             if self.stop_event.is_set() or result.reason_code == "STOPPED":
-                self._write_status("STOPPED", connected=False, reason_code="USER_STOPPED", rendered_buffers=result.rendered_buffers)
+                self._write_status(
+                    "STOPPED",
+                    connected=False,
+                    reason_code="USER_STOPPED",
+                    rendered_buffers=result.rendered_buffers,
+                )
                 return 0
 
             self.failure_count += 1
+            if self.outage_started_monotonic is None:
+                self.outage_started_monotonic = time.monotonic()
+
             if result.terminal:
-                status = "AUTH_FAILED" if result.reason_code in {"AUTH_FAILED", "PUBLISH_CONFLICT"} else "FAILED"
+                status = (
+                    "AUTH_FAILED"
+                    if result.reason_code in {"AUTH_FAILED", "PUBLISH_CONFLICT"}
+                    else "FAILED"
+                )
                 self._write_status(
                     status,
                     connected=False,
@@ -404,7 +439,7 @@ class EgressGateway:
                 )
                 return 2
 
-            elapsed = time.monotonic() - monotonic_started
+            elapsed = time.monotonic() - self.outage_started_monotonic
             if self.policy.exhausted(self.failure_count, elapsed):
                 self._write_status(
                     "FAILED",
@@ -429,7 +464,9 @@ class EgressGateway:
             if self.stop_event.wait(delay):
                 break
 
-        self._write_status("STOPPED", connected=False, reason_code="USER_STOPPED")
+        self._write_status(
+            "STOPPED", connected=False, reason_code="USER_STOPPED"
+        )
         return 0
 
 
