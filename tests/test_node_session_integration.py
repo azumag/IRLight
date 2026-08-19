@@ -31,8 +31,12 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.token = "session-integration-token"
         self.old_tokens = os.environ.get("NODE_BOOTSTRAP_TOKENS")
         self.old_require = os.environ.get("NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT")
+        self.old_recovery_stable = os.environ.get("SESSION_RECOVERY_STABLE_SECONDS")
         os.environ["NODE_BOOTSTRAP_TOKENS"] = self.token
         os.environ["NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT"] = "1"
+        # This integration test focuses on event/lifecycle wiring. The non-zero
+        # recovery window is covered separately with deterministic timestamps.
+        os.environ["SESSION_RECOVERY_STABLE_SECONDS"] = "0"
         self.path_patches = (
             patch.object(node_internal, "NODES_PATH", self.nodes_path),
             patch.object(node_internal, "TOKENS_PATH", self.tokens_path),
@@ -54,6 +58,10 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             os.environ.pop("NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT", None)
         else:
             os.environ["NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT"] = self.old_require
+        if self.old_recovery_stable is None:
+            os.environ.pop("SESSION_RECOVERY_STABLE_SECONDS", None)
+        else:
+            os.environ["SESSION_RECOVERY_STABLE_SECONDS"] = self.old_recovery_stable
         self.tmp.cleanup()
 
     def _prepared_session(self, provider_server_id: str = "provider-server-1") -> str:
