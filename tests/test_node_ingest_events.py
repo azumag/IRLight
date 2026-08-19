@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
-from node_internal import IngestObservationRequest, _append_ingest_event  # noqa: E402
+from node_internal import IngestObservationRequest, _append_ingest_events  # noqa: E402
 
 
 class NodeIngestEventTest(unittest.TestCase):
@@ -36,7 +36,7 @@ class NodeIngestEventTest(unittest.TestCase):
             enforced=True,
             observed_at=1.0,
         ).model_dump()
-        _append_ingest_event(node, previous, current)
+        _append_ingest_events(node, previous, current)
         self.assertEqual(node["events"][0]["type"], "ingest.rejected")
         self.assertTrue(node["events"][0]["payload"]["enforced"])
 
@@ -53,9 +53,12 @@ class NodeIngestEventTest(unittest.TestCase):
             "warnings": [],
             "enforced": False,
         }
-        _append_ingest_event(node, {}, current)
-        _append_ingest_event(node, current, current)
-        self.assertEqual([event["type"] for event in node["events"]], ["ingest.format_detected"])
+        _append_ingest_events(node, {}, current)
+        _append_ingest_events(node, current, current)
+        self.assertEqual(
+            [event["type"] for event in node["events"]],
+            ["ingest.format_detected"],
+        )
 
     def test_disconnect_emits_event(self) -> None:
         node = {"events": []}
@@ -71,8 +74,59 @@ class NodeIngestEventTest(unittest.TestCase):
             "warnings": [],
             "enforced": False,
         }
-        _append_ingest_event(node, previous, current)
+        _append_ingest_events(node, previous, current)
         self.assertEqual(node["events"][0]["type"], "ingest.disconnected")
+
+    def test_degraded_and_recovered_are_auditable(self) -> None:
+        node = {"events": []}
+        accepted = {
+            "status": "ACCEPTED",
+            "online": True,
+            "source_id": "source-1",
+            "source_type": "rtmpConn",
+            "bitrate_bps": 2_000_000,
+            "tracks": [],
+            "quality": {"video_fps": 30.0},
+            "reasons": [],
+            "warnings": [],
+            "enforced": False,
+        }
+        degraded = {
+            **accepted,
+            "status": "DEGRADED",
+            "quality": {"video_fps": 10.0},
+            "reasons": ["FPS_OUT_OF_RANGE"],
+        }
+        recovered = {**accepted, "quality": {"video_fps": 30.0}}
+        _append_ingest_events(node, accepted, degraded)
+        _append_ingest_events(node, degraded, recovered)
+        self.assertEqual(
+            [event["type"] for event in node["events"]],
+            ["ingest.degraded", "ingest.recovered"],
+        )
+        self.assertEqual(
+            node["events"][0]["payload"]["quality"]["video_fps"], 10.0
+        )
+
+    def test_new_degraded_source_emits_format_and_degraded(self) -> None:
+        node = {"events": []}
+        degraded = {
+            "status": "DEGRADED",
+            "online": True,
+            "source_id": "source-2",
+            "source_type": "rtmpConn",
+            "bitrate_bps": 1_000_000,
+            "tracks": [],
+            "quality": {"video_fps": 10.0},
+            "reasons": ["FPS_OUT_OF_RANGE"],
+            "warnings": [],
+            "enforced": False,
+        }
+        _append_ingest_events(node, {}, degraded)
+        self.assertEqual(
+            [event["type"] for event in node["events"]],
+            ["ingest.format_detected", "ingest.degraded"],
+        )
 
 
 if __name__ == "__main__":
