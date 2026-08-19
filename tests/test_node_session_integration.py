@@ -143,7 +143,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         response = self._bootstrap("unknown-provider")
         self.assertTrue(response["session_assigned"])
 
-    def test_ingest_heartbeat_updates_session_events_and_live_holding_state(self) -> None:
+    def test_ingest_heartbeat_updates_formal_session_lifecycle(self) -> None:
         session_id = self._prepared_session()
         response = self._bootstrap("provider-server-1")
         node_id = str(response["node_id"])
@@ -165,12 +165,60 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(session["first_ingest_at"])
         self.assertEqual(
             [event["type"] for event in session["events"]],
-            ["ingest.connected", "ingest.format_detected"],
+            ["ingest.connected", "ingest.format_detected", "session.live"],
         )
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "READY_WAIT_INGEST")
+        self.assertEqual(session["events"][-1]["payload"]["to_status"], "LIVE")
         for event in session["events"]:
             self.assertEqual(event["origin"], "node-agent")
             self.assertEqual(event["payload"]["node_id"], node_id)
             self.assertNotIn("credential_secret", event["payload"])
+
+        node_internal.heartbeat(
+            node_id,
+            HeartbeatRequest(
+                status="READY",
+                media_health="running",
+                active_publisher=True,
+                egress_connected=True,
+                ingest=self._ingest(
+                    status="DEGRADED",
+                    online=True,
+                    source_id="source-1",
+                    reasons=["FPS_OUT_OF_RANGE"],
+                ),
+            ),
+        )
+        session = self.store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["status"], "DEGRADED")
+        self.assertEqual(
+            [event["type"] for event in session["events"][-2:]],
+            ["ingest.degraded", "session.degraded"],
+        )
+        self.assertEqual(session["events"][-1]["reason_code"], "FPS_OUT_OF_RANGE")
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "LIVE")
+        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
+
+        node_internal.heartbeat(
+            node_id,
+            HeartbeatRequest(
+                status="READY",
+                media_health="running",
+                active_publisher=True,
+                egress_connected=True,
+                ingest=self._ingest(status="ACCEPTED", online=True, source_id="source-1"),
+            ),
+        )
+        session = self.store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["status"], "LIVE")
+        self.assertEqual(
+            [event["type"] for event in session["events"][-2:]],
+            ["ingest.recovered", "session.recovered"],
+        )
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "DEGRADED")
+        self.assertEqual(session["events"][-1]["payload"]["to_status"], "LIVE")
 
         node_internal.heartbeat(
             node_id,
@@ -185,7 +233,11 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         session = self.store.get(session_id)
         assert session is not None
         self.assertEqual(session["status"], "HOLDING")
-        self.assertEqual(session["events"][-1]["type"], "ingest.disconnected")
+        self.assertEqual(
+            [event["type"] for event in session["events"][-2:]],
+            ["ingest.disconnected", "session.holding"],
+        )
+        self.assertEqual(session["events"][-1]["reason_code"], "INGEST_DISCONNECTED")
         self.assertIsNotNone(session["last_ingest_at"])
 
         node_internal.heartbeat(
@@ -195,17 +247,75 @@ class NodeSessionIntegrationTest(unittest.TestCase):
                 media_health="running",
                 active_publisher=True,
                 egress_connected=True,
-                ingest=self._ingest(status="DEGRADED", online=True, source_id="source-2", reasons=["FPS_OUT_OF_RANGE"]),
+                ingest=self._ingest(
+                    status="DEGRADED",
+                    online=True,
+                    source_id="source-2",
+                    reasons=["FPS_OUT_OF_RANGE"],
+                ),
             ),
         )
         session = self.store.get(session_id)
         assert session is not None
-        self.assertEqual(session["status"], "LIVE")
+        self.assertEqual(session["status"], "DEGRADED")
         self.assertEqual(
-            [event["type"] for event in session["events"][-3:]],
-            ["ingest.reconnected", "ingest.format_detected", "ingest.degraded"],
+            [event["type"] for event in session["events"][-4:]],
+            [
+                "ingest.reconnected",
+                "ingest.format_detected",
+                "ingest.degraded",
+                "session.recovered",
+            ],
         )
         self.assertEqual(session["events"][-1]["reason_code"], "FPS_OUT_OF_RANGE")
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "HOLDING")
+        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
+        self.assertIsNone(session["hold_deadline_at"])
+
+        node_internal.heartbeat(
+            node_id,
+            HeartbeatRequest(
+                status="READY",
+                media_health="running",
+                active_publisher=False,
+                egress_connected=True,
+                ingest=self._ingest(status="OFFLINE", online=False, source_id=None),
+            ),
+        )
+        session = self.store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["status"], "HOLDING")
+        self.assertEqual(session["events"][-1]["type"], "session.holding")
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "DEGRADED")
+
+    def test_first_usable_ingest_can_start_degraded(self) -> None:
+        session_id = self._prepared_session()
+        response = self._bootstrap("provider-server-1")
+        node_id = str(response["node_id"])
+
+        node_internal.heartbeat(
+            node_id,
+            HeartbeatRequest(
+                status="READY",
+                media_health="running",
+                active_publisher=True,
+                egress_connected=True,
+                ingest=self._ingest(
+                    status="DEGRADED",
+                    online=True,
+                    source_id="source-1",
+                    reasons=["BITRATE_TOO_LOW"],
+                ),
+            ),
+        )
+        session = self.store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["status"], "DEGRADED")
+        self.assertIsNotNone(session["first_ingest_at"])
+        self.assertEqual(session["events"][-1]["type"], "session.degraded")
+        self.assertEqual(session["events"][-1]["reason_code"], "BITRATE_TOO_LOW")
+        self.assertEqual(session["events"][-1]["payload"]["from_status"], "READY_WAIT_INGEST")
+        self.assertEqual(session["events"][-1]["payload"]["to_status"], "DEGRADED")
 
 
 if __name__ == "__main__":
