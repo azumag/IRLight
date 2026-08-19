@@ -21,6 +21,10 @@ if (( stall_seconds < 1 )); then
   exit 2
 fi
 
+stage() {
+  printf '\n=== short-media-stall stage: %s ===\n' "$1"
+}
+
 cat >"$override" <<'YAML'
 services:
   control-ui:
@@ -218,9 +222,10 @@ relay = next(
 )
 if relay is None or not relay.get("online"):
     raise SystemExit(f"output/relay is not online: {relay!r}")
-codecs = {track.get("codec") for track in relay.get("tracks2", [])}
-if "H264" not in codecs or "MPEG4Audio" not in codecs and "MPEG-4 Audio" not in codecs:
-    raise SystemExit(f"output/relay missing expected tracks: {relay!r}")
+codecs = {track.get("codec") for track in relay.get("tracks2", []) if isinstance(track, dict)}
+if "H264" not in codecs or "MPEG-4 Audio" not in codecs:
+    raise SystemExit(f"output/relay missing expected tracks; codecs={sorted(codecs)!r}, relay={relay!r}")
+print(f"output/relay online codecs={sorted(codecs)!r}")
 PY
 }
 
@@ -322,9 +327,14 @@ print(
 ' "$after_seq" <<<"$events_payload"
 }
 
+stage "start control plane"
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build control-ui
+if ! "${compose[@]}" up -d --build control-ui >"$tmp_dir/control-ui-build.log" 2>&1; then
+  cat "$tmp_dir/control-ui-build.log" >&2
+  exit 1
+fi
 wait_http "$base_url/healthz" 60
+stage "control plane ready"
 
 curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
   -H 'Content-Type: application/json' \
@@ -343,10 +353,15 @@ if [[ -z "$provider_server_id" || "$provider_server_id" == "None" ]]; then
   echo "prepare did not allocate provider_server_id" >&2
   exit 1
 fi
+stage "session prepared"
 
 export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
-"${compose[@]}" up -d --build node-agent
+if ! "${compose[@]}" up -d --build node-agent >"$tmp_dir/node-agent-build.log" 2>&1; then
+  cat "$tmp_dir/node-agent-build.log" >&2
+  exit 1
+fi
 wait_assigned_node 45
+stage "node assigned"
 
 credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/sessions/$session_id/ingest-credentials" \
@@ -357,9 +372,13 @@ ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["user
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
 start_publisher
+stage "publisher started"
 wait_session_status LIVE 60
+stage "session initially LIVE"
 wait_continuity_state LIVE LIVE LIVE 60
+stage "continuity initially LIVE/LIVE/LIVE"
 assert_output_relay_online
+stage "relay initially online"
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher exited before initial LIVE" >&2
   exit 1
@@ -368,9 +387,13 @@ fi
 baseline_seq="$(latest_event_seq)"
 stall_started_at="$(date +%s)"
 set_media_stall 1
+stage "video+audio stall enabled"
 wait_stall_holding_after "$baseline_seq" 45
+stage "session HOLDING on media timeout"
 wait_continuity_state HOLDING STANDBY SILENT_FALLBACK 45
+stage "continuity HOLDING/STANDBY/SILENT_FALLBACK"
 assert_output_relay_online
+stage "relay online during stall"
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher exited during full-media stall" >&2
   exit 1
@@ -380,18 +403,22 @@ elapsed=$(( $(date +%s) - stall_started_at ))
 if (( elapsed < stall_seconds )); then
   sleep $(( stall_seconds - elapsed ))
 fi
-# Verify the relay is still online at the end of the requested loss window,
-# not just at the moment HOLDING was first detected.
 assert_output_relay_online
+stage "requested stall window completed with relay online"
 
 set_media_stall 0
+stage "video+audio stall disabled"
 wait_session_status LIVE 60
+stage "session recovered LIVE"
 wait_continuity_state LIVE LIVE LIVE 60
+stage "continuity recovered LIVE/LIVE/LIVE"
 assert_output_relay_online
+stage "relay online after recovery"
 if ! kill -0 "$publisher_pid" 2>/dev/null; then
   echo "publisher exited before recovered LIVE" >&2
   exit 1
 fi
 assert_monitoring_sequence "$baseline_seq"
+stage "monitoring sequence verified"
 
 echo "short full-media stall smoke passed (${stall_seconds}s stall, standby output continuous)"
