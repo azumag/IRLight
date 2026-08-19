@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,7 +13,7 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 sys.path.insert(0, str(ROOT))
 
 import fake_provider_for_api as runtime  # noqa: E402
-from provider.fake_provider import FakeProvider  # noqa: E402
+from provider.fake_provider import FakeProvider, FileFakeProvider  # noqa: E402
 
 
 class ProviderRuntimeTest(unittest.TestCase):
@@ -22,10 +23,42 @@ class ProviderRuntimeTest(unittest.TestCase):
     def test_fake_is_default_and_process_singleton(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("IRLIGHT_PROVIDER", None)
+            os.environ.pop("IRLIGHT_FAKE_PROVIDER_STATE_FILE", None)
             first = runtime.default_provider()
             second = runtime.default_provider()
         self.assertIsInstance(first, FakeProvider)
+        self.assertNotIsInstance(first, FileFakeProvider)
         self.assertIs(first, second)
+
+    def test_file_backed_fake_can_share_inventory_across_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            with patch.dict(
+                os.environ,
+                {
+                    "IRLIGHT_PROVIDER": "fake",
+                    "IRLIGHT_FAKE_PROVIDER_STATE_FILE": str(state_file),
+                },
+                clear=False,
+            ):
+                provider = runtime.default_provider()
+                self.assertIsInstance(provider, FileFakeProvider)
+                self.assertIs(provider, runtime.default_provider())
+                created = provider.create_volume(
+                    "shared-volume",
+                    100,
+                    {
+                        "irlight-managed": "true",
+                        "irlight-session-id": "session-1",
+                    },
+                )
+
+                reloaded = FileFakeProvider(state_file)
+                self.assertEqual(reloaded.get_volume(created.volume_id).name, "shared-volume")
+                self.assertEqual(
+                    [resource.provider_id for resource in reloaded.list_managed_resources()],
+                    [created.volume_id],
+                )
 
     def test_rejects_unknown_provider_mode(self) -> None:
         with patch.dict(os.environ, {"IRLIGHT_PROVIDER": "other"}, clear=False):
