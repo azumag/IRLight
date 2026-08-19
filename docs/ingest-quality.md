@@ -28,8 +28,8 @@ MediaMTX API, RTSP and metrics remain internal-only on production nodes.
 
 ## DEGRADED reasons
 
-- `VIDEO_TIMEOUT`: no video frames observed in the sample
-- `AUDIO_TIMEOUT`: no audio frames observed
+- `VIDEO_TIMEOUT`: no meaningful video progress observed in the sample; this includes zero frames and a negligible residual burst across an otherwise full sample window
+- `AUDIO_TIMEOUT`: no meaningful audio progress observed; this includes zero frames and a negligible residual burst across an otherwise full sample window
 - `VIDEO_TIMESTAMP_REGRESSION`
 - `AUDIO_TIMESTAMP_REGRESSION`
 - `VIDEO_TIMESTAMP_STALLED`
@@ -39,6 +39,8 @@ MediaMTX API, RTSP and metrics remain internal-only on production nodes.
 - `KEYFRAME_TIMEOUT`
 - `BITRATE_TOO_LOW`
 - `MEDIA_SAMPLE_TIMEOUT` / `MEDIA_SAMPLE_FAILED` when an online source cannot be sampled
+
+`VIDEO_TIMESTAMP_STALLED` / `AUDIO_TIMESTAMP_STALLED` remain the classification for media that makes some meaningful timestamp progress but fails the configured minimum-progress ratio. Only near-zero residual progress after the sampler has consumed essentially the full sample window is promoted to `*_TIMEOUT`.
 
 Warnings that do not by themselves make the source DEGRADED include `FPS_NON_PREFERRED`, `GOP_UNOBSERVED`, and the first low-bitrate sample before the consecutive-sample threshold is reached.
 

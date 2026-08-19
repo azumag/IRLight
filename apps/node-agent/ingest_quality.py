@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -95,33 +96,47 @@ class IngestQualitySampler:
             self._low_bitrate_samples = 0
 
     def sample(self) -> dict[str, Any]:
-        command = [
-            self.config.ffprobe_path,
-            "-v",
-            "error",
-            "-rtsp_transport",
-            "tcp",
-            "-read_intervals",
-            f"%+{self.config.sample_seconds:g}",
-            "-show_frames",
-            "-show_entries",
-            "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
-            "-of",
-            "json",
-            self.config.input_url,
-        ]
+        # Probe tracks independently. With a single ffprobe process, one stalled
+        # track can keep the process alive until our wall-clock timeout and some
+        # ffprobe builds do not flush the other track's line-oriented output to a
+        # pipe before they are terminated. Independent probes make one-sided media
+        # loss observable without relying on partial stdout buffering behavior.
         started = time.monotonic()
-        try:
-            result = self._runner(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            video_future = executor.submit(self._sample_track, "video", "v:0")
+            audio_future = executor.submit(self._sample_track, "audio", "a:0")
+            video = video_future.result()
+            audio = audio_future.result()
+        elapsed = time.monotonic() - started
+
+        frames = [*video["frames"], *audio["frames"]]
+        failures = [
+            probe.get("error")
+            for probe in (video, audio)
+            if probe.get("failed")
+        ]
+        if failures:
             return {
-                "sample_elapsed_seconds": round(time.monotonic() - started, 3),
+                "sample_elapsed_seconds": round(elapsed, 3),
+                "video_frames": sum(
+                    1 for frame in frames if frame.get("media_type") == "video"
+                ),
+                "audio_frames": sum(
+                    1 for frame in frames if frame.get("media_type") == "audio"
+                ),
+                "video_fps": None,
+                "video_timestamp_span_seconds": None,
+                "audio_timestamp_span_seconds": None,
+                "keyframes": 0,
+                "max_gop_seconds": None,
+                "reasons": ["MEDIA_SAMPLE_FAILED"],
+                "warnings": [],
+                "error": "; ".join(str(value) for value in failures if value)[:160],
+            }
+
+        if not frames and video.get("timed_out") and audio.get("timed_out"):
+            return {
+                "sample_elapsed_seconds": round(elapsed, 3),
                 "video_frames": 0,
                 "audio_frames": 0,
                 "video_fps": None,
@@ -133,42 +148,73 @@ class IngestQualitySampler:
                 "warnings": [],
             }
 
-        elapsed = time.monotonic() - started
-        if result.returncode != 0:
-            detail = (result.stderr or "ffprobe failed").strip().replace("\n", " ")[:160]
-            return {
-                "sample_elapsed_seconds": round(elapsed, 3),
-                "video_frames": 0,
-                "audio_frames": 0,
-                "video_fps": None,
-                "video_timestamp_span_seconds": None,
-                "audio_timestamp_span_seconds": None,
-                "keyframes": 0,
-                "max_gop_seconds": None,
-                "reasons": ["MEDIA_SAMPLE_FAILED"],
-                "warnings": [],
-                "error": detail,
-            }
-        try:
-            payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            return {
-                "sample_elapsed_seconds": round(elapsed, 3),
-                "video_frames": 0,
-                "audio_frames": 0,
-                "video_fps": None,
-                "video_timestamp_span_seconds": None,
-                "audio_timestamp_span_seconds": None,
-                "keyframes": 0,
-                "max_gop_seconds": None,
-                "reasons": ["MEDIA_SAMPLE_INVALID_JSON"],
-                "warnings": [],
-            }
         return evaluate_frame_sample(
-            payload if isinstance(payload, dict) else {},
+            {"frames": frames},
             self.config,
             sample_elapsed_seconds=elapsed,
         )
+
+    def _sample_track(self, media_type: str, selector: str) -> dict[str, Any]:
+        # Restrict the RTSP demuxer itself to the requested media type. Merely
+        # selecting ffprobe output still subscribes to every RTSP track, allowing
+        # a stalled sibling track to block an otherwise healthy probe.
+        command = [
+            self.config.ffprobe_path,
+            "-v",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-allowed_media_types",
+            media_type,
+            "-read_intervals",
+            f"%+{self.config.sample_seconds:g}",
+            "-select_streams",
+            selector,
+            "-show_frames",
+            "-show_entries",
+            "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
+            "-of",
+            "compact=p=0:nk=0",
+            self.config.input_url,
+        ]
+        try:
+            result = self._runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            payload = _parse_frame_output(_decode_subprocess_output(exc.stdout))
+            return {
+                "frames": _frames_for_media_type(payload, media_type),
+                "timed_out": True,
+                "failed": False,
+            }
+
+        payload = _parse_frame_output(result.stdout or "")
+        frames = _frames_for_media_type(payload, media_type)
+        if result.returncode != 0:
+            detail = (result.stderr or "ffprobe failed").strip().replace("\n", " ")[:160]
+            return {
+                "frames": frames,
+                "timed_out": False,
+                "failed": True,
+                "error": detail,
+            }
+        if payload.get("invalid"):
+            return {
+                "frames": [],
+                "timed_out": False,
+                "failed": True,
+                "error": "ffprobe returned invalid frame data",
+            }
+        return {
+            "frames": frames,
+            "timed_out": False,
+            "failed": False,
+        }
 
     def augment(self, observation: dict[str, Any]) -> dict[str, Any]:
         """Merge live quality results into a MediaMTX policy observation."""
@@ -266,9 +312,20 @@ def evaluate_frame_sample(
     reasons: list[str] = []
     warnings: list[str] = []
 
-    if not video_times:
+    video_effective_timeout = bool(video_times) and _is_effective_timeout(
+        video_span,
+        sample_elapsed_seconds,
+        config,
+    )
+    audio_effective_timeout = bool(audio_times) and _is_effective_timeout(
+        audio_span,
+        sample_elapsed_seconds,
+        config,
+    )
+
+    if not video_times or video_effective_timeout:
         reasons.append("VIDEO_TIMEOUT")
-    if not audio_times:
+    if not audio_times or audio_effective_timeout:
         reasons.append("AUDIO_TIMEOUT")
     if video_regressions:
         reasons.append("VIDEO_TIMESTAMP_REGRESSION")
@@ -276,9 +333,17 @@ def evaluate_frame_sample(
         reasons.append("AUDIO_TIMESTAMP_REGRESSION")
 
     required_progress = config.sample_seconds * config.min_progress_ratio
-    if video_span is not None and video_span < required_progress:
+    if (
+        video_span is not None
+        and video_span < required_progress
+        and not video_effective_timeout
+    ):
         reasons.append("VIDEO_TIMESTAMP_STALLED")
-    if audio_span is not None and audio_span < required_progress:
+    if (
+        audio_span is not None
+        and audio_span < required_progress
+        and not audio_effective_timeout
+    ):
         reasons.append("AUDIO_TIMESTAMP_STALLED")
 
     if video_fps is None and video_times:
@@ -319,6 +384,56 @@ def evaluate_frame_sample(
     }
 
 
+def _parse_frame_output(output: str) -> dict[str, Any]:
+    text = output.strip()
+    if not text:
+        return {"frames": []}
+
+    # Keep JSON support for unit-test runners and compatibility with older
+    # captured samples while runtime ffprobe uses compact line-oriented output.
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {"frames": [], "invalid": True}
+        return payload if isinstance(payload, dict) else {"frames": [], "invalid": True}
+
+    frames: list[dict[str, Any]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        frame: dict[str, Any] = {}
+        for part in line.split("|"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key:
+                frame[key] = value
+        if frame.get("media_type") in {"video", "audio"}:
+            frames.append(frame)
+    return {"frames": frames}
+
+
+def _frames_for_media_type(payload: dict[str, Any], media_type: str) -> list[dict[str, Any]]:
+    frames = payload.get("frames", [])
+    if not isinstance(frames, list):
+        return []
+    return [
+        frame
+        for frame in frames
+        if isinstance(frame, dict) and frame.get("media_type") == media_type
+    ]
+
+
+def _decode_subprocess_output(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def _frame_timestamp(frame: dict[str, Any]) -> float | None:
     for key in ("best_effort_timestamp_time", "pkt_dts_time"):
         value = _safe_float(frame.get(key))
@@ -331,6 +446,21 @@ def _span(values: list[float]) -> float | None:
     if not values:
         return None
     return max(values) - min(values)
+
+
+def _is_effective_timeout(
+    span: float | None,
+    sample_elapsed_seconds: float | None,
+    config: IngestQualityConfig,
+) -> bool:
+    """Treat only negligible residual progress across a full sample as timeout."""
+    if span is None or sample_elapsed_seconds is None:
+        return False
+    if sample_elapsed_seconds < config.sample_seconds * 0.90:
+        return False
+    required_progress = config.sample_seconds * config.min_progress_ratio
+    negligible_progress = min(0.25, required_progress * 0.25)
+    return span < negligible_progress
 
 
 def _max_keyframe_gap(video_times: list[float], keyframe_times: list[float]) -> float | None:

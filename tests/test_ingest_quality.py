@@ -52,6 +52,22 @@ def frame_payload(
     return {"frames": frames}
 
 
+def compact_frames(media_type: str, *, fps: int, duration: float) -> str:
+    lines = []
+    for index in range(int(duration * fps) + 1):
+        lines.append(
+            "|".join(
+                [
+                    f"media_type={media_type}",
+                    f"key_frame={1 if index == 0 else 0}",
+                    f"best_effort_timestamp_time={index / fps:.6f}",
+                    f"pkt_dts_time={index / fps:.6f}",
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
 class IngestQualityEvaluationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.config = IngestQualityConfig(sample_seconds=4.0)
@@ -145,6 +161,80 @@ class IngestQualitySamplerTest(unittest.TestCase):
         sampler.augment({**base, "source_id": "one"})
         changed = sampler.augment({**base, "source_id": "two"})
         self.assertNotIn("BITRATE_TOO_LOW", changed["reasons"])
+
+    def test_timeout_preserves_audio_frames_and_reports_video_timeout(self) -> None:
+        partial = compact_frames("audio", fps=50, duration=2.0).encode()
+
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired([], 4.0, output=partial)
+
+        sampler = IngestQualitySampler(
+            IngestQualityConfig(
+                sample_seconds=2.0,
+                timeout_margin_seconds=2.0,
+                min_bitrate_bps=0,
+            ),
+            runner=runner,
+        )
+        result = sampler.sample()
+        self.assertIn("VIDEO_TIMEOUT", result["reasons"])
+        self.assertNotIn("AUDIO_TIMEOUT", result["reasons"])
+        self.assertNotIn("MEDIA_SAMPLE_TIMEOUT", result["reasons"])
+        self.assertGreater(result["audio_frames"], 0)
+
+    def test_timeout_preserves_video_frames_and_reports_audio_timeout(self) -> None:
+        partial = compact_frames("video", fps=30, duration=2.0)
+
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired([], 4.0, output=partial)
+
+        sampler = IngestQualitySampler(
+            IngestQualityConfig(
+                sample_seconds=2.0,
+                timeout_margin_seconds=2.0,
+                min_bitrate_bps=0,
+            ),
+            runner=runner,
+        )
+        result = sampler.sample()
+        self.assertIn("AUDIO_TIMEOUT", result["reasons"])
+        self.assertNotIn("VIDEO_TIMEOUT", result["reasons"])
+        self.assertNotIn("MEDIA_SAMPLE_TIMEOUT", result["reasons"])
+        self.assertGreater(result["video_frames"], 0)
+
+    def test_independent_probe_detects_video_timeout_without_partial_stdout(self) -> None:
+        audio = compact_frames("audio", fps=50, duration=2.0)
+
+        def runner(command: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            assert isinstance(command, list)
+            selector = command[command.index("-select_streams") + 1]
+            if selector == "v:0":
+                raise subprocess.TimeoutExpired(command, 4.0, output=b"")
+            return subprocess.CompletedProcess(command, 0, stdout=audio, stderr="")
+
+        sampler = IngestQualitySampler(
+            IngestQualityConfig(
+                sample_seconds=2.0,
+                timeout_margin_seconds=2.0,
+                min_bitrate_bps=0,
+            ),
+            runner=runner,
+        )
+        result = sampler.sample()
+        self.assertIn("VIDEO_TIMEOUT", result["reasons"])
+        self.assertNotIn("AUDIO_TIMEOUT", result["reasons"])
+        self.assertNotIn("MEDIA_SAMPLE_TIMEOUT", result["reasons"])
+        self.assertGreater(result["audio_frames"], 0)
+
+    def test_timeout_without_partial_frames_remains_media_sample_timeout(self) -> None:
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired([], 4.0, output=b"")
+
+        sampler = IngestQualitySampler(
+            IngestQualityConfig(sample_seconds=2.0), runner=runner
+        )
+        result = sampler.sample()
+        self.assertEqual(result["reasons"], ["MEDIA_SAMPLE_TIMEOUT"])
 
 
 if __name__ == "__main__":
