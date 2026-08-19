@@ -13,7 +13,7 @@ from node_internal import IngestObservationRequest, _append_ingest_events  # noq
 
 class NodeIngestEventTest(unittest.TestCase):
     def test_rejection_becomes_control_plane_node_event(self) -> None:
-        node = {"events": []}
+        node = {"events": [], "ingest_ever_online": True}
         previous = {
             "status": "PENDING",
             "online": True,
@@ -40,8 +40,8 @@ class NodeIngestEventTest(unittest.TestCase):
         self.assertEqual(node["events"][0]["type"], "ingest.rejected")
         self.assertTrue(node["events"][0]["payload"]["enforced"])
 
-    def test_new_source_emits_format_detected_once(self) -> None:
-        node = {"events": []}
+    def test_new_source_emits_connected_and_format_detected_once(self) -> None:
+        node = {"events": [], "ingest_ever_online": False}
         current = {
             "status": "PENDING",
             "online": True,
@@ -57,11 +57,46 @@ class NodeIngestEventTest(unittest.TestCase):
         _append_ingest_events(node, current, current)
         self.assertEqual(
             [event["type"] for event in node["events"]],
-            ["ingest.format_detected"],
+            ["ingest.connected", "ingest.format_detected"],
+        )
+
+    def test_disconnect_then_new_source_emits_reconnected(self) -> None:
+        node = {"events": [], "ingest_ever_online": False}
+        online = {
+            "status": "ACCEPTED",
+            "online": True,
+            "source_id": "source-1",
+            "source_type": "rtmpConn",
+            "bitrate_bps": 1_000_000,
+            "tracks": [],
+            "reasons": [],
+            "warnings": [],
+            "enforced": False,
+        }
+        offline = {
+            **online,
+            "status": "OFFLINE",
+            "online": False,
+            "source_id": None,
+            "source_type": None,
+        }
+        reconnect = {**online, "source_id": "source-2"}
+        _append_ingest_events(node, {}, online)
+        _append_ingest_events(node, online, offline)
+        _append_ingest_events(node, offline, reconnect)
+        self.assertEqual(
+            [event["type"] for event in node["events"]],
+            [
+                "ingest.connected",
+                "ingest.format_detected",
+                "ingest.disconnected",
+                "ingest.reconnected",
+                "ingest.format_detected",
+            ],
         )
 
     def test_disconnect_emits_event(self) -> None:
-        node = {"events": []}
+        node = {"events": [], "ingest_ever_online": True}
         previous = {"status": "ACCEPTED", "online": True, "source_id": "source-1"}
         current = {
             "status": "OFFLINE",
@@ -78,7 +113,7 @@ class NodeIngestEventTest(unittest.TestCase):
         self.assertEqual(node["events"][0]["type"], "ingest.disconnected")
 
     def test_degraded_and_recovered_are_auditable(self) -> None:
-        node = {"events": []}
+        node = {"events": [], "ingest_ever_online": True}
         accepted = {
             "status": "ACCEPTED",
             "online": True,
@@ -108,8 +143,8 @@ class NodeIngestEventTest(unittest.TestCase):
             node["events"][0]["payload"]["quality"]["video_fps"], 10.0
         )
 
-    def test_new_degraded_source_emits_format_and_degraded(self) -> None:
-        node = {"events": []}
+    def test_new_degraded_source_emits_connected_format_and_degraded(self) -> None:
+        node = {"events": [], "ingest_ever_online": False}
         degraded = {
             "status": "DEGRADED",
             "online": True,
@@ -125,7 +160,7 @@ class NodeIngestEventTest(unittest.TestCase):
         _append_ingest_events(node, {}, degraded)
         self.assertEqual(
             [event["type"] for event in node["events"]],
-            ["ingest.format_detected", "ingest.degraded"],
+            ["ingest.connected", "ingest.format_detected", "ingest.degraded"],
         )
 
 
