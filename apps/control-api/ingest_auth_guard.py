@@ -26,6 +26,7 @@ class IngestAuthGuardConfig:
     lockout_seconds: float = 120.0
     event_limit: int = 200
     bucket_limit: int = 4096
+    blocked_event_interval_seconds: float = 5.0
 
     @classmethod
     def from_env(cls) -> "IngestAuthGuardConfig":
@@ -45,6 +46,9 @@ class IngestAuthGuardConfig:
             ),
             event_limit=_env_int("IRLIGHT_INGEST_AUTH_EVENT_LIMIT", 200, 1, 5000),
             bucket_limit=_env_int("IRLIGHT_INGEST_AUTH_BUCKET_LIMIT", 4096, 32, 100000),
+            blocked_event_interval_seconds=_env_float(
+                "IRLIGHT_INGEST_AUTH_BLOCKED_EVENT_INTERVAL_SECONDS", 5.0, 0.1, 3600.0
+            ),
         )
 
 
@@ -365,7 +369,27 @@ class IngestAuthGuard:
         with self.lock:
             self._compact_buckets(current)
             decision = self._decision(specs, current)
-            if decision.blocked:
+            if not decision.blocked:
+                return decision
+
+            locked_scope_set = set(decision.locked_scopes)
+            due_buckets: list[dict[str, Any]] = []
+            for scope, value, _limit in specs:
+                if scope not in locked_scope_set:
+                    continue
+                bucket = self._buckets.get(self._bucket_key(scope, value))
+                if bucket is None:
+                    continue
+                try:
+                    last_event = float(bucket.get("last_blocked_event_at", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    last_event = 0.0
+                if current - last_event >= self.config.blocked_event_interval_seconds:
+                    due_buckets.append(bucket)
+
+            if due_buckets:
+                for bucket in due_buckets:
+                    bucket["last_blocked_event_at"] = current
                 self._append_event(
                     "ingest.auth_blocked",
                     current,
