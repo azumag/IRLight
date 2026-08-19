@@ -5,7 +5,8 @@ Responsibilities:
 - exchange the one-time bootstrap token with the Control Plane
 - write the delivered egress secret to a tmpfs file with 0600 permissions
 - start the media stack through the configured supervisor
-- inspect and enforce the ingest media policy through MediaMTX's internal API
+- inspect and enforce the ingest format/bitrate policy through MediaMTX
+- sample FPS/GOP/timestamp health without exposing the RTSP path publicly
 - send heartbeats and honour STOP / absolute deadline
 
 Secrets are never placed in process arguments or container environment
@@ -25,6 +26,7 @@ import urllib.request
 from pathlib import Path
 
 from ingest_policy import IngestPolicyInspector
+from ingest_quality import IngestQualitySampler
 from supervisor import ComposeSupervisor, FakeSupervisor, MediaSupervisor
 
 
@@ -96,6 +98,7 @@ class NodeAgent:
         supervisor: MediaSupervisor,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         ingest_inspector: IngestPolicyInspector | None = None,
+        ingest_quality_sampler: IngestQualitySampler | None = None,
     ) -> None:
         self.control_base_url = control_base_url.rstrip("/")
         self.bootstrap_token = bootstrap_token
@@ -106,6 +109,7 @@ class NodeAgent:
         self.supervisor = supervisor
         self.heartbeat_interval = heartbeat_interval
         self.ingest_inspector = ingest_inspector
+        self.ingest_quality_sampler = ingest_quality_sampler
         self.node_id: str | None = None
         self.session_id: str | None = None
         self.absolute_deadline: float | None = None
@@ -150,7 +154,7 @@ class NodeAgent:
         if self.ingest_inspector is None:
             return None
         try:
-            return self.ingest_inspector.observe_and_enforce()
+            observation = self.ingest_inspector.observe_and_enforce()
         except RuntimeError as exc:
             print(f"[agent] ingest inspection failed: {exc}", file=sys.stderr, flush=True)
             return {
@@ -166,6 +170,21 @@ class NodeAgent:
                 "enforced": False,
                 "observed_at": time.time(),
             }
+
+        if self.ingest_quality_sampler is None:
+            return observation
+        try:
+            return self.ingest_quality_sampler.augment(observation)
+        except Exception as exc:  # quality must never break the heartbeat loop
+            print(f"[agent] ingest quality sample failed: {exc}", file=sys.stderr, flush=True)
+            degraded = dict(observation)
+            if degraded.get("online") and degraded.get("status") != "REJECTED":
+                warnings = list(degraded.get("warnings", []))
+                warnings.append("QUALITY_SAMPLER_UNAVAILABLE")
+                degraded["warnings"] = list(dict.fromkeys(warnings))
+                if degraded.get("status") == "ACCEPTED":
+                    degraded["status"] = "WARNING"
+            return degraded
 
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:
@@ -270,6 +289,12 @@ def build_ingest_inspector() -> IngestPolicyInspector | None:
     return IngestPolicyInspector()
 
 
+def build_ingest_quality_sampler() -> IngestQualitySampler | None:
+    if os.getenv("NODE_INGEST_QUALITY_ENABLED", "1") == "0":
+        return None
+    return IngestQualitySampler()
+
+
 def main() -> int:
     secret_dir = Path(_env("NODE_SECRET_DIR", required=False) or "/run/irlight/secrets")
     agent = NodeAgent(
@@ -277,10 +302,11 @@ def main() -> int:
         bootstrap_token=_secret_from_file_or_env("NODE_BOOTSTRAP_TOKEN"),
         provider_server_id=_env("NODE_PROVIDER_SERVER_ID"),
         boot_id=_env("NODE_BOOT_ID", required=False) or "local-boot",
-        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.3.0-spike",
+        agent_version=_env("NODE_AGENT_VERSION", required=False) or "0.4.0-spike",
         secret_dir=secret_dir,
         supervisor=build_supervisor(),
         ingest_inspector=build_ingest_inspector(),
+        ingest_quality_sampler=build_ingest_quality_sampler(),
     )
     return agent.run()
 
