@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Annotated, Any
 
@@ -9,8 +10,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from auth_api import require_csrf, require_user
+from catalog_store import CatalogNotFound, get_destination as store_get_destination
+from destination_secret_store import (
+    DestinationSecretConfigurationError,
+    default_destination_secret_store,
+)
 from entitlement_store import default_entitlement_store
-from fake_provider_for_api import default_provider, default_store
+from fake_provider_for_api import default_provider, default_store, provider_mode
 from ingest_store import default_ingest_store
 from session_store import EntitlementExceeded
 from session_workflow import ProvisioningWorkflow
@@ -18,6 +24,7 @@ from session_workflow import ProvisioningWorkflow
 
 class PrepareRequest(BaseModel):
     environment: str = Field(default="dev", pattern="^(dev|beta|prod)$")
+    destination_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class SessionEventRequest(BaseModel):
@@ -37,6 +44,42 @@ def _owned_session(session_id: str, user_id: str) -> dict[str, Any]:
     if session is None or session.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="unknown session")
     return session
+
+
+def _destination_required() -> bool:
+    configured = os.getenv("IRLIGHT_REQUIRE_DESTINATION")
+    if configured is not None:
+        return configured.strip().lower() not in {"0", "false", "no", "off"}
+    return provider_mode() == "conoha"
+
+
+def _validated_destination(destination_id: str | None, user_id: str) -> dict[str, Any] | None:
+    if destination_id is None:
+        if _destination_required():
+            raise HTTPException(status_code=409, detail="destination_id is required")
+        return None
+    try:
+        destination = store_get_destination(destination_id, user_id)
+    except CatalogNotFound as exc:
+        raise HTTPException(status_code=404, detail="unknown destination") from exc
+    if destination.get("enabled", True) is not True:
+        raise HTTPException(status_code=409, detail="destination is disabled")
+    if str(destination.get("type", "")).lower() not in {"rtmp", "rtmps"}:
+        raise HTTPException(status_code=409, detail="destination egress protocol is not supported")
+    if destination.get("verification_status") != "VERIFIED":
+        raise HTTPException(status_code=409, detail="destination must be verified before prepare")
+    try:
+        configured = default_destination_secret_store().configured(
+            user_id=user_id,
+            secret_ref=str(destination.get("secret_ref", "")),
+        )
+    except DestinationSecretConfigurationError as exc:
+        raise HTTPException(
+            status_code=503, detail="destination secret store is not configured"
+        ) from exc
+    if not configured:
+        raise HTTPException(status_code=409, detail="destination secret is not configured")
+    return destination
 
 
 @router.post("/{session_id}/prepare")
@@ -59,6 +102,7 @@ def prepare_session(
     if existing is not None and existing.get("idempotency_key") == key:
         return existing
 
+    destination = _validated_destination(request.destination_id, user_id)
     entitlement = default_entitlement_store().get(user_id)
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
@@ -69,6 +113,8 @@ def prepare_session(
             entitlement_id=str(entitlement["id"]),
             max_concurrent_sessions=int(entitlement["max_concurrent_sessions"]),
         )
+        if destination is not None:
+            store.update(session_id, destination_id=str(destination["id"]))
         session = workflow.prepare(
             session_id,
             user_id=user_id,
@@ -81,8 +127,7 @@ def prepare_session(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"provisioning failed: {exc}") from exc
 
-    store.update(session["session_id"], idempotency_key=key)
-    return session
+    return store.update(session["session_id"], idempotency_key=key)
 
 
 @router.post("/{session_id}/stop")
