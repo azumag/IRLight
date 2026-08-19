@@ -104,6 +104,8 @@ class EgressAttempt:
         self.result = AttemptResult("EGRESS_PIPELINE_FAILED", False, 0)
         self._requested_mux_pads: list[Gst.Pad] = []
         self._track_sinks: dict[str, Gst.Pad] = {}
+        self._track_attached: set[str] = set()
+        self._track_block_probes: dict[str, tuple[Gst.Pad, int]] = {}
         self._poll_source_id: int | None = None
         self._attempt_started = time.monotonic()
         self._last_progress_at = self._attempt_started
@@ -145,10 +147,10 @@ class EgressAttempt:
         self.sink = sink
         self.mux = mux
 
-        # Request and link both FLV tracks before PLAYING. flvmux is a
-        # GstAggregator; pre-creating both sink pads prevents it from emitting
-        # an audio-only or video-only FLV header while rtspsrc is still
-        # discovering the second dynamic pad.
+        # Request and link both FLV tracks before PLAYING. The queue source
+        # pads are blocked until rtspsrc has exposed and attached both media
+        # tracks, preventing an audio-only or video-only FLV header from being
+        # emitted while the second dynamic RTSP pad is still being discovered.
         self._prepare_track("video")
         self._prepare_track("audio")
         source.connect("pad-added", self._on_source_pad)
@@ -198,6 +200,11 @@ class EgressAttempt:
         queue_src = queue.get_static_pad("src")
         if queue_src is None or queue_src.link(mux_pad) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"failed to link {kind} to flvmux")
+        probe_id = queue_src.add_probe(
+            Gst.PadProbeType.BLOCK_DOWNSTREAM,
+            lambda _pad, _info: Gst.PadProbeReturn.OK,
+        )
+        self._track_block_probes[kind] = (queue_src, probe_id)
         depay_sink = depay.get_static_pad("sink")
         if depay_sink is None:
             raise RuntimeError(f"failed to get {kind} depay sink pad")
@@ -233,6 +240,17 @@ class EgressAttempt:
             return
         if source_pad.link(depay_sink) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"failed to link RTSP {kind} pad")
+        self._track_attached.add(kind)
+        if self._track_attached == {"video", "audio"}:
+            self._clear_track_blocks()
+
+    def _clear_track_blocks(self) -> None:
+        for pad, probe_id in self._track_block_probes.values():
+            try:
+                pad.remove_probe(probe_id)
+            except Exception:
+                pass
+        self._track_block_probes.clear()
 
     def _poll_sink(self) -> bool:
         if self.stop_event.is_set():
@@ -327,6 +345,7 @@ class EgressAttempt:
         self._poll_source_id = GLib.timeout_add(250, self._poll_sink)
         state_result = self.pipeline.set_state(Gst.State.PLAYING)
         if state_result == Gst.StateChangeReturn.FAILURE:
+            self._clear_track_blocks()
             self.pipeline.set_state(Gst.State.NULL)
             if self._poll_source_id is not None:
                 GLib.source_remove(self._poll_source_id)
@@ -343,6 +362,7 @@ class EgressAttempt:
                     pass
                 self._poll_source_id = None
             bus.remove_signal_watch()
+            self._clear_track_blocks()
             self.pipeline.set_state(Gst.State.NULL)
             for pad in self._requested_mux_pads:
                 if self.mux is not None:
