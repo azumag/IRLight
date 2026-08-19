@@ -134,7 +134,14 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
       - name: Exercise one-sided media loss and format-change HOLDING
-        run: bash ./scripts/smoke-unusable-media-holding.sh
+        run: |
+          # A plain valve drop stalls flvmux while one track is absent, so both
+          # tracks disappear from ffprobe and collapse into MEDIA_SAMPLE_TIMEOUT.
+          # GAP events keep mux time advancing without emitting frames for the
+          # gated track, preserving a true VIDEO_TIMEOUT/AUDIO_TIMEOUT sample.
+          sed -i 's/valve name=video_gate drop=false ! queue ! mux\./valve name=video_gate drop=false drop-mode=transform-to-gap ! queue ! mux./' scripts/smoke-unusable-media-holding.sh
+          sed -i 's/valve name=audio_gate drop=false ! queue ! mux\./valve name=audio_gate drop=false drop-mode=transform-to-gap ! queue ! mux./' scripts/smoke-unusable-media-holding.sh
+          bash ./scripts/smoke-unusable-media-holding.sh
 
   ingest-auth-abuse-smoke:
     needs: materialize
