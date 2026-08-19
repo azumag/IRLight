@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -18,6 +19,7 @@ os.environ["STATE_DIR"] = _TMP
 from catalog_store import (  # noqa: E402
     CATALOG_PATH,
     CatalogNotFound,
+    CatalogValidationError,
     CatalogVerifyFailed,
     create_asset,
     create_destination,
@@ -40,9 +42,12 @@ class CatalogStoreTest(unittest.TestCase):
             CATALOG_PATH.unlink()
         ensure_catalog()
 
-    def _create_destination(self, user_id: str = "deadbeef") -> dict[str, object]:
+    def _create_destination(
+        self, user_id: str = "deadbeef", platform: str = "custom"
+    ) -> dict[str, object]:
         return create_destination(
             user_id=user_id,
+            platform=platform,
             type="rtmp",
             display_name="Twitch",
             server_url="rtmp://live.twitch.tv/app",
@@ -53,7 +58,66 @@ class CatalogStoreTest(unittest.TestCase):
         item = self._create_destination()
         fetched = get_destination(str(item["id"]), "deadbeef")
         self.assertEqual(fetched["display_name"], "Twitch")
+        self.assertEqual(fetched["platform"], "custom")
         self.assertEqual(fetched["verification_status"], "UNVERIFIED")
+
+    def test_four_mvp_platforms_can_be_registered(self) -> None:
+        for platform in ("twitch", "youtube", "kick", "custom"):
+            with self.subTest(platform=platform):
+                item = self._create_destination(platform=platform)
+                self.assertEqual(item["platform"], platform)
+                self.assertEqual(item["type"], "rtmp")
+
+    def test_custom_can_use_srt_but_managed_platforms_cannot(self) -> None:
+        custom = create_destination(
+            user_id="deadbeef",
+            platform="custom",
+            type="srt",
+            display_name="Custom SRT",
+            server_url="srt://stream.example:9000?mode=caller",
+            secret_ref="secret/custom-srt",
+        )
+        self.assertEqual(custom["platform"], "custom")
+        with self.assertRaisesRegex(CatalogValidationError, "does not support"):
+            create_destination(
+                user_id="deadbeef",
+                platform="twitch",
+                type="srt",
+                display_name="Invalid Twitch SRT",
+                server_url="srt://stream.example:9000?mode=caller",
+                secret_ref="secret/twitch-srt",
+            )
+
+    def test_legacy_destination_without_platform_reads_as_custom(self) -> None:
+        item = self._create_destination()
+        payload = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+        del payload["destinations"][str(item["id"])]["platform"]
+        CATALOG_PATH.write_text(json.dumps(payload), encoding="utf-8")
+
+        fetched = get_destination(str(item["id"]), "deadbeef")
+        listed = list_destinations("deadbeef")
+        self.assertEqual(fetched["platform"], "custom")
+        self.assertEqual(listed[0]["platform"], "custom")
+
+    def test_platform_update_validates_existing_protocol(self) -> None:
+        item = self._create_destination(platform="custom")
+        updated = update_destination(
+            str(item["id"]), user_id="deadbeef", platform="youtube"
+        )
+        self.assertEqual(updated["platform"], "youtube")
+
+        srt = create_destination(
+            user_id="deadbeef",
+            platform="custom",
+            type="srt",
+            display_name="Custom SRT",
+            server_url="srt://stream.example:9000?mode=caller",
+            secret_ref="secret/custom-srt-2",
+        )
+        with self.assertRaisesRegex(CatalogValidationError, "does not support"):
+            update_destination(
+                str(srt["id"]), user_id="deadbeef", platform="kick"
+            )
 
     def test_list_only_returns_owned(self) -> None:
         self._create_destination(user_id="alice")
