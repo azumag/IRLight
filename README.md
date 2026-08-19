@@ -13,3 +13,6 @@ IRL配信向けリレーサーバー。実装はIssueとPull Requestで段階的
 
 検証手順は `docs/cleanup-proof.md`、`docs/node-bootstrap-proof.md`、
 `docs/session-lifecycle-proof.md` を参照。
+
+Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
+`docs/ingest-device-compatibility.md` と Issue #39 を参照。
