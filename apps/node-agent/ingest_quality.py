@@ -107,7 +107,7 @@ class IngestQualitySampler:
             "-show_entries",
             "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
             "-of",
-            "json",
+            "compact=p=0:nk=0",
             self.config.input_url,
         ]
         started = time.monotonic()
@@ -119,9 +119,26 @@ class IngestQualitySampler:
                 timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            elapsed = time.monotonic() - started
+            # A single stalled track can keep ffprobe waiting past read_intervals even
+            # while the other track continues to produce frames. Preserve the compact
+            # line-oriented output captured before timeout so VIDEO_TIMEOUT and
+            # AUDIO_TIMEOUT remain distinguishable instead of collapsing everything
+            # into MEDIA_SAMPLE_TIMEOUT.
+            partial = _decode_subprocess_output(exc.stdout)
+            payload = _parse_frame_output(partial)
+            if payload.get("frames"):
+                evaluated = evaluate_frame_sample(
+                    payload,
+                    self.config,
+                    sample_elapsed_seconds=elapsed,
+                )
+                if not evaluated.get("reasons"):
+                    evaluated["reasons"] = ["MEDIA_SAMPLE_TIMEOUT"]
+                return evaluated
             return {
-                "sample_elapsed_seconds": round(time.monotonic() - started, 3),
+                "sample_elapsed_seconds": round(elapsed, 3),
                 "video_frames": 0,
                 "audio_frames": 0,
                 "video_fps": None,
@@ -149,9 +166,8 @@ class IngestQualitySampler:
                 "warnings": [],
                 "error": detail,
             }
-        try:
-            payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
+        payload = _parse_frame_output(result.stdout or "")
+        if payload.get("invalid"):
             return {
                 "sample_elapsed_seconds": round(elapsed, 3),
                 "video_frames": 0,
@@ -165,7 +181,7 @@ class IngestQualitySampler:
                 "warnings": [],
             }
         return evaluate_frame_sample(
-            payload if isinstance(payload, dict) else {},
+            payload,
             self.config,
             sample_elapsed_seconds=elapsed,
         )
@@ -317,6 +333,45 @@ def evaluate_frame_sample(
         "reasons": _dedupe(reasons),
         "warnings": _dedupe(warnings),
     }
+
+
+def _parse_frame_output(output: str) -> dict[str, Any]:
+    text = output.strip()
+    if not text:
+        return {"frames": []}
+
+    # Keep JSON support for unit-test runners and compatibility with older
+    # captured samples while runtime ffprobe uses compact line-oriented output.
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {"frames": [], "invalid": True}
+        return payload if isinstance(payload, dict) else {"frames": [], "invalid": True}
+
+    frames: list[dict[str, Any]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        frame: dict[str, Any] = {}
+        for part in line.split("|"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key:
+                frame[key] = value
+        if frame.get("media_type") in {"video", "audio"}:
+            frames.append(frame)
+    return {"frames": frames}
+
+
+def _decode_subprocess_output(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _frame_timestamp(frame: dict[str, Any]) -> float | None:
