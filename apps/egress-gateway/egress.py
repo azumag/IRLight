@@ -100,6 +100,9 @@ class EgressAttempt:
         self.stop_event = stop_event
         self.connect_timeout_seconds = max(0.0, connect_timeout_seconds)
         self.status_heartbeat_seconds = max(0.0, status_heartbeat_seconds)
+        self.connect_stability_seconds = max(
+            0.0, env_float("EGRESS_CONNECT_STABILITY_SECONDS", 3.0)
+        )
         self.pipeline: Gst.Pipeline | None = None
         self.loop = GLib.MainLoop()
         self.sink: Gst.Element | None = None
@@ -113,6 +116,7 @@ class EgressAttempt:
         self._track_block_probes: dict[str, tuple[Gst.Pad, int]] = {}
         self._poll_source_id: int | None = None
         self._attempt_started = time.monotonic()
+        self._first_rendered_at: float | None = None
         self._last_progress_at = self._attempt_started
         self._last_reported_rendered = 0
         self.on_connected: Callable[[int], None] | None = None
@@ -285,6 +289,13 @@ class EgressAttempt:
         self.rendered_buffers = max(self.rendered_buffers, rendered)
         now = time.monotonic()
         if rendered > 0 and not self.connected_once:
+            if self._first_rendered_at is None:
+                self._first_rendered_at = now
+            # librtmp can report a handful of rendered buffers before the
+            # server rejects NetStream.Publish. Only promote to CONNECTED after
+            # writes remain healthy through a short stability window.
+            if now - self._first_rendered_at < self.connect_stability_seconds:
+                return True
             self.connected_once = True
             self._last_progress_at = now
             self._last_reported_rendered = rendered
