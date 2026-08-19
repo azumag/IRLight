@@ -1,0 +1,77 @@
+name: RTMP netem degradation matrix
+
+on:
+  pull_request:
+    paths:
+      - "apps/continuity/**"
+      - "apps/node-agent/**"
+      - "apps/control-api/ingest_store.py"
+      - "apps/control-api/node_internal.py"
+      - "apps/control-api/session_store.py"
+      - "config/mediamtx.yml"
+      - "docker-compose.poc.yml"
+      - "scripts/netem-container.sh"
+      - "scripts/smoke-rtmp-netem-degradation-matrix.sh"
+      - ".github/workflows/rtmp-netem-degradation-matrix.yml"
+  workflow_dispatch:
+    inputs:
+      profile_set:
+        description: "Netem profile set"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "loss-only"
+          - "latency-jitter"
+          - "bandwidth"
+      profile_seconds:
+        description: "Seconds per degradation profile"
+        required: true
+        default: "12"
+        type: choice
+        options:
+          - "8"
+          - "12"
+          - "20"
+
+permissions:
+  contents: read
+
+jobs:
+  rtmp-netem-degradation-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROFILE_SET: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_set || 'all' }}
+      NETEM_PROFILE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_seconds || '12' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify host network fault tools
+        run: |
+          command -v tc
+          command -v nsenter
+      - name: Validate smoke syntax
+        run: bash -n ./scripts/smoke-rtmp-netem-degradation-matrix.sh
+      - name: Run real RTMP degradation profiles
+        run: |
+          case "$PROFILE_SET" in
+            all)
+              profiles='loss-1,loss-3,loss-5,loss-10,latency-jitter,bandwidth-800k'
+              ;;
+            loss-only)
+              profiles='loss-1,loss-3,loss-5,loss-10'
+              ;;
+            latency-jitter)
+              profiles='latency-jitter'
+              ;;
+            bandwidth)
+              profiles='bandwidth-800k'
+              ;;
+            *)
+              echo "unknown profile set: $PROFILE_SET" >&2
+              exit 2
+              ;;
+          esac
+          NETEM_MATRIX_PROFILES="$profiles" \
+            bash ./scripts/smoke-rtmp-netem-degradation-matrix.sh
