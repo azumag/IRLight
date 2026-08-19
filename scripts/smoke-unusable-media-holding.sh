@@ -230,10 +230,10 @@ videotestsrc is-live=true pattern=smpte !
   video/x-raw,width=1280,height=720,framerate=30/1,format=I420 !
   x264enc tune=zerolatency speed-preset=veryfast bitrate=1200 key-int-max=60 bframes=0 !
   video/x-h264,profile=main ! h264parse config-interval=-1 !
-  valve name=video_gate drop=false drop-mode=transform-to-gap ! queue ! mux.
+  valve name=video_gate drop=false ! queue ! mux.
 audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample !
   audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse !
-  valve name=audio_gate drop=false drop-mode=transform-to-gap ! queue ! mux.
+  valve name=audio_gate drop=false ! queue ! mux.
 """
 pipeline = Gst.parse_launch(description)
 video_gate = pipeline.get_by_name("video_gate")
@@ -244,6 +244,8 @@ if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
     raise SystemExit("publisher failed to start")
 try:
     while not Path("/tmp/irlight-stop-publisher").exists():
+        # Use the valve's normal drop behavior: do not synthesize GAP events.
+        # The quality sampler must see a real absence of this track's packets.
         video_gate.set_property("drop", Path("/tmp/irlight-drop-video").exists())
         audio_gate.set_property("drop", Path("/tmp/irlight-drop-audio").exists())
         message = bus.timed_pop_filtered(
