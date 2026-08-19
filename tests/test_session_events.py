@@ -50,12 +50,28 @@ class SessionEventsTest(unittest.TestCase):
         self.assertEqual(session["next_event_seq"], 2)
 
     def test_event_stream_is_bounded_without_reusing_sequence_numbers(self) -> None:
-        for index in range(SESSION_EVENT_LIMIT + 5):
+        seeded = [
+            {
+                "sequence": index + 1,
+                "type": "seed",
+                "reason_code": None,
+                "payload": {"index": index},
+                "occurred_at": float(index),
+                "origin": "test",
+            }
+            for index in range(SESSION_EVENT_LIMIT)
+        ]
+        self.store.update(
+            self.session_id,
+            events=seeded,
+            next_event_seq=SESSION_EVENT_LIMIT + 1,
+        )
+        for index in range(5):
             self.store.append_event(
                 self.session_id,
                 event_type="sample",
                 payload={"index": index},
-                occurred_at=float(index),
+                occurred_at=float(SESSION_EVENT_LIMIT + index),
             )
         session = self.store.get(self.session_id)
         assert session is not None
