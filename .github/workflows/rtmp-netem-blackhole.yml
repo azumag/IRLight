@@ -1,0 +1,44 @@
+name: RTMP netem blackhole E2E
+
+on:
+  pull_request:
+    paths:
+      - "apps/continuity/**"
+      - "apps/node-agent/**"
+      - "apps/control-api/ingest_store.py"
+      - "apps/control-api/node_internal.py"
+      - "apps/control-api/session_store.py"
+      - "config/mediamtx.yml"
+      - "docker-compose.poc.yml"
+      - "scripts/netem-container.sh"
+      - "scripts/smoke-rtmp-netem-blackhole.sh"
+      - ".github/workflows/rtmp-netem-blackhole.yml"
+  workflow_dispatch:
+    inputs:
+      fault_seconds:
+        description: "Seconds of 100% publisher egress packet loss"
+        required: true
+        default: "10"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "30"
+
+permissions:
+  contents: read
+
+jobs:
+  rtmp-netem-blackhole:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      NETEM_FAULT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault_seconds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host network fault tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iproute2 util-linux
+      - name: Blackhole RTMP publisher network and verify standby recovery
+        run: bash ./scripts/smoke-rtmp-netem-blackhole.sh
