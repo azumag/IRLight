@@ -22,6 +22,14 @@ from destination_probe import DestinationProbeError, probe_destination
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
 CATALOG_PATH = STATE_DIR / "catalog.json"
 LOCK = threading.Lock()
+DESTINATION_PLATFORMS = {"twitch", "youtube", "kick", "custom"}
+DESTINATION_PROTOCOLS = {"rtmp", "rtmps", "srt"}
+PLATFORM_PROTOCOLS = {
+    "twitch": {"rtmp", "rtmps"},
+    "youtube": {"rtmp", "rtmps"},
+    "kick": {"rtmp", "rtmps"},
+    "custom": DESTINATION_PROTOCOLS,
+}
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -75,11 +83,29 @@ class CatalogVerifyFailed(ValueError):
     pass
 
 
+class CatalogValidationError(ValueError):
+    pass
+
+
+def _validate_destination_platform_protocol(platform: str, protocol: str) -> None:
+    if platform not in DESTINATION_PLATFORMS:
+        raise CatalogValidationError("unsupported destination platform")
+    if protocol not in DESTINATION_PROTOCOLS:
+        raise CatalogValidationError("unsupported destination protocol")
+    if protocol not in PLATFORM_PROTOCOLS[platform]:
+        raise CatalogValidationError(
+            f"destination platform {platform} does not support protocol {protocol}"
+        )
+
+
 def _get_owned(catalog: dict[str, Any], kind: str, item_id: str, user_id: str) -> dict[str, Any]:
     items = catalog.get(kind, {})
     item = items.get(item_id)
     if item is None or item.get("user_id") != user_id:
         raise CatalogNotFound(item_id)
+    if kind == "destinations":
+        # Catalogs created before platform support are Custom destinations.
+        item.setdefault("platform", "custom")
     return item
 
 
@@ -90,7 +116,9 @@ def create_destination(
     display_name: str,
     server_url: str,
     secret_ref: str,
+    platform: str = "custom",
 ) -> dict[str, Any]:
+    _validate_destination_platform_protocol(platform, type)
     with LOCK:
         catalog = _load()
         item_id = str(uuid.uuid4())
@@ -98,6 +126,7 @@ def create_destination(
         item = {
             "id": item_id,
             "user_id": user_id,
+            "platform": platform,
             "type": type,
             "display_name": display_name,
             "server_url": server_url,
@@ -117,11 +146,14 @@ def create_destination(
 
 def list_destinations(user_id: str) -> list[dict[str, Any]]:
     catalog = _load()
-    return [
-        item
-        for item in catalog.get("destinations", {}).values()
-        if item.get("user_id") == user_id
-    ]
+    result: list[dict[str, Any]] = []
+    for item in catalog.get("destinations", {}).values():
+        if item.get("user_id") != user_id:
+            continue
+        value = dict(item)
+        value.setdefault("platform", "custom")
+        result.append(value)
+    return result
 
 
 def get_destination(destination_id: str, user_id: str) -> dict[str, Any]:
@@ -138,10 +170,14 @@ def update_destination(
     server_url: str | None = None,
     secret_ref: str | None = None,
     enabled: bool | None = None,
+    platform: str | None = None,
 ) -> dict[str, Any]:
     with LOCK:
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
+        next_platform = platform if platform is not None else str(item.get("platform", "custom"))
+        protocol = str(item.get("type", ""))
+        _validate_destination_platform_protocol(next_platform, protocol)
         if display_name is not None:
             item["display_name"] = display_name
         if server_url is not None:
@@ -155,6 +191,8 @@ def update_destination(
             item["secret_ref"] = secret_ref
         if enabled is not None:
             item["enabled"] = enabled
+        if platform is not None:
+            item["platform"] = platform
         item["updated_at"] = time.time()
         catalog["destinations"][destination_id] = item
         _save(catalog)
