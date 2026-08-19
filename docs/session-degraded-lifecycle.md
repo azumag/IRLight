@@ -43,8 +43,8 @@ Node-levelの `ingest.*` eventは従来どおり保持し、その後にSession 
 各event payloadには少なくとも以下を含む。
 
 - `node_id`
-- `from_status`
-- `to_status`
+- `from_state`
+- `to_state`
 - ingest `status`
 - `online`
 - `bitrate_bps` / `max_bitrate_bps`
