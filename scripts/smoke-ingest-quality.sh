@@ -48,20 +48,16 @@ wait_node_status() {
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 - "$expected" "$reason" <<'PY' <<<"$payload" 2>/dev/null
+    if python3 -c '
 import json, sys
 expected, reason = sys.argv[1], sys.argv[2]
 d = json.load(sys.stdin)
 for node in d.get("nodes", {}).values():
     ingest = node.get("ingest") or {}
-    if ingest.get("status") != expected:
-        continue
-    if reason and reason not in ingest.get("reasons", []):
-        continue
-    raise SystemExit(0)
+    if ingest.get("status") == expected and (not reason or reason in ingest.get("reasons", [])):
+        raise SystemExit(0)
 raise SystemExit(1)
-PY
-    then
+' "$expected" "$reason" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -77,7 +73,7 @@ wait_node_event() {
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 - "$expected" <<'PY' <<<"$payload" 2>/dev/null
+    if python3 -c '
 import json, sys
 expected = sys.argv[1]
 d = json.load(sys.stdin)
@@ -85,8 +81,7 @@ for node in d.get("nodes", {}).values():
     if any(event.get("type") == expected for event in node.get("events", [])):
         raise SystemExit(0)
 raise SystemExit(1)
-PY
-    then
+' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
