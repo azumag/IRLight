@@ -23,6 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-ingest-timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--hold-timeout-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--heartbeat-grace-seconds",
+        type=float,
+        default=float(os.getenv("NODE_HEARTBEAT_GRACE_SECONDS", "120")),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO)
@@ -35,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             provisioning_timeout_seconds=args.provisioning_timeout_seconds,
             no_ingest_timeout_seconds=args.no_ingest_timeout_seconds,
             hold_timeout_seconds=args.hold_timeout_seconds,
+            heartbeat_grace_seconds=args.heartbeat_grace_seconds,
         ),
     )
     result = reaper.run()
