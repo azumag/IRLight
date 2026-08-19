@@ -3,11 +3,14 @@
 ``IRLIGHT_PROVIDER`` selects the provider implementation:
 
 - ``fake`` (default): in-memory provider used by local/CI smoke tests.
+  When ``IRLIGHT_FAKE_PROVIDER_STATE_FILE`` is set, the fake inventory is
+  persisted to that JSON file so the API process and standalone reaper can
+  share the same provider state during integration tests.
 - ``conoha``: real ConoHa REST client configured through ``CONOHA_*`` env vars.
 
-The fake provider remains a process singleton because its remote state is
-in-memory. The ConoHa client is created per workflow/reaper invocation so token
-state is not shared across concurrent API requests.
+The fake provider remains a process singleton. ConoHa is backed by the remote
+API and is created per workflow/reaper invocation so token state is not shared
+across concurrent API requests.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ if _LOCAL_REPO is not None and (_LOCAL_REPO / "provider").is_dir():
     if str(_LOCAL_REPO) not in sys.path:
         sys.path.insert(0, str(_LOCAL_REPO))
 
-from provider.fake_provider import FakeProvider  # noqa: E402
+from provider.fake_provider import FakeProvider, FileFakeProvider  # noqa: E402
 from provider.provider_client import ConohaClient, ConohaConfig  # noqa: E402
 
 from session_store import SessionStore  # noqa: E402
@@ -58,7 +61,9 @@ def provider_mode() -> str:
 def default_provider() -> Any:
     """Return the provider selected for this process invocation.
 
-    FakeProvider is intentionally shared inside the process. ConoHa is backed
+    FakeProvider is intentionally shared inside the process. Setting
+    IRLIGHT_FAKE_PROVIDER_STATE_FILE selects FileFakeProvider so separate
+    processes can observe the same fake provider inventory. ConoHa is backed
     by the remote API, therefore each caller gets a fresh lightweight client.
     """
 
@@ -67,5 +72,9 @@ def default_provider() -> Any:
         return ConohaClient(ConohaConfig.from_env())
 
     if _FAKE_PROVIDER is None:
-        _FAKE_PROVIDER = FakeProvider()
+        state_file = os.getenv("IRLIGHT_FAKE_PROVIDER_STATE_FILE", "").strip()
+        if state_file:
+            _FAKE_PROVIDER = FileFakeProvider(Path(state_file))
+        else:
+            _FAKE_PROVIDER = FakeProvider()
     return _FAKE_PROVIDER
