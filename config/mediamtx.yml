@@ -1,8 +1,10 @@
 logLevel: info
 
-# Publisher authentication is delegated to the Control Plane. Reads and the
-# internal continuity egress path remain internal and are explicitly excluded.
-# Production nodes override authHTTPAddress through MTX_AUTHHTTPADDRESS.
+# Publisher authentication uses HTTP. The checked-in PoC default points at the
+# local Control Plane, while production/PoC compose overrides authHTTPAddress
+# to the Node Agent auth proxy. The proxy still asks the Control Plane during
+# normal operation and only falls back to a short-lived positive cache when the
+# upstream is unavailable.
 authMethod: http
 authHTTPAddress: http://control-ui:8080/internal/ingest/auth
 authHTTPExclude:

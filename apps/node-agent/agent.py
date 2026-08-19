@@ -78,11 +78,18 @@ def http_json(
             raw = response.read()
             if not raw:
                 return {}
-            value = json.loads(raw.decode("utf-8"))
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("control plane returned invalid JSON") from exc
             return value if isinstance(value, dict) else {}
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"control plane HTTP {exc.code}: {body[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"control plane unavailable: {exc.reason}") from exc
+    except (TimeoutError, OSError) as exc:
+        raise RuntimeError(f"control plane unavailable: {exc}") from exc
 
 
 class NodeAgent:
