@@ -1,0 +1,38 @@
+name: Disconnect recovery E2E
+
+on:
+  pull_request:
+    paths:
+      - "apps/control-api/**"
+      - "apps/node-agent/**"
+      - "apps/continuity/**"
+      - "config/mediamtx.yml"
+      - "docker-compose.poc.yml"
+      - "scripts/smoke-ingest-disconnect-recovery.sh"
+      - ".github/workflows/disconnect-recovery.yml"
+  workflow_dispatch:
+    inputs:
+      disconnect_seconds:
+        description: Complete ingest disconnect duration
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "10"
+          - "30"
+          - "120"
+          - "600"
+
+permissions:
+  contents: read
+
+jobs:
+  disconnect-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DISCONNECT_SECONDS: ${{ github.event.inputs.disconnect_seconds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise complete ingest disconnect and stable recovery
+        run: bash ./scripts/smoke-ingest-disconnect-recovery.sh
