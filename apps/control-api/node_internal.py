@@ -28,6 +28,7 @@ from destination_secret_store import (
 )
 from egress_destination import EgressDestinationError, build_egress_url
 from fake_provider_for_api import default_store, provider_mode
+from pipeline_health import apply_pipeline_health
 from session_store import ACTIVE_STATES
 
 
@@ -565,6 +566,20 @@ def heartbeat(
                 node.pop("egress_session_event_error", None)
             except (KeyError, RuntimeError) as exc:
                 node["egress_session_event_error"] = str(exc)[:200]
+    if node.get("session_assigned"):
+        try:
+            apply_pipeline_health(
+                default_store(),
+                node=node,
+                node_id=node_id,
+                session_id=str(node["session_id"]),
+                node_status=request.status,
+                media_health=request.media_health,
+                observed_at=float(node["last_heartbeat_at"]),
+            )
+            node.pop("pipeline_session_event_error", None)
+        except (KeyError, RuntimeError) as exc:
+            node["pipeline_session_event_error"] = str(exc)[:200]
     atomic_write_json(NODES_PATH, nodes)
 
     return {"desired_state": node.get("desired_state", "RUNNING")}
