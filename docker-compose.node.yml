@@ -88,6 +88,7 @@ services:
       NODE_BOOT_ID: ${NODE_BOOT_ID:-compose-boot}
       NODE_AGENT_VERSION: ${NODE_AGENT_VERSION:-0.5.0-spike}
       NODE_SECRET_DIR: /run/irlight/secrets
+      NODE_CONTINUITY_STATUS_FILE: /state/status.json
       NODE_EGRESS_STATUS_FILE: /state/egress.json
       NODE_HEARTBEAT_INTERVAL: ${NODE_HEARTBEAT_INTERVAL:-10}
       NODE_SUPERVISOR: compose
