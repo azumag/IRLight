@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Annotated, Any
 
@@ -56,8 +55,6 @@ def prepare_session(
     store = default_store()
     existing = store.get(session_id)
     if existing is not None and existing.get("user_id") != user_id:
-        # Someone else's session id: behave as if it did not exist rather
-        # than leaking that it is in use.
         raise HTTPException(status_code=404, detail="unknown session")
     if existing is not None and existing.get("idempotency_key") == key:
         return existing
@@ -97,8 +94,6 @@ def stop_session(
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
         session = workflow.stop(session_id)
-        # Credentials stop being valid immediately after a user stop, even if
-        # MediaMTX or a publisher retries a stale connection URL later.
         default_ingest_store().revoke_session(session_id)
         return session
     except KeyError as exc:
@@ -119,19 +114,17 @@ def add_session_event(
     current_user: CurrentUser,
     _csrf: Csrf = None,
 ) -> dict[str, Any]:
-    session = _owned_session(session_id, str(current_user["id"]))
-    store = default_store()
-    events = list(session.get("events", []))
-    event = {
-        "sequence": len(events) + 1,
-        "type": request.type,
-        "reason_code": request.reason_code,
-        "payload": request.payload,
-        "occurred_at": time.time(),
-    }
-    events.append(event)
-    store.update(session_id, events=events)
-    return event
+    _owned_session(session_id, str(current_user["id"]))
+    try:
+        return default_store().append_event(
+            session_id,
+            event_type=request.type,
+            reason_code=request.reason_code,
+            payload=request.payload,
+            origin="user-api",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown session") from exc
 
 
 @router.get("/{session_id}/events")
@@ -145,4 +138,4 @@ def list_session_events(session_id: str, current_user: CurrentUser) -> dict[str,
 def list_sessions(current_user: CurrentUser) -> dict[str, Any]:
     user_id = str(current_user["id"])
     sessions = [s for s in default_store().list() if s.get("user_id") == user_id]
-    return {"sessions": sessions, "server_time": time.time()}
+    return {"sessions": sessions}
