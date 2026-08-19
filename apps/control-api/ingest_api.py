@@ -22,8 +22,6 @@ DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
 
 
 class IssueIngestCredentialRequest(BaseModel):
-    # RTMPS shares MediaMTX's RTMP authentication protocol and therefore uses
-    # the same RTMP credential permission instead of a separate stored value.
     protocols: list[Literal["rtmp", "srt"]] = Field(
         default_factory=lambda: ["rtmp", "srt"], min_length=1
     )
@@ -62,9 +60,6 @@ def _host_for_url(host: str) -> str:
 
 
 def _public_ingest_host(session: dict[str, Any]) -> str:
-    # A configured hostname wins over the provider IP. This matters for RTMPS:
-    # certificates are issued for the stable DNS name while on-demand nodes can
-    # receive a different public IP on every prepare.
     configured = os.getenv("IRLIGHT_INGEST_PUBLIC_HOST", "").strip()
     if configured:
         return configured
@@ -89,22 +84,14 @@ def _connection_info(
 
     rtmp: dict[str, Any] = {
         "enabled": rtmp_enabled,
-        "server_url": (
-            f"rtmp://{host_for_url}:{rtmp_port}/{INGEST_PATH}"
-            if rtmp_enabled
-            else None
-        ),
+        "server_url": f"rtmp://{host_for_url}:{rtmp_port}/{INGEST_PATH}" if rtmp_enabled else None,
         "username": username if rtmp_enabled else None,
         "password": secret if rtmp_enabled else None,
         "password_available": rtmp_enabled and secret is not None,
     }
     rtmps: dict[str, Any] = {
         "enabled": rtmps_enabled,
-        "server_url": (
-            f"rtmps://{host_for_url}:{rtmps_port}/{INGEST_PATH}"
-            if rtmps_enabled
-            else None
-        ),
+        "server_url": f"rtmps://{host_for_url}:{rtmps_port}/{INGEST_PATH}" if rtmps_enabled else None,
         "username": username if rtmps_enabled else None,
         "password": secret if rtmps_enabled else None,
         "password_available": rtmps_enabled and secret is not None,
@@ -113,18 +100,11 @@ def _connection_info(
         "enabled": srt_enabled,
         "host": host if srt_enabled else None,
         "port": srt_port if srt_enabled else None,
-        "streamid_template": (
-            f"publish:{INGEST_PATH}:{username}:<credential-secret>"
-            if srt_enabled
-            else None
-        ),
+        "streamid_template": f"publish:{INGEST_PATH}:{username}:<credential-secret>" if srt_enabled else None,
         "url": None,
     }
     if srt_enabled and secret is not None:
-        srt["url"] = (
-            f"srt://{host_for_url}:{srt_port}"
-            f"?streamid=publish:{INGEST_PATH}:{username}:{secret}"
-        )
+        srt["url"] = f"srt://{host_for_url}:{srt_port}?streamid=publish:{INGEST_PATH}:{username}:{secret}"
     return {"rtmp": rtmp, "rtmps": rtmps, "srt": srt}
 
 
@@ -161,6 +141,30 @@ def _raise_auth_blocked(decision: Any) -> None:
     )
 
 
+def _record_session_auth_failure(request: MediaMTXAuthRequest, decision: Any) -> None:
+    """Add a secret-free auth audit to a real Session when the username resolves."""
+    store = default_store()
+    session = store.get(request.user)
+    if session is None:
+        return
+    try:
+        store.append_event(
+            request.user,
+            event_type="ingest.auth_failed",
+            reason_code=("RATE_LIMITED" if getattr(decision, "blocked", False) else "INVALID_CREDENTIAL"),
+            payload={
+                "node_id": session.get("node_id"),
+                "source_ip": request.ip[:128] if request.ip else None,
+                "protocol": request.protocol.lower()[:32],
+                "publisher_id": request.id[:128] if request.id else None,
+                "locked_scopes": list(getattr(decision, "locked_scopes", ()) or ()),
+            },
+            origin="ingest-auth",
+        )
+    except KeyError:
+        return
+
+
 def _reject_invalid_ingest_credential(request: MediaMTXAuthRequest, guard: Any) -> None:
     decision = guard.record_failure(
         source_ip=request.ip,
@@ -168,6 +172,7 @@ def _reject_invalid_ingest_credential(request: MediaMTXAuthRequest, guard: Any) 
         protocol=request.protocol,
         publisher_id=request.id,
     )
+    _record_session_auth_failure(request, decision)
     if decision.blocked:
         _raise_auth_blocked(decision)
     raise HTTPException(status_code=401, detail="invalid ingest credential")
@@ -205,8 +210,6 @@ def issue_ingest_credential(
     )
     return {
         **record,
-        # Returned once. The raw value is never persisted and cannot be
-        # recovered later; issuing another credential rotates the old one out.
         "credential_secret": secret,
         "connection_info": _connection_info(
             session, str(record["username"]), secret, record.get("protocols", [])
@@ -250,16 +253,7 @@ def revoke_ingest_credential(
 
 @internal_router.post("/auth")
 def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
-    """Authenticate a MediaMTX publish request.
-
-    This endpoint is intended for MediaMTX ``authMethod: http`` and must be
-    reachable only from trusted Media Nodes / internal networks. The response
-    deliberately uses the same generic failure for unknown users, wrong
-    secrets, expired credentials and stopped Sessions.
-
-    MediaMTX reports both plain RTMP and TLS-wrapped RTMPS as protocol ``rtmp``;
-    TLS policy is enforced by the MediaMTX listener configuration.
-    """
+    """Authenticate a MediaMTX publish request."""
     if request.action != "publish":
         raise HTTPException(status_code=403, detail="unsupported media action")
     if request.path != INGEST_PATH:
@@ -296,7 +290,5 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
         "authorized": True,
         "session_id": request.user,
         "credential_id": record["id"],
-        # Node-local auth proxies can use a previously successful decision only
-        # during upstream transport/5xx failures, and never beyond this bound.
         "cache_valid_until": _cache_valid_until(record),
     }
