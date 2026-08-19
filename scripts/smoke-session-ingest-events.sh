@@ -187,6 +187,18 @@ credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
 ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
+# A known Session with a wrong secret must get a formal, secret-free
+# ingest.auth_failed entry before the real publisher connects.
+auth_status="$(curl -sS -o /tmp/irlight-session-auth-failure.json -w '%{http_code}' --max-time 5 \
+  -X POST "$base_url/internal/ingest/auth" \
+  -H 'Content-Type: application/json' \
+  --data "{\"user\":\"$ingest_username\",\"password\":\"wrong-secret\",\"ip\":\"203.0.113.88\",\"action\":\"publish\",\"path\":\"live/input\",\"protocol\":\"rtmp\",\"id\":\"session-event-auth-smoke\"}")"
+if [[ "$auth_status" != "401" ]]; then
+  echo "wrong credential expected HTTP 401, got $auth_status" >&2
+  exit 1
+fi
+wait_session_event ingest.auth_failed 15
+
 start_publisher 14
 wait_session_status LIVE 45
 wait_session_event ingest.connected 30
@@ -210,15 +222,25 @@ python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 events=d.get("events", [])
-required={"ingest.connected", "ingest.format_detected", "ingest.disconnected"}
+required={"ingest.auth_failed", "ingest.connected", "ingest.format_detected", "ingest.disconnected"}
 assert required.issubset({e.get("type") for e in events}), events
+sequences=[e.get("sequence") for e in events]
+assert sequences == sorted(sequences) and len(sequences) == len(set(sequences)), events
 for event in events:
-    if event.get("type", "").startswith("ingest."):
+    event_type=event.get("type", "")
+    payload=event.get("payload", {})
+    forbidden={"credential_secret", "password", "token"}
+    assert forbidden.isdisjoint(payload), event
+    if event_type == "ingest.auth_failed":
+        assert event.get("origin") == "ingest-auth", event
+        assert event.get("reason_code") == "INVALID_CREDENTIAL", event
+    elif event_type.startswith("ingest."):
         assert event.get("origin") == "node-agent", event
-        payload=event.get("payload", {})
         assert payload.get("node_id"), event
-        forbidden={"credential_secret", "password", "token"}
-        assert forbidden.isdisjoint(payload), event
 ' <<<"$events"
+if grep -Fq "$ingest_secret" <<<"$events"; then
+  echo "raw ingest secret leaked into Session events" >&2
+  exit 1
+fi
 
 echo "IRLight Session ingest event integration smoke passed."
