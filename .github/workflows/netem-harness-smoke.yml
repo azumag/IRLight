@@ -1,0 +1,49 @@
+name: Netem harness smoke
+
+on:
+  pull_request:
+    paths:
+      - "scripts/netem-container.sh"
+      - ".github/workflows/netem-harness-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  netem-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: bash -n ./scripts/netem-container.sh
+      - name: Exercise netem apply/show/clear in a container namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iproute2 util-linux
+          docker run -d --name irlight-netem-probe alpine:3.22 sh -c 'sleep 120'
+          trap 'bash ./scripts/netem-container.sh clear irlight-netem-probe >/dev/null 2>&1 || true; docker rm -f irlight-netem-probe >/dev/null 2>&1 || true' EXIT
+
+          bash ./scripts/netem-container.sh apply irlight-netem-probe \
+            --loss 3 \
+            --delay-ms 100 \
+            --jitter-ms 20 \
+            --rate 4mbit
+
+          applied="$(bash ./scripts/netem-container.sh show irlight-netem-probe)"
+          echo "$applied"
+          grep -q 'netem' <<<"$applied"
+          grep -Eq 'loss 3(\.0+)?%' <<<"$applied"
+          grep -Eq 'delay 100(\.0+)?ms' <<<"$applied"
+          grep -Eq 'rate 4Mbit|rate 4000Kbit|rate 4mbit' <<<"$applied"
+
+          bash ./scripts/netem-container.sh clear irlight-netem-probe
+          cleared="$(bash ./scripts/netem-container.sh show irlight-netem-probe)"
+          echo "$cleared"
+          if grep -q 'netem' <<<"$cleared"; then
+            echo 'netem qdisc remained after clear' >&2
+            exit 1
+          fi
