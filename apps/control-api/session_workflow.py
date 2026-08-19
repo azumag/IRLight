@@ -104,7 +104,7 @@ class ProvisioningWorkflow:
             )
 
         current = str(session.get("status"))
-        if current in ("READY_WAIT_INGEST", "LIVE", "HOLDING"):
+        if current in ("READY_WAIT_INGEST", "LIVE", "DEGRADED", "HOLDING"):
             return session
         if current in ("FINISHED", "FAILED"):
             raise RuntimeError(f"session {session_id} is {current}")
@@ -254,6 +254,7 @@ ACTIVE_OR_CLEANUP = {
     "BOOTSTRAPPING",
     "READY_WAIT_INGEST",
     "LIVE",
+    "DEGRADED",
     "HOLDING",
     "STOPPING",
     "FAILED_CLEANUP",
