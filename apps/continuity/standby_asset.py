@@ -42,8 +42,8 @@ def resolve_standby_asset(
     """Choose a trusted local standby image without exposing filesystem paths.
 
     ``custom_path`` is expected to be a Node-prefetched, already validated image.
-    This function still performs cheap local checks so a missing/corrupt handoff
-    cannot take the continuity output down.
+    These cheap local checks cover missing, empty, oversized, and obviously
+    unsupported handoffs; deep decode/content validation belongs to Issue #7.
     """
 
     custom = (custom_path or "").strip()
