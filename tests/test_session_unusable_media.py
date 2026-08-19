@@ -15,7 +15,9 @@ from session_store import SessionStore  # noqa: E402
 class SessionUnusableMediaTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = SessionStore(self.tmp.name)
+        # Recovery timing is covered separately; keep these tests focused on
+        # unusable-media reason mapping and state-transition semantics.
+        self.store = SessionStore(self.tmp.name, recovery_stable_seconds=0.0)
         self.session_id = "session-unusable-media"
         self.store.create(
             session_id=self.session_id,
