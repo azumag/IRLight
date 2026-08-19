@@ -88,11 +88,13 @@ class EgressAttempt:
         stop_event: threading.Event,
         *,
         connect_timeout_seconds: float,
+        status_heartbeat_seconds: float,
     ) -> None:
         self.input_uri = input_uri
         self.destination_url = destination_url
         self.stop_event = stop_event
         self.connect_timeout_seconds = max(0.0, connect_timeout_seconds)
+        self.status_heartbeat_seconds = max(0.0, status_heartbeat_seconds)
         self.pipeline: Gst.Pipeline | None = None
         self.loop = GLib.MainLoop()
         self.sink: Gst.Element | None = None
@@ -103,7 +105,10 @@ class EgressAttempt:
         self._requested_mux_pads: list[Gst.Pad] = []
         self._poll_source_id: int | None = None
         self._attempt_started = time.monotonic()
+        self._last_progress_at = self._attempt_started
+        self._last_reported_rendered = 0
         self.on_connected: Callable[[int], None] | None = None
+        self.on_progress: Callable[[int], None] | None = None
 
     @staticmethod
     def _make(factory: str, name: str) -> Gst.Element:
@@ -243,10 +248,23 @@ class EgressAttempt:
         except (TypeError, ValueError, AttributeError):
             rendered = self.rendered_buffers
         self.rendered_buffers = max(self.rendered_buffers, rendered)
+        now = time.monotonic()
         if rendered > 0 and not self.connected_once:
             self.connected_once = True
+            self._last_progress_at = now
+            self._last_reported_rendered = rendered
             if self.on_connected is not None:
                 self.on_connected(rendered)
+        elif (
+            self.connected_once
+            and rendered > self._last_reported_rendered
+            and self.status_heartbeat_seconds > 0
+            and now - self._last_progress_at >= self.status_heartbeat_seconds
+        ):
+            self._last_progress_at = now
+            self._last_reported_rendered = rendered
+            if self.on_progress is not None:
+                self.on_progress(rendered)
         return True
 
     def _on_bus_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
@@ -276,9 +294,13 @@ class EgressAttempt:
             self.loop.quit()
 
     def run(
-        self, on_connected: Callable[[int], None] | None = None
+        self,
+        *,
+        on_connected: Callable[[int], None] | None = None,
+        on_progress: Callable[[int], None] | None = None,
     ) -> AttemptResult:
         self.on_connected = on_connected
+        self.on_progress = on_progress
         try:
             self._build()
         except Exception:
@@ -329,6 +351,9 @@ class EgressGateway:
         )
         self.connect_timeout_seconds = env_float(
             "EGRESS_CONNECT_TIMEOUT_SECONDS", 15.0
+        )
+        self.status_heartbeat_seconds = env_float(
+            "EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0
         )
         self.policy = ReconnectPolicy(
             initial_seconds=env_float("EGRESS_RETRY_INITIAL_SECONDS", 1.0),
@@ -400,6 +425,7 @@ class EgressGateway:
                 destination_url,
                 self.stop_event,
                 connect_timeout_seconds=self.connect_timeout_seconds,
+                status_heartbeat_seconds=self.status_heartbeat_seconds,
             )
 
             def connected(rendered: int) -> None:
@@ -409,7 +435,15 @@ class EgressGateway:
                     "CONNECTED", connected=True, rendered_buffers=rendered
                 )
 
-            result = attempt.run(on_connected=connected)
+            def progress(rendered: int) -> None:
+                self._write_status(
+                    "CONNECTED", connected=True, rendered_buffers=rendered
+                )
+
+            result = attempt.run(
+                on_connected=connected,
+                on_progress=progress,
+            )
             if self.stop_event.is_set() or result.reason_code == "STOPPED":
                 self._write_status(
                     "STOPPED",
