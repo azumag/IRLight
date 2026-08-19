@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
-TERMINAL_REASON_CODES = {"AUTH_FAILED", "PUBLISH_CONFLICT", "LOCAL_PIPELINE_FAILED"}
+TERMINAL_REASON_CODES = {
+    "AUTH_FAILED",
+    "PUBLISH_CONFLICT",
+    "PUBLISH_REJECTED",
+    "LOCAL_PIPELINE_FAILED",
+}
 
 
 def safe_destination(url: str) -> tuple[str, str]:
@@ -17,6 +22,9 @@ def classify_error(
     source_name: str,
     message: str,
     debug: str | None = None,
+    error_domain: str | None = None,
+    error_code: int | None = None,
+    connected_once: bool = False,
 ) -> str:
     """Map transport errors to stable codes without returning raw text."""
     if source_name.startswith("src") or "rtspsrc" in source_name:
@@ -68,6 +76,20 @@ def classify_error(
         )
     ):
         return "UNREACHABLE"
+
+    # GStreamer's rtmpsink/librtmp path can discard the server's RTMP publish
+    # rejection text and surface only Gst.ResourceError.WRITE (code 10). Treat
+    # that as a terminal publish rejection only before the first successful
+    # rendered buffer. The same WRITE error after a successful connection is a
+    # transport outage and must remain retryable.
+    if (
+        source_name == "egress_sink"
+        and not connected_once
+        and error_domain == "gst-resource-error-quark"
+        and error_code == 10
+    ):
+        return "PUBLISH_REJECTED"
+
     return "EGRESS_PIPELINE_FAILED"
 
 

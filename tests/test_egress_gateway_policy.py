@@ -60,6 +60,28 @@ class ErrorClassificationTest(unittest.TestCase):
             classify_error(source_name="egress_sink", message="NetStream.Publish.BadName"),
             "PUBLISH_CONFLICT",
         )
+        self.assertEqual(
+            classify_error(
+                source_name="egress_sink",
+                message="Could not write to resource.",
+                error_domain="gst-resource-error-quark",
+                error_code=10,
+                connected_once=False,
+            ),
+            "PUBLISH_REJECTED",
+        )
+
+    def test_post_connect_resource_write_failure_remains_retryable(self) -> None:
+        self.assertEqual(
+            classify_error(
+                source_name="egress_sink",
+                message="Could not write to resource.",
+                error_domain="gst-resource-error-quark",
+                error_code=10,
+                connected_once=True,
+            ),
+            "EGRESS_PIPELINE_FAILED",
+        )
 
     def test_transient_destination_failures(self) -> None:
         cases = [
