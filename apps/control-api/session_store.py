@@ -50,6 +50,13 @@ ACTIVE_STATES = {
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
 SESSION_EVENT_LIMIT = 1000
+UNUSABLE_MEDIA_REASONS = {"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}
+FORMAT_REJECTION_REASONS = {
+    "VIDEO_CODEC_UNSUPPORTED",
+    "AUDIO_CODEC_UNSUPPORTED",
+    "RESOLUTION_UNSUPPORTED",
+    "AUDIO_CHANNELS_UNSUPPORTED",
+}
 
 TRANSITIONS: dict[str, set[str]] = {
     "STOPPED": {"PROVISIONING"},
@@ -410,8 +417,13 @@ class SessionStore:
             online = bool(observation.get("online", False))
             ingest_status = str(observation.get("status", ""))
             state = str(session.get("status", ""))
-            reasons = payload.get("reasons") or []
-            degraded_reason = str(reasons[0])[:100] if reasons else None
+            reasons = [str(reason)[:100] for reason in (payload.get("reasons") or [])]
+            degraded_reason = reasons[0] if reasons else None
+            unusable_reason = next(
+                (reason for reason in reasons if reason in UNUSABLE_MEDIA_REASONS),
+                None,
+            )
+            format_changed = any(reason in FORMAT_REJECTION_REASONS for reason in reasons)
 
             target_state: str | None = None
             lifecycle_event: str | None = None
@@ -420,13 +432,27 @@ class SessionStore:
             if online and ingest_status == "DEGRADED" and state in {
                 "READY_WAIT_INGEST",
                 "LIVE",
+                "DEGRADED",
                 "HOLDING",
             }:
-                target_state = "DEGRADED"
-                lifecycle_event = (
-                    "session.recovered" if state == "HOLDING" else "session.degraded"
+                if unusable_reason and state in {"LIVE", "DEGRADED"}:
+                    target_state = "HOLDING"
+                    lifecycle_event = "session.holding"
+                    lifecycle_reason = unusable_reason
+                elif not unusable_reason:
+                    target_state = "DEGRADED"
+                    lifecycle_event = (
+                        "session.recovered" if state == "HOLDING" else "session.degraded"
+                    )
+                    lifecycle_reason = degraded_reason
+            elif online and ingest_status == "REJECTED" and state in {"LIVE", "DEGRADED"}:
+                target_state = "HOLDING"
+                lifecycle_event = "session.holding"
+                lifecycle_reason = (
+                    "FORMAT_CHANGED"
+                    if format_changed
+                    else degraded_reason or "INGEST_REJECTED"
                 )
-                lifecycle_reason = degraded_reason
             elif online and ingest_status in {"ACCEPTED", "WARNING"} and state in {
                 "READY_WAIT_INGEST",
                 "DEGRADED",
@@ -443,7 +469,9 @@ class SessionStore:
 
             if target_state is not None and target_state != state:
                 session["status"] = target_state
-                if online:
+                if target_state == "HOLDING":
+                    session["last_ingest_at"] = current
+                elif online:
                     if session.get("first_ingest_at") is None:
                         session["first_ingest_at"] = current
                     session["last_ingest_at"] = current
