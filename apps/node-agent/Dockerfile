@@ -11,6 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/irlight
-COPY agent.py supervisor.py ./
+COPY agent.py supervisor.py ingest_policy.py ./
 
 CMD ["python3", "-u", "/opt/irlight/agent.py"]
