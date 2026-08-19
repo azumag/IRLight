@@ -13,6 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/irlight
-COPY agent.py node_entrypoint.py ingest_auth_proxy.py supervisor.py ingest_policy.py ingest_quality.py ./
+COPY agent.py node_entrypoint.py ingest_auth_proxy.py supervisor.py ingest_policy.py ingest_quality.py egress_status.py ./
 
 CMD ["python3", "-u", "/opt/irlight/node_entrypoint.py"]
