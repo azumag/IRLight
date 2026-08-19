@@ -57,6 +57,10 @@ class DestinationSecretStore:
     enters the JSON state file; production deployments should mount it through
     ``IRLIGHT_SECRET_MASTER_KEY_FILE``. Secret values are only returned by
     ``resolve`` and are never included in catalog responses.
+
+    Existing state fails closed: only a missing state file means an empty
+    store. Corrupt, unreadable, or structurally invalid state is never replaced
+    by a silently empty store.
     """
 
     def __init__(
@@ -89,14 +93,50 @@ class DestinationSecretStore:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            records = raw.get("secrets", {}) if isinstance(raw, dict) else {}
-            self._records = {
-                str(key): value
-                for key, value in records.items()
-                if isinstance(key, str) and isinstance(value, dict)
-            }
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
             self._records = {}
+            return
+        except json.JSONDecodeError as exc:
+            raise DestinationSecretError(
+                "destination secret state contains invalid JSON"
+            ) from exc
+        except OSError as exc:
+            raise DestinationSecretError(
+                "destination secret state cannot be read"
+            ) from exc
+
+        if not isinstance(raw, dict):
+            raise DestinationSecretError("destination secret state has invalid structure")
+        records = raw.get("secrets")
+        if not isinstance(records, dict):
+            raise DestinationSecretError("destination secret state has invalid structure")
+
+        validated: dict[str, dict[str, Any]] = {}
+        for record_key, record in records.items():
+            if not isinstance(record_key, str) or not isinstance(record, dict):
+                raise DestinationSecretError(
+                    "destination secret state has invalid record"
+                )
+            user_id = record.get("user_id")
+            secret_ref = record.get("secret_ref")
+            ciphertext = record.get("ciphertext")
+            if (
+                not isinstance(user_id, str)
+                or not user_id
+                or not isinstance(secret_ref, str)
+                or not secret_ref
+                or not isinstance(ciphertext, str)
+                or not ciphertext
+            ):
+                raise DestinationSecretError(
+                    "destination secret state has invalid record"
+                )
+            if record_key != self._key(user_id, secret_ref):
+                raise DestinationSecretError(
+                    "destination secret state has mismatched record key"
+                )
+            validated[record_key] = record
+        self._records = validated
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
