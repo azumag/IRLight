@@ -26,7 +26,7 @@ services:
     image: bluenviron/mediamtx:1.20.0
     restart: unless-stopped
     environment:
-      MTX_AUTHHTTPADDRESS: ${NODE_INGEST_AUTH_URL:-http://control-plane:8080/internal/ingest/auth}
+      MTX_AUTHHTTPADDRESS: ${NODE_INGEST_AUTH_URL:-http://node-agent:8090/auth}
     volumes:
       - ./config/mediamtx.yml:/mediamtx.yml:ro
 
@@ -62,6 +62,13 @@ services:
       NODE_SUPERVISOR: compose
       NODE_COMPOSE_FILE: /opt/irlight/docker-compose.node.yml
       NODE_COMPOSE_PROJECT: irlight-node
+      NODE_INGEST_AUTH_PROXY_ENABLED: ${NODE_INGEST_AUTH_PROXY_ENABLED:-1}
+      NODE_INGEST_AUTH_LISTEN_HOST: 0.0.0.0
+      NODE_INGEST_AUTH_LISTEN_PORT: ${NODE_INGEST_AUTH_LISTEN_PORT:-8090}
+      NODE_INGEST_AUTH_UPSTREAM_URL: ${NODE_INGEST_AUTH_UPSTREAM_URL:-http://control-plane:8080/internal/ingest/auth}
+      NODE_INGEST_AUTH_UPSTREAM_TIMEOUT_SECONDS: ${NODE_INGEST_AUTH_UPSTREAM_TIMEOUT_SECONDS:-2}
+      NODE_INGEST_AUTH_CACHE_MAX_AGE_SECONDS: ${NODE_INGEST_AUTH_CACHE_MAX_AGE_SECONDS:-300}
+      NODE_INGEST_AUTH_CACHE_MAX_ENTRIES: ${NODE_INGEST_AUTH_CACHE_MAX_ENTRIES:-256}
       NODE_INGEST_POLICY_ENABLED: ${NODE_INGEST_POLICY_ENABLED:-1}
       NODE_MEDIAMTX_API_URL: ${NODE_MEDIAMTX_API_URL:-http://mediamtx:9997}
       NODE_INGEST_PATH: ${NODE_INGEST_PATH:-live/input}
