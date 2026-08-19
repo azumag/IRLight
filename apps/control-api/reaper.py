@@ -141,6 +141,9 @@ class Reaper:
             result["failed_cleanup_retries"] += 1
             if not self._cleanup_resources(session["session_id"]):
                 continue
+            failure_reason_code = str(
+                session.get("failure_reason_code") or "RESOURCE_CLEANUP_FAILED"
+            )[:100]
             self.store.transition(
                 session["session_id"],
                 "FAILED",
@@ -150,7 +153,7 @@ class Reaper:
             self.store.append_event(
                 session["session_id"],
                 event_type="session.failed",
-                reason_code="RESOURCE_CLEANUP_FAILED",
+                reason_code=failure_reason_code,
                 payload={
                     "failure_reason": session.get("failure_reason"),
                     "cleanup_pending": False,
@@ -172,6 +175,7 @@ class Reaper:
                 allow_from={"PROVISIONING", "BOOTSTRAPPING"},
                 cleanup_pending=True,
                 failure_reason=reason,
+                failure_reason_code=reason_code,
             )
         except Exception as exc:
             LOG.warning("cannot fail session %s: %s", session_id, exc)
@@ -223,6 +227,7 @@ class Reaper:
                 allow_from={"STOPPING"},
                 cleanup_pending=True,
                 failure_reason="resource cleanup failed",
+                failure_reason_code="RESOURCE_CLEANUP_FAILED",
             )
             return
         self.store.transition(
