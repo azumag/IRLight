@@ -130,8 +130,11 @@ class Reaper:
             self.store.append_event(
                 session["session_id"],
                 event_type="session.failed",
-                reason_code=str(session.get("failure_reason") or "CLEANUP_RECOVERED_TO_FAILED")[:100],
-                payload={"cleanup_pending": False},
+                reason_code="RESOURCE_CLEANUP_FAILED",
+                payload={
+                    "failure_reason": session.get("failure_reason"),
+                    "cleanup_pending": False,
+                },
                 origin="reaper",
                 occurred_at=now,
             )
