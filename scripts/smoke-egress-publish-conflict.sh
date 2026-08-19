@@ -152,9 +152,18 @@ if ! "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -
 fi
 
 "${compose[@]}" up -d egress-conflict
-wait_status_reason AUTH_FAILED PUBLISH_CONFLICT 45
+wait_status_reason FAILED PUBLISH_REJECTED 45
 
-# The conflict is terminal: the Gateway must exit instead of entering a retry
+# rtmpsink/librtmp does not preserve MediaMTX's publish-conflict text and
+# surfaces only Gst.ResourceError.WRITE. The Gateway therefore reports the
+# stable terminal PUBLISH_REJECTED reason while the target logs prove this
+# particular test was the same-path publisher conflict.
+if ! "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "someone is already publishing to path '$path_name'"; then
+  echo "target did not reject the second publisher as a path conflict" >&2
+  exit 1
+fi
+
+# The rejection is terminal: the Gateway must exit instead of entering a retry
 # loop, and the original publisher must remain alive.
 for _ in $(seq 1 10); do
   if ! "${compose[@]}" ps --status running --services | grep -qx egress-conflict; then
@@ -163,7 +172,7 @@ for _ in $(seq 1 10); do
   sleep 1
 done
 if "${compose[@]}" ps --status running --services | grep -qx egress-conflict; then
-  echo "publish conflict left egress gateway running/retrying" >&2
+  echo "publish rejection left egress gateway running/retrying" >&2
   exit 1
 fi
 if ! "${compose[@]}" ps --status running --services | grep -qx conflict-holder; then
