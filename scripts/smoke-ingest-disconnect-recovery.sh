@@ -331,7 +331,8 @@ python3 -c '
 import json,sys
 s=json.load(sys.stdin)
 assert s.get("status") == "HOLDING"
-assert s.get("hold_deadline_at") is not None
+# hold_deadline_at is initialized by the reaper, not by the ingest transition itself.
+assert s.get("last_ingest_at") is not None
 assert not any(e.get("type") in {"session.failed", "session.finished"} for e in s.get("events", []))
 ' <<<"$holding_payload"
 
