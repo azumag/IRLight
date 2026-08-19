@@ -312,9 +312,20 @@ def evaluate_frame_sample(
     reasons: list[str] = []
     warnings: list[str] = []
 
-    if not video_times:
+    video_effective_timeout = bool(video_times) and _is_effective_timeout(
+        video_span,
+        sample_elapsed_seconds,
+        config,
+    )
+    audio_effective_timeout = bool(audio_times) and _is_effective_timeout(
+        audio_span,
+        sample_elapsed_seconds,
+        config,
+    )
+
+    if not video_times or video_effective_timeout:
         reasons.append("VIDEO_TIMEOUT")
-    if not audio_times:
+    if not audio_times or audio_effective_timeout:
         reasons.append("AUDIO_TIMEOUT")
     if video_regressions:
         reasons.append("VIDEO_TIMESTAMP_REGRESSION")
@@ -322,9 +333,17 @@ def evaluate_frame_sample(
         reasons.append("AUDIO_TIMESTAMP_REGRESSION")
 
     required_progress = config.sample_seconds * config.min_progress_ratio
-    if video_span is not None and video_span < required_progress:
+    if (
+        video_span is not None
+        and video_span < required_progress
+        and not video_effective_timeout
+    ):
         reasons.append("VIDEO_TIMESTAMP_STALLED")
-    if audio_span is not None and audio_span < required_progress:
+    if (
+        audio_span is not None
+        and audio_span < required_progress
+        and not audio_effective_timeout
+    ):
         reasons.append("AUDIO_TIMESTAMP_STALLED")
 
     if video_fps is None and video_times:
@@ -427,6 +446,21 @@ def _span(values: list[float]) -> float | None:
     if not values:
         return None
     return max(values) - min(values)
+
+
+def _is_effective_timeout(
+    span: float | None,
+    sample_elapsed_seconds: float | None,
+    config: IngestQualityConfig,
+) -> bool:
+    """Treat only negligible residual progress across a full sample as timeout."""
+    if span is None or sample_elapsed_seconds is None:
+        return False
+    if sample_elapsed_seconds < config.sample_seconds * 0.90:
+        return False
+    required_progress = config.sample_seconds * config.min_progress_ratio
+    negligible_progress = min(0.25, required_progress * 0.25)
+    return span < negligible_progress
 
 
 def _max_keyframe_gap(video_times: list[float], keyframe_times: list[float]) -> float | None:
