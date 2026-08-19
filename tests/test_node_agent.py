@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -143,7 +144,7 @@ class NodeAgentTest(unittest.TestCase):
                     "rendered_buffers": 0,
                     "destination_scheme": "rtmps",
                     "destination_host": "live.example",
-                    "observed_at": 100.0,
+                    "observed_at": time.time(),
                     "stream_key": "must-not-leak",
                 }
             ),
