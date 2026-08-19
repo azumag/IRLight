@@ -329,7 +329,7 @@ if not holds:
     print("none")
 else:
     latest=holds[-1]
-    print(f"{latest.get("sequence")}|{latest.get("reason_code") or "UNKNOWN"}")
+    print("{}|{}".format(latest.get("sequence"), latest.get("reason_code") or "UNKNOWN"))
 ' "$after_sequence"
 }
 
@@ -356,7 +356,7 @@ if holds:
     ), None)
     if recovered is None:
         raise SystemExit(f"Session held but did not recover after profile: {events!r}")
-    print(f"holding={last_hold.get("reason_code") or "UNKNOWN"} recovered=yes")
+    print("holding={} recovered=yes".format(last_hold.get("reason_code") or "UNKNOWN"))
 else:
     print("holding=none recovered=n/a")
 ' "$after_sequence"
@@ -364,7 +364,7 @@ else:
 
 run_profile() {
   local profile="$1"
-  local baseline_sequence deadline status hold_summary
+  local baseline_sequence deadline status hold_summary event_summary
   local -a args=()
   mapfile -t args < <(profile_args "$profile")
 
