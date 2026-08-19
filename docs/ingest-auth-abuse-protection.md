@@ -15,6 +15,7 @@ IRLight の MediaMTX external auth hook (`POST /internal/ingest/auth`) は、RTM
 - credential単位: 8回でlock
 - IP単位: 20回でlock
 - lockout: 120秒
+- lock中の `ingest.auth_blocked` audit: 同一bucketにつき5秒間隔
 - audit event: 最新200件
 - bucket: 最大4096件
 
@@ -26,6 +27,7 @@ IRLIGHT_INGEST_AUTH_FAILURE_WINDOW_SECONDS=60
 IRLIGHT_INGEST_AUTH_MAX_FAILURES_PER_CREDENTIAL=8
 IRLIGHT_INGEST_AUTH_MAX_FAILURES_PER_IP=20
 IRLIGHT_INGEST_AUTH_LOCKOUT_SECONDS=120
+IRLIGHT_INGEST_AUTH_BLOCKED_EVENT_INTERVAL_SECONDS=5
 IRLIGHT_INGEST_AUTH_EVENT_LIMIT=200
 IRLIGHT_INGEST_AUTH_BUCKET_LIMIT=4096
 ```
@@ -59,6 +61,8 @@ bucket keyにはsource IPやusernameの平文を使わず、SHA-256 digestを利
 - `ingest.auth_locked`
 - `ingest.auth_blocked`
 
+lock成立後のリクエストは毎回メモリ上で即座にlock判定され、HTTP 429を返します。一方、`ingest.auth_blocked` の永続監査は既定5秒間隔で間引きます。これにより、lock後の大量リクエストをJSONのatomic write / `fsync` 増幅に利用されにくくします。
+
 これらは現時点ではauth guard state内のbounded auditです。Node bootstrapと実Session assignmentの統合後、正式なSession event streamへ接続する作業は別途行います。
 
 ## ネットワーク境界
@@ -69,6 +73,6 @@ bucket keyにはsource IPやusernameの平文を使わず、SHA-256 digestを利
 
 ## テスト
 
-`tests/test_ingest_auth_guard.py` でcredential/IP双方のlock、期限切れ復帰、成功時リセット、秘密情報非保存、bounded auditを検証します。
+`tests/test_ingest_auth_guard.py` でcredential/IP双方のlock、期限切れ復帰、成功時リセット、lock中audit書込みのthrottle、秘密情報非保存、bounded auditを検証します。
 
 `scripts/smoke-ingest-auth-abuse.sh` はControl APIをDockerで起動し、閾値を3回へ下げた上で `401 -> 401 -> 429 -> 429` と `Retry-After`、audit stateへのsecret非保存を確認します。
