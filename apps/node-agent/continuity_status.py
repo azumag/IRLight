@@ -10,6 +10,7 @@ from typing import Any
 ALLOWED_SESSION_STATUSES = {"HOLDING", "STABILIZING", "LIVE"}
 ALLOWED_VIDEO_SOURCES = {"STANDBY", "LIVE"}
 ALLOWED_AUDIO_MODES = {"LIVE", "MUTED", "SILENT_FALLBACK"}
+USABLE_INGEST_STATUSES = {"ACCEPTED", "WARNING", "DEGRADED"}
 
 
 def _unknown(reason_code: str) -> dict[str, Any]:
@@ -85,3 +86,34 @@ def read_continuity_status(
         "observed_at": observed_at,
         "reason_code": None,
     }
+
+
+def gate_ingest_observation(
+    observation: dict[str, object] | None,
+    continuity: dict[str, Any],
+) -> dict[str, object] | None:
+    """Delay usable ingest promotion until Continuity actually switched live.
+
+    Connection events still flow because the observation remains online. Only
+    the lifecycle-driving status is temporarily reported as PENDING while the
+    Continuity Engine is HOLDING/STABILIZING or its status is unavailable.
+    """
+    if observation is None:
+        return None
+    result = dict(observation)
+    status = str(result.get("status", ""))
+    if not bool(result.get("online", False)) or status not in USABLE_INGEST_STATUSES:
+        return result
+
+    media_live = (
+        continuity.get("session_status") == "LIVE"
+        and continuity.get("video_source") == "LIVE"
+    )
+    if media_live:
+        return result
+
+    result["status"] = "PENDING"
+    warnings = list(result.get("warnings", []))
+    warnings.append("CONTINUITY_STABILIZING")
+    result["warnings"] = list(dict.fromkeys(str(value) for value in warnings))
+    return result
