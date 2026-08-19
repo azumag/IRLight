@@ -112,7 +112,8 @@ session_events() {
 latest_event_sequence() {
   session_events | python3 -c '
 import json,sys
-events=json.load(sys.stdin).get("events", [])
+payload=json.load(sys.stdin)
+events=payload if isinstance(payload, list) else payload.get("events", [])
 print(max((int(e.get("sequence", 0)) for e in events), default=0))
 '
 }
@@ -146,7 +147,8 @@ wait_fault_holding_after() {
 import json,sys
 session=json.loads(sys.argv[1])
 after=int(sys.argv[2])
-events=json.load(sys.stdin).get("events", [])
+payload=json.load(sys.stdin)
+events=payload if isinstance(payload, list) else payload.get("events", [])
 allowed={"VIDEO_TIMEOUT", "AUDIO_TIMEOUT", "INGEST_DISCONNECTED"}
 match=next((
     e for e in events
@@ -307,7 +309,9 @@ assert_recovery_sequence() {
   python3 -c '
 import json,sys
 after=int(sys.argv[1])
-events=[e for e in json.load(sys.stdin).get("events", []) if int(e.get("sequence", 0)) > after]
+payload=json.load(sys.stdin)
+all_events=payload if isinstance(payload, list) else payload.get("events", [])
+events=[e for e in all_events if int(e.get("sequence", 0)) > after]
 holding=next((e for e in events if e.get("type") == "session.holding"), None)
 if holding is None:
     raise SystemExit(f"monitoring missing session.holding: {events!r}")
