@@ -160,7 +160,8 @@ class IngestPolicyInspector:
 
         inbound_bytes = _safe_int(path.get("inboundBytes"))
         bitrate_bps: float | None = None
-        if source_id != self._last_source_id:
+        source_changed = source_id != self._last_source_id
+        if source_changed:
             self._last_source_id = source_id
             self._last_inbound_bytes = inbound_bytes
             self._last_sample_at = observed_at
@@ -179,6 +180,15 @@ class IngestPolicyInspector:
             self._last_sample_at = observed_at
 
         reasons, warnings = evaluate_tracks(tracks)
+        if source_changed and _track_metadata_may_be_incomplete(tracks):
+            # MediaMTX can expose a freshly connected publisher before all
+            # tracks2 metadata has settled. In particular an SRT reconnect can
+            # briefly show only H264 or only AAC. Do not kick a valid publisher
+            # from that first partial snapshot; a persistent partial/invalid
+            # format is rejected on the next observation.
+            reasons = []
+            warnings.append("TRACK_METADATA_PENDING")
+
         if bitrate_bps is not None:
             if bitrate_bps > self.config.max_bitrate_bps:
                 self._over_bitrate_samples += 1
@@ -264,6 +274,20 @@ def _normalise_tracks(tracks: list[object]) -> list[dict[str, Any]]:
                 track[key] = props[key]
         result.append(track)
     return result
+
+
+def _track_metadata_may_be_incomplete(tracks: list[dict[str, Any]]) -> bool:
+    """Return true only for empty/partial snapshots of otherwise valid codecs."""
+    if not tracks:
+        return True
+    codecs = [str(track.get("codec", "")) for track in tracks]
+    if any(codec not in {"H264", "MPEG-4 Audio"} for codec in codecs):
+        return False
+    video_count = sum(codec == "H264" for codec in codecs)
+    audio_count = sum(codec == "MPEG-4 Audio" for codec in codecs)
+    if video_count > 1 or audio_count > 1:
+        return False
+    return video_count != 1 or audio_count != 1
 
 
 def evaluate_tracks(tracks: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
