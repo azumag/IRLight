@@ -103,6 +103,9 @@ class EgressAttempt:
         self.connect_stability_seconds = max(
             0.0, env_float("EGRESS_CONNECT_STABILITY_SECONDS", 3.0)
         )
+        self.output_stall_timeout_seconds = max(
+            0.0, env_float("EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS", 5.0)
+        )
         self.pipeline: Gst.Pipeline | None = None
         self.loop = GLib.MainLoop()
         self.sink: Gst.Element | None = None
@@ -119,6 +122,8 @@ class EgressAttempt:
         self._first_rendered_at: float | None = None
         self._last_progress_at = self._attempt_started
         self._last_reported_rendered = 0
+        self._last_observed_rendered = 0
+        self._last_rendered_at = self._attempt_started
         self.on_connected: Callable[[int], None] | None = None
         self.on_progress: Callable[[int], None] | None = None
 
@@ -288,6 +293,9 @@ class EgressAttempt:
             rendered = self.rendered_buffers
         self.rendered_buffers = max(self.rendered_buffers, rendered)
         now = time.monotonic()
+        if rendered > self._last_observed_rendered:
+            self._last_observed_rendered = rendered
+            self._last_rendered_at = now
         if rendered > 0 and not self.connected_once:
             if self._first_rendered_at is None:
                 self._first_rendered_at = now
@@ -311,6 +319,16 @@ class EgressAttempt:
             self._last_reported_rendered = rendered
             if self.on_progress is not None:
                 self.on_progress(rendered)
+        if (
+            self.connected_once
+            and self.output_stall_timeout_seconds > 0
+            and now - self._last_rendered_at >= self.output_stall_timeout_seconds
+        ):
+            self.result = AttemptResult(
+                "TIMEOUT", self.connected_once, self.rendered_buffers
+            )
+            self.loop.quit()
+            return False
         return True
 
     def _on_bus_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
