@@ -146,6 +146,59 @@ class IngestPolicyTest(unittest.TestCase):
         self.assertEqual(result["status"], "REJECTED")
         self.assertEqual(inspector.kicks, ["/v3/srtconns/kick/source-1"])
 
+    def test_new_srt_source_graces_first_partial_track_snapshot(self) -> None:
+        partial = [valid_tracks()[0]]
+        inspector = FakeInspector(
+            [
+                snapshot(
+                    inbound_bytes=0,
+                    tracks=partial,
+                    source_type="srtConn",
+                    source_id="srt-reconnect-1",
+                ),
+                snapshot(
+                    inbound_bytes=1_500_000,
+                    tracks=valid_tracks(),
+                    source_type="srtConn",
+                    source_id="srt-reconnect-1",
+                ),
+            ]
+        )
+        first = inspector.observe_and_enforce(now=100.0)
+        second = inspector.observe_and_enforce(now=110.0)
+        self.assertEqual(first["status"], "PENDING")
+        self.assertIn("TRACK_METADATA_PENDING", first["warnings"])
+        self.assertEqual(first["reasons"], [])
+        self.assertFalse(first["enforced"])
+        self.assertEqual(second["status"], "ACCEPTED")
+        self.assertEqual(inspector.kicks, [])
+
+    def test_partial_track_snapshot_is_rejected_if_it_persists(self) -> None:
+        partial = [valid_tracks()[0]]
+        inspector = FakeInspector(
+            [
+                snapshot(inbound_bytes=0, tracks=partial, source_type="srtConn"),
+                snapshot(inbound_bytes=100_000, tracks=partial, source_type="srtConn"),
+            ]
+        )
+        first = inspector.observe_and_enforce(now=100.0)
+        second = inspector.observe_and_enforce(now=110.0)
+        self.assertEqual(first["status"], "PENDING")
+        self.assertEqual(second["status"], "REJECTED")
+        self.assertIn("AUDIO_CODEC_UNSUPPORTED", second["reasons"])
+        self.assertTrue(second["enforced"])
+        self.assertEqual(inspector.kicks, ["/v3/srtconns/kick/source-1"])
+
+    def test_new_source_does_not_grace_known_bad_codec(self) -> None:
+        tracks = valid_tracks()
+        tracks[1]["codec"] = "Opus"
+        inspector = FakeInspector(
+            [snapshot(inbound_bytes=0, tracks=tracks, source_type="srtConn")]
+        )
+        result = inspector.observe_and_enforce(now=100.0)
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertTrue(result["enforced"])
+
     def test_offline_resets_bitrate_history(self) -> None:
         inspector = FakeInspector(
             [snapshot(inbound_bytes=0), None, snapshot(inbound_bytes=99_000_000)]

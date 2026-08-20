@@ -12,9 +12,9 @@ email="srt-recovery-$(date +%s)-$RANDOM@example.invalid"
 password='SmokePassword123!'
 
 case "$disconnect_seconds" in
-  5|10|30) ;;
+  5|10|30|120|600) ;;
   *)
-    echo "SRT_DISCONNECT_SECONDS must be one of: 5, 10, 30" >&2
+    echo "SRT_DISCONNECT_SECONDS must be one of: 5, 10, 30, 120, 600" >&2
     exit 2
     ;;
 esac
@@ -30,7 +30,7 @@ services:
       NODE_BOOTSTRAP_TOKENS: srt-recovery-node-token
       NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT: "1"
       RECOVERY_STABLE_SECONDS: "3"
-      SESSION_HOLD_TIMEOUT_SECONDS: "120"
+      SESSION_HOLD_TIMEOUT_SECONDS: "900"
   node-agent:
     environment:
       NODE_BOOTSTRAP_TOKEN: srt-recovery-node-token
