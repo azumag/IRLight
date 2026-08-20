@@ -12,6 +12,7 @@ on:
       - ".github/workflows/srt-ingest-recovery.yml"
   schedule:
     - cron: "47 18 * * *"
+    - cron: "17 19 * * 0"
   workflow_dispatch:
     inputs:
       disconnect_seconds:
@@ -34,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
+      SRT_DISCONNECT_SECONDS: ${{ github.event.schedule == '17 19 * * 0' && '600' || github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install SRT publisher dependency
