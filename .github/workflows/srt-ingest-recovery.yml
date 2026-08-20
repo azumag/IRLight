@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '120' }}
+      SRT_DISCONNECT_SECONDS: ${{ github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install SRT publisher dependency
