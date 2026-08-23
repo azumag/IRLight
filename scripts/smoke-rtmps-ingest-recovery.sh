@@ -240,7 +240,9 @@ start_publisher() {
     -c:v libx264 -preset veryfast -tune zerolatency -b:v 1200k -maxrate 1200k -bufsize 2400k \
     -g 60 -keyint_min 60 -bf 0 -pix_fmt yuv420p \
     -c:a aac -b:a 128k -ar 48000 -ac 2 \
-    -f flv "$rtmps_url" >"$publisher_log" 2>&1 &
+    -f flv \
+    -ca_file "$tmp_dir/server.crt" -tls_verify 1 -verifyhost localhost \
+    "$rtmps_url" >"$publisher_log" 2>&1 &
   publisher_pid=$!
 }
 
