@@ -166,6 +166,23 @@ class IngestAuthProxyTest(unittest.TestCase):
         self.assertEqual(headers.get("Retry-After"), "30")
         self.assertEqual(self.proxy.cache.size(), 0)
 
+    def test_relay_read_is_never_cached_or_fallback_authorized(self) -> None:
+        read_payload = dict(self.payload)
+        read_payload.update(
+            {"action": "read", "path": "output/relay", "id": "relay-client-1"}
+        )
+
+        status, body, _headers = self._request(read_payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["authorized"])
+        self.assertEqual(self.proxy.cache.size(), 0)
+
+        self.upstream.mode = "error"
+        status, body, headers = self._request(read_payload)
+        self.assertEqual(status, 503)
+        self.assertNotIn("authorized", body)
+        self.assertEqual(headers.get("Retry-After"), "2")
+
     def test_cache_is_memory_only_digest_and_locally_capped(self) -> None:
         cache = PositiveAuthCache(max_age_seconds=5.0, max_entries=2)
         now = 100.0

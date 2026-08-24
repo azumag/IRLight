@@ -18,6 +18,7 @@ from typing import Any
 
 MAX_REQUEST_BYTES = 16 * 1024
 CACHE_KEY_FIELDS = ("action", "path", "protocol", "user", "password", "token")
+CACHED_ACTION = "publish"
 
 
 @dataclass(frozen=True)
@@ -260,18 +261,29 @@ class IngestAuthProxy:
             cache_valid_until = float(result.get("cache_valid_until", 0.0))
         except (TypeError, ValueError):
             cache_valid_until = 0.0
-        self.cache.store(payload, upstream_valid_until=cache_valid_until)
+        if self._cacheable(payload):
+            self.cache.store(payload, upstream_valid_until=cache_valid_until)
         headers = {"Retry-After": retry_after} if retry_after else {}
         return ProxyResponse(status=status, body=body, headers=headers)
 
     def _fallback(self, payload: dict[str, Any]) -> ProxyResponse:
-        if self.cache.allowed(payload):
-            return _json_response(200, {"authorized": True, "cached": True})
-        return _json_response(
-            503,
-            {"detail": "ingest auth upstream unavailable"},
-            headers={"Retry-After": "2"},
-        )
+        if not self._cacheable(payload) or not self.cache.allowed(payload):
+            return _json_response(
+                503,
+                {"detail": "ingest auth upstream unavailable"},
+                headers={"Retry-After": "2"},
+            )
+        return _json_response(200, {"authorized": True, "cached": True})
+
+    @staticmethod
+    def _cacheable(payload: dict[str, Any]) -> bool:
+        """Only publisher reconnects may use the bounded positive cache.
+
+        Relay reads are user-facing authorization decisions. A stale relay
+        grant must never outlive a Control Plane outage merely because it was
+        recently accepted.
+        """
+        return str(payload.get("action", "")) == CACHED_ACTION
 
 
 def _json_response(
