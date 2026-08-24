@@ -307,7 +307,10 @@ class NodeAgent:
             )
 
         exit_code = 0
-        result = self.supervisor.start(self.session_id or "unknown")
+        result = self.supervisor.start(
+            self.session_id or "unknown",
+            egress_mode=self.egress_mode,
+        )
         if not result.ok:
             print(f"[agent] supervisor start failed: {result.detail}", file=sys.stderr, flush=True)
             exit_code = 1

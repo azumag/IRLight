@@ -217,6 +217,7 @@ class NodeAgentTest(unittest.TestCase):
         session_id = self.agent.session_id
         self.assertIsNotNone(session_id)
         self.assertIn(session_id, self.supervisor.started_sessions)
+        self.assertEqual(self.supervisor.started_egress_modes, ["DIRECT_PUSH"])
         self.assertIn(session_id, self.supervisor.stopped_sessions)
         self.assertFalse(self.supervisor.running)
         self.assertFalse((self.secret_dir / "egress_url").exists())
@@ -266,6 +267,28 @@ class ComposeSupervisorTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(calls[0], ["up", "-d"])
+
+    def test_relay_only_mode_disables_gateway_even_when_env_enabled(self) -> None:
+        supervisor = ComposeSupervisor(compose_file="docker-compose.node.yml")
+        calls: list[list[str]] = []
+
+        def fake_compose(*args: str):
+            calls.append(list(args))
+            output = "running" if args[0] == "ps" else "started"
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+        with patch.dict("os.environ", {"EGRESS_GATEWAY_ENABLED": "1"}), patch.object(
+            supervisor,
+            "_compose",
+            side_effect=fake_compose,
+        ):
+            result = supervisor.start(
+                "session-relay-only",
+                egress_mode="RELAY_ONLY",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls[0], ["up", "-d", "--scale", "egress-gateway=0"])
 
 
 if __name__ == "__main__":
