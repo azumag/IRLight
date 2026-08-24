@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -28,6 +28,7 @@ from session_workflow import ProvisioningWorkflow
 class PrepareRequest(BaseModel):
     environment: str = Field(default="dev", pattern="^(dev|beta|prod)$")
     destination_id: str | None = Field(default=None, min_length=1, max_length=100)
+    egress_mode: Literal["DIRECT_PUSH", "RELAY_ONLY"] = "DIRECT_PUSH"
 
 
 class SessionEventRequest(BaseModel):
@@ -56,7 +57,18 @@ def _destination_required() -> bool:
     return provider_mode() == "conoha"
 
 
-def _validated_destination(destination_id: str | None, user_id: str) -> dict[str, Any] | None:
+def _validated_destination(
+    destination_id: str | None,
+    user_id: str,
+    egress_mode: str = "DIRECT_PUSH",
+) -> dict[str, Any] | None:
+    if egress_mode == "RELAY_ONLY":
+        if destination_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="destination_id must be omitted for RELAY_ONLY",
+            )
+        return None
     if destination_id is None:
         if _destination_required():
             raise HTTPException(status_code=409, detail="destination_id is required")
@@ -118,7 +130,13 @@ def prepare_session(
     if existing is not None and existing.get("idempotency_key") == key:
         return existing
 
-    destination = _validated_destination(request.destination_id, user_id)
+    destination = _validated_destination(request.destination_id, user_id, request.egress_mode)
+    if (
+        existing is not None
+        and str(existing.get("egress_mode", "DIRECT_PUSH")) != request.egress_mode
+    ):
+        raise HTTPException(status_code=409, detail="egress mode cannot be changed")
+
     entitlement = default_entitlement_store().get(user_id)
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
@@ -129,8 +147,10 @@ def prepare_session(
             entitlement_id=str(entitlement["id"]),
             max_concurrent_sessions=int(entitlement["max_concurrent_sessions"]),
         )
+        changes: dict[str, Any] = {"egress_mode": request.egress_mode}
         if destination is not None:
-            store.update(session_id, destination_id=str(destination["id"]))
+            changes["destination_id"] = str(destination["id"])
+        store.update(session_id, **changes)
         session = workflow.prepare(
             session_id,
             user_id=user_id,

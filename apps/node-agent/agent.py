@@ -118,6 +118,7 @@ class NodeAgent:
         self.secret_dir = secret_dir
         self.supervisor = supervisor
         self.heartbeat_interval = heartbeat_interval
+        self.egress_mode = "DIRECT_PUSH"
         self.ingest_inspector = ingest_inspector
         self.ingest_quality_sampler = ingest_quality_sampler
         self.egress_status_file = egress_status_file
@@ -144,12 +145,29 @@ class NodeAgent:
         self.node_id = str(response.get("node_id", "")) or None
         self.session_id = str(response.get("session_id", "")) or None
         self.absolute_deadline = _as_float(response.get("absolute_deadline"))
+        egress_mode = str(response.get("egress_mode", "DIRECT_PUSH"))
+        if egress_mode not in {"DIRECT_PUSH", "RELAY_ONLY"}:
+            raise RuntimeError("bootstrap response has unsupported egress_mode")
+        self.egress_mode = egress_mode
         if not self.node_id or not self.session_id:
             raise RuntimeError("bootstrap response missing node_id or session_id")
         return response
 
-    def write_secret(self, response: dict[str, object]) -> Path:
-        """Persist the delivered secret to tmpfs, created as 0600 immediately."""
+    def write_secret(self, response: dict[str, object]) -> Path | None:
+        """Persist the delivered secret to tmpfs, created as 0600 immediately.
+
+        Relay-only sessions intentionally have no outbound credential. Clear
+        any stale files so an accidental gateway start cannot reuse them.
+        """
+        egress_mode = str(response.get("egress_mode", self.egress_mode))
+        if egress_mode == "RELAY_ONLY":
+            for name in ("egress_url", "egress_verified_peer_ip"):
+                try:
+                    (self.secret_dir / name).unlink()
+                except FileNotFoundError:
+                    pass
+            return None
+
         self.secret_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             self.secret_dir.chmod(0o700)
@@ -175,9 +193,10 @@ class NodeAgent:
         return secret_path
 
     @staticmethod
-    def remove_secret(secret_path: Path) -> None:
+    def remove_secret(secret_path: Path | None) -> None:
         try:
-            secret_path.unlink()
+            if secret_path is not None:
+                secret_path.unlink()
         except FileNotFoundError:
             pass
 
@@ -220,7 +239,7 @@ class NodeAgent:
             return degraded
 
     def _egress_observation(self) -> dict[str, object] | None:
-        if self.egress_status_file is None:
+        if self.egress_status_file is None or self.egress_mode == "RELAY_ONLY":
             return None
         return read_egress_status(self.egress_status_file)
 
@@ -274,11 +293,18 @@ class NodeAgent:
         print(f"[agent] bootstrap start provider={self.provider_server_id}", flush=True)
         response = self.bootstrap()
         secret_path = self.write_secret(response)
-        print(
-            f"[agent] bootstrap ok node={self.node_id} session={self.session_id} "
-            f"secret={secret_path}",
-            flush=True,
-        )
+        if secret_path is None:
+            print(
+                f"[agent] bootstrap ok node={self.node_id} session={self.session_id} "
+                "egress=RELAY_ONLY",
+                flush=True,
+            )
+        else:
+            print(
+                f"[agent] bootstrap ok node={self.node_id} session={self.session_id} "
+                f"secret={secret_path}",
+                flush=True,
+            )
 
         exit_code = 0
         result = self.supervisor.start(self.session_id or "unknown")

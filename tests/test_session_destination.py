@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import uuid
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,8 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import node_internal  # noqa: E402
 import session_api  # noqa: E402
+from provider.fake_provider import FakeProvider  # noqa: E402
+from session_store import SessionStore  # noqa: E402
 from destination_secret_store import (  # noqa: E402
     DestinationSecretError,
     DestinationSecretNotFound,
@@ -142,6 +145,63 @@ class PrepareDestinationTest(unittest.TestCase):
         with patch("session_api.provider_mode", return_value="fake"):
             self.assertIsNone(session_api._validated_destination(None, "user-1"))
 
+    def test_relay_only_rejects_destination_and_direct_push_keeps_validation(self) -> None:
+        with self.assertRaises(HTTPException) as failure:
+            session_api._validated_destination("dest-1", "user-1", "RELAY_ONLY")
+        self.assertEqual(failure.exception.status_code, 409)
+        self.assertEqual(
+            failure.exception.detail,
+            "destination_id must be omitted for RELAY_ONLY",
+        )
+
+        with patch("session_api.provider_mode", return_value="conoha"):
+            with self.assertRaises(HTTPException) as failure:
+                session_api._validated_destination(None, "user-1", "DIRECT_PUSH")
+        self.assertEqual(failure.exception.detail, "destination_id is required")
+
+    def test_egress_mode_cannot_change_after_first_prepare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            provider = FakeProvider()
+            with patch("session_api.default_store", return_value=store), patch(
+                "session_api.default_entitlement_store"
+            ) as entitlement_factory, patch(
+                "session_api.default_provider", return_value=provider
+            ):
+                entitlement_factory.return_value.get.return_value = {
+                    "id": "ent-1",
+                    "max_concurrent_sessions": 1,
+                }
+                session_id = str(uuid.uuid4())
+                user_id = str(uuid.uuid4())
+                session_api.prepare_session(
+                    session_id,
+                    session_api.PrepareRequest(environment="dev"),
+                    {"id": user_id},
+                    idempotency_key="first-mode",
+                    _csrf=None,
+                )
+                volume_count = len(provider.list_volumes())
+                server_count = len(provider.list_servers())
+
+                with self.assertRaises(HTTPException) as failure:
+                    session_api.prepare_session(
+                        session_id,
+                        session_api.PrepareRequest(
+                            environment="dev",
+                            egress_mode="RELAY_ONLY",
+                        ),
+                        {"id": user_id},
+                        idempotency_key="second-mode",
+                        _csrf=None,
+                    )
+
+        self.assertEqual(failure.exception.status_code, 409)
+        self.assertEqual(failure.exception.detail, "egress mode cannot be changed")
+        self.assertIsNone(store.get(session_id).get("destination_id"))
+        self.assertEqual(len(provider.list_volumes()), volume_count)
+        self.assertEqual(len(provider.list_servers()), server_count)
+
 
 class BootstrapEgressResolutionTest(unittest.TestCase):
     def test_assigned_session_resolves_secret_only_for_bootstrap(self) -> None:
@@ -161,6 +221,43 @@ class BootstrapEgressResolutionTest(unittest.TestCase):
             "rtmps://example.invalid/live/secret%2Fwith%3Fcharacters",
         )
         self.assertNotIn(secret, str(session))
+
+    def test_relay_only_session_has_no_outbound_url(self) -> None:
+        session = {
+            "session_id": "session-1",
+            "user_id": "user-1",
+            "destination_id": None,
+            "egress_mode": "RELAY_ONLY",
+        }
+        with patch.dict("os.environ", {"NODE_EGRESS_URL": "rtmp://internal/output/relay"}):
+            result = node_internal._resolve_egress_url(session)
+        self.assertEqual(result, "")
+
+    def test_bootstrap_reports_direct_push_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.multiple(
+                node_internal,
+                STATE_DIR=Path(tmp),
+                NODES_PATH=Path(tmp) / "nodes.json",
+                TOKENS_PATH=Path(tmp) / "tokens.json",
+            ), patch.dict(
+                "os.environ",
+                {
+                    "NODE_BOOTSTRAP_TOKENS": "test-token",
+                    "NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT": "0",
+                    "NODE_EGRESS_URL": "rtmp://internal/output/relay",
+                },
+            ):
+                node_internal.ensure_state()
+                response = node_internal.bootstrap(
+                    node_internal.BootstrapRequest(
+                        provider_server_id="unassigned-server",
+                        boot_id="boot-1",
+                        agent_version="test",
+                    ),
+                    authorization="Bearer test-token",
+                )
+        self.assertEqual(response["egress_mode"], "DIRECT_PUSH")
 
     def test_unassigned_legacy_node_uses_static_egress(self) -> None:
         with patch.dict("os.environ", {"NODE_EGRESS_URL": "rtmp://internal/output/relay"}):
