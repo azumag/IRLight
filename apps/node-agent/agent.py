@@ -29,6 +29,7 @@ from pathlib import Path
 from egress_status import read_egress_status
 from ingest_policy import IngestPolicyInspector
 from ingest_quality import IngestQualitySampler
+from relay_client import RelayClientObserver
 from supervisor import ComposeSupervisor, FakeSupervisor, MediaSupervisor
 
 
@@ -109,6 +110,7 @@ class NodeAgent:
         ingest_inspector: IngestPolicyInspector | None = None,
         ingest_quality_sampler: IngestQualitySampler | None = None,
         egress_status_file: Path | None = None,
+        relay_client_observer: RelayClientObserver | None = None,
     ) -> None:
         self.control_base_url = control_base_url.rstrip("/")
         self.bootstrap_token = bootstrap_token
@@ -122,6 +124,7 @@ class NodeAgent:
         self.ingest_inspector = ingest_inspector
         self.ingest_quality_sampler = ingest_quality_sampler
         self.egress_status_file = egress_status_file
+        self.relay_client_observer = relay_client_observer
         self.node_id: str | None = None
         self.session_id: str | None = None
         self.absolute_deadline: float | None = None
@@ -243,12 +246,27 @@ class NodeAgent:
             return None
         return read_egress_status(self.egress_status_file)
 
+    def _relay_client_observation(self) -> dict[str, object] | None:
+        if self.egress_mode != "RELAY_ONLY" or self.relay_client_observer is None:
+            return None
+        try:
+            return self.relay_client_observer.observe()
+        except RuntimeError as exc:
+            return {
+                "status": "UNKNOWN",
+                "connected": False,
+                "reader_count": 0,
+                "reason_code": str(exc)[:100],
+                "observed_at": time.time(),
+            }
+
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:
             raise RuntimeError("heartbeat before bootstrap")
         health = self.supervisor.health()
         ingest = self._ingest_observation()
         egress = self._egress_observation()
+        relay_client = self._relay_client_observation()
         remaining = None
         if self.absolute_deadline is not None:
             remaining = max(0.0, self.absolute_deadline - time.time())
@@ -270,6 +288,8 @@ class NodeAgent:
             payload["ingest"] = ingest
         if egress is not None:
             payload["egress"] = egress
+        if relay_client is not None:
+            payload["relay_client"] = relay_client
         return http_json(
             f"{self.control_base_url}/internal/nodes/{self.node_id}/heartbeat",
             method="POST",
@@ -370,6 +390,12 @@ def build_ingest_quality_sampler() -> IngestQualitySampler | None:
     return IngestQualitySampler()
 
 
+def build_relay_client_observer() -> RelayClientObserver | None:
+    if os.getenv("NODE_RELAY_CLIENT_OBSERVER_ENABLED", "1") == "0":
+        return None
+    return RelayClientObserver()
+
+
 def main() -> int:
     secret_dir = Path(_env("NODE_SECRET_DIR", required=False) or "/run/irlight/secrets")
     egress_status_path = _env("NODE_EGRESS_STATUS_FILE", required=False)
@@ -384,6 +410,7 @@ def main() -> int:
         ingest_inspector=build_ingest_inspector(),
         ingest_quality_sampler=build_ingest_quality_sampler(),
         egress_status_file=Path(egress_status_path) if egress_status_path else None,
+        relay_client_observer=build_relay_client_observer(),
     )
     return agent.run()
 

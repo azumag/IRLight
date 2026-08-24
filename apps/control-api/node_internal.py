@@ -78,6 +78,14 @@ class EgressObservationRequest(BaseModel):
     observed_at: float
 
 
+class RelayClientObservationRequest(BaseModel):
+    status: str = Field(pattern="^(UNKNOWN|CONNECTED|DISCONNECTED)$")
+    connected: bool = False
+    reader_count: int = Field(default=0, ge=0)
+    reason_code: str | None = Field(default=None, max_length=100)
+    observed_at: float
+
+
 class HeartbeatRequest(BaseModel):
     status: str = Field(
         default="READY", pattern="^(BOOTSTRAPPING|READY|STOPPING|STOPPED|FAILED)$"
@@ -91,6 +99,7 @@ class HeartbeatRequest(BaseModel):
     deadline_remaining_seconds: float | None = Field(default=None, ge=0)
     ingest: IngestObservationRequest | None = None
     egress: EgressObservationRequest | None = None
+    relay_client: RelayClientObservationRequest | None = None
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -413,6 +422,70 @@ def _apply_egress_to_session(
     )
 
 
+def _append_relay_client_events(
+    node: dict[str, Any], previous: object, current: dict[str, Any]
+) -> list[str]:
+    previous = previous if isinstance(previous, dict) else {}
+    previous_connected = bool(previous.get("connected", False))
+    current_connected = bool(current.get("connected", False))
+    event_types: list[str] = []
+    if current_connected and not previous_connected:
+        event_types.append(
+            "relay.client.reconnected"
+            if node.get("relay_client_ever_connected", False)
+            else "relay.client.connected"
+        )
+    elif not current_connected and previous_connected:
+        event_types.append("relay.client.disconnected")
+    if not event_types:
+        return []
+
+    events = list(node.get("events", []))
+    next_sequence = int(node.get("next_event_seq", len(events) + 1))
+    payload = _relay_client_payload(str(node.get("node_id", "")), current)
+    for event_type in event_types:
+        events.append(
+            {
+                "sequence": next_sequence,
+                "type": event_type,
+                "occurred_at": time.time(),
+                "payload": dict(payload),
+            }
+        )
+        next_sequence += 1
+    node["events"] = events[-100:]
+    node["next_event_seq"] = next_sequence
+    if current_connected:
+        node["relay_client_ever_connected"] = True
+    return event_types
+
+
+def _relay_client_payload(node_id: str, current: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "node_id": node_id,
+        "status": current.get("status"),
+        "connected": bool(current.get("connected", False)),
+        "reader_count": max(0, int(current.get("reader_count", 0) or 0)),
+        "reason_code": current.get("reason_code"),
+        "observed_at": current.get("observed_at"),
+    }
+
+
+def _apply_relay_client_to_session(
+    *,
+    session_id: str,
+    node_id: str,
+    event_types: list[str],
+    current: dict[str, Any],
+) -> None:
+    default_store().apply_relay_client_observation(
+        session_id,
+        node_id=node_id,
+        event_types=event_types,
+        observation=current,
+    )
+
+
 router = APIRouter(prefix="/internal")
 
 
@@ -485,6 +558,8 @@ def bootstrap(
         "ingest_ever_online": False,
         "egress": None,
         "egress_ever_connected": False,
+        "relay_client": None,
+        "relay_client_ever_connected": False,
         "events": [],
         "next_event_seq": 1,
         "created_at": time.time(),
@@ -575,6 +650,24 @@ def heartbeat(
                 node.pop("egress_session_event_error", None)
             except (KeyError, RuntimeError) as exc:
                 node["egress_session_event_error"] = str(exc)[:200]
+    if request.relay_client is not None:
+        previous_relay = node.get("relay_client")
+        current_relay = request.relay_client.model_dump()
+        relay_event_types = _append_relay_client_events(
+            node, previous_relay, current_relay
+        )
+        node["relay_client"] = current_relay
+        if node.get("session_assigned") and relay_event_types:
+            try:
+                _apply_relay_client_to_session(
+                    session_id=str(node["session_id"]),
+                    node_id=node_id,
+                    event_types=relay_event_types,
+                    current=current_relay,
+                )
+                node.pop("relay_client_session_event_error", None)
+            except (KeyError, RuntimeError) as exc:
+                node["relay_client_session_event_error"] = str(exc)[:200]
     if node.get("session_assigned"):
         try:
             apply_pipeline_health(
