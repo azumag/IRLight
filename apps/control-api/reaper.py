@@ -23,6 +23,7 @@ from typing import Any
 
 from provider.conoha import SessionMetadata
 
+from ingest_store import default_ingest_store
 from session_store import ACTIVE_STATES, SessionStore
 
 
@@ -54,6 +55,7 @@ class Reaper:
         self.node_state_path = node_state_path or Path(
             os.getenv("NODE_STATE_DIR", "/state")
         ) / "nodes.json"
+        self.credential_store = default_ingest_store()
 
     def now(self) -> float:
         return self._now if self._now is not None else time.time()
@@ -212,6 +214,7 @@ class Reaper:
             result["failed_cleanup_retries"] += 1
             if not self._cleanup_resources(session["session_id"]):
                 continue
+            self.credential_store.revoke_session(session["session_id"])
             failure_reason_code = str(
                 session.get("failure_reason_code") or "RESOURCE_CLEANUP_FAILED"
             )[:100]
@@ -275,6 +278,7 @@ class Reaper:
             origin="reaper",
             occurred_at=detected_at,
         )
+        self.credential_store.revoke_session(session_id)
         return True
 
     def _fail_and_cleanup(
@@ -294,6 +298,7 @@ class Reaper:
             return
         if not self._cleanup_resources(session_id):
             return
+        self.credential_store.revoke_session(session_id)
         self.store.transition(
             session_id,
             "FAILED",
@@ -342,6 +347,7 @@ class Reaper:
                 failure_reason_code="RESOURCE_CLEANUP_FAILED",
             )
             return
+        self.credential_store.revoke_session(session_id)
         self.store.transition(
             session_id,
             "FINISHED",

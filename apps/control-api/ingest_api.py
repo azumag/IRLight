@@ -18,6 +18,7 @@ from ingest_store import default_ingest_store
 
 ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "DEGRADED", "HOLDING"}
 INGEST_PATH = "live/input"
+RELAY_PATH = "output/relay"
 DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
 
 
@@ -28,6 +29,7 @@ class IssueIngestCredentialRequest(BaseModel):
         default_factory=lambda: ["rtmp", "srt"], min_length=1
     )
     ttl_seconds: int = Field(default=12 * 3600, ge=60, le=12 * 3600)
+    scope: Literal["INGEST", "RELAY_CLIENT"] = "INGEST"
 
 
 class MediaMTXAuthRequest(BaseModel):
@@ -128,6 +130,23 @@ def _connection_info(
     return {"rtmp": rtmp, "rtmps": rtmps, "srt": srt}
 
 
+def _relay_connection_info(
+    session: dict[str, Any],
+    username: str,
+    secret: str | None,
+) -> dict[str, Any]:
+    host = _public_ingest_host(session)
+    host_for_url = _host_for_url(host)
+    port = int(os.getenv("IRLIGHT_RELAY_RTMP_PORT", "1935"))
+    return {
+        "protocol": "rtmp",
+        "server_url": f"rtmp://{host_for_url}:{port}/{RELAY_PATH}",
+        "username": username,
+        "password": secret,
+        "password_available": secret is not None,
+    }
+
+
 def _auth_cache_max_age_seconds() -> float:
     try:
         value = float(
@@ -215,6 +234,8 @@ def issue_ingest_credential(
     status = str(session.get("status", ""))
     if status not in ACCEPTING_INGEST_STATES:
         raise HTTPException(status_code=409, detail="session is not ready to accept ingest")
+    if request.scope == "RELAY_CLIENT" and request.protocols != ["rtmp"]:
+        raise HTTPException(status_code=409, detail="RELAY_CLIENT supports only rtmp")
 
     ttl = float(request.ttl_seconds)
     deadline = session.get("absolute_deadline_at")
@@ -230,17 +251,27 @@ def issue_ingest_credential(
     record, secret = default_ingest_store().issue(
         session_id=session_id,
         user_id=user_id,
+        scope=request.scope,
         protocols=request.protocols,
         ttl_seconds=ttl,
     )
+    if request.scope == "RELAY_CLIENT":
+        connection_info = _relay_connection_info(
+            session, str(record["username"]), secret
+        )
+    else:
+        connection_info = _connection_info(
+            session,
+            str(record["username"]),
+            secret,
+            record.get("protocols", []),
+        )
     return {
         **record,
         # Returned once. The raw value is never persisted and cannot be
         # recovered later; issuing another credential rotates the old one out.
         "credential_secret": secret,
-        "connection_info": _connection_info(
-            session, str(record["username"]), secret, record.get("protocols", [])
-        ),
+        "connection_info": connection_info,
     }
 
 
@@ -254,7 +285,30 @@ def get_connection_info(session_id: str, current_user: CurrentUser) -> dict[str,
     return {
         "credential": record,
         "connection_info": _connection_info(
-            session, str(record["username"]), None, record.get("protocols", [])
+            session,
+            str(record["username"]),
+            None,
+            record.get("protocols", []),
+        ),
+    }
+
+
+@user_router.get("/{session_id}/relay-client-info")
+def get_relay_client_info(session_id: str, current_user: CurrentUser) -> dict[str, Any]:
+    user_id = str(current_user["id"])
+    session = _owned_session(session_id, user_id)
+    record = default_ingest_store().active_for_session(
+        session_id,
+        scope="RELAY_CLIENT",
+    )
+    if record is None or record.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="no active relay client credential")
+    return {
+        "credential": record,
+        "connection_info": _relay_connection_info(
+            session,
+            str(record["username"]),
+            None,
         ),
     }
 
@@ -269,7 +323,10 @@ def revoke_ingest_credential(
     user_id = str(current_user["id"])
     _owned_session(session_id, user_id)
     store = default_ingest_store()
-    active = store.active_for_session(session_id)
+    active = store.active_for_session(
+        session_id,
+        scope="INGEST",
+    )
     if active is None or active.get("id") != credential_id or active.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="unknown ingest credential")
     try:
@@ -278,9 +335,10 @@ def revoke_ingest_credential(
         raise HTTPException(status_code=404, detail="unknown ingest credential") from exc
 
 
+@internal_router.post("/authorize")
 @internal_router.post("/auth")
-def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
-    """Authenticate a MediaMTX publish request.
+def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
+    """Authenticate a MediaMTX publish or relay read request.
 
     This endpoint is intended for MediaMTX ``authMethod: http`` and must be
     reachable only from trusted Media Nodes / internal networks. The response
@@ -290,10 +348,16 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
     MediaMTX reports both plain RTMP and TLS-wrapped RTMPS as protocol ``rtmp``;
     TLS policy is enforced by the MediaMTX listener configuration.
     """
-    if request.action != "publish":
+    if request.action not in {"publish", "read"}:
         raise HTTPException(status_code=403, detail="unsupported media action")
-    if request.path != INGEST_PATH:
-        raise HTTPException(status_code=403, detail="unsupported ingest path")
+    if request.action == "read" and request.path != RELAY_PATH:
+        raise HTTPException(status_code=403, detail="unsupported relay path")
+    if request.action == "publish":
+        if request.path != INGEST_PATH:
+            raise HTTPException(status_code=403, detail="unsupported ingest path")
+        expected_scope = "INGEST"
+    else:
+        expected_scope = "RELAY_CLIENT"
     protocol = request.protocol.lower()
     if protocol not in {"rtmp", "srt"}:
         raise HTTPException(status_code=403, detail="unsupported ingest protocol")
@@ -317,6 +381,7 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
         username=request.user,
         secret=request.password,
         protocol=protocol,
+        scope=expected_scope,
     )
     if record is None or record.get("session_id") != request.user:
         _reject_invalid_ingest_credential(request, guard)
@@ -330,3 +395,8 @@ def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
         # during upstream transport/5xx failures, and never beyond this bound.
         "cache_valid_until": _cache_valid_until(record),
     }
+
+
+def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
+    """Backward-compatible alias for existing Control Plane callers."""
+    return authorize_mediamtx_request(request)
