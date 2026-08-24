@@ -101,6 +101,11 @@ def new_session(
         "environment": environment,
         "egress_mode": egress_mode,
         "status": "STOPPED",
+        "relay_client_status": None,
+        "relay_client_connected": False,
+        "relay_client_reader_count": 0,
+        "relay_client_last_reason": None,
+        "relay_client_updated_at": None,
         "idempotency_key": None,
         "version": 0,
         "provider": None,
@@ -557,6 +562,60 @@ class SessionStore:
 
             session["node_id"] = node_id
             session["updated_at"] = current
+            self._persist()
+            return dict(session)
+
+    def apply_relay_client_observation(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        event_types: list[str],
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Audit relay client changes and persist the safe aggregate state."""
+        current = time.time()
+        with self.lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("node_id") not in {None, node_id}:
+                raise RuntimeError("node is not assigned to session")
+            if session.get("status") not in ACTIVE_STATES:
+                return dict(session)
+
+            payload = {
+                "node_id": node_id,
+                "status": observation.get("status"),
+                "connected": bool(observation.get("connected", False)),
+                "reader_count": max(0, int(observation.get("reader_count", 0) or 0)),
+                "reason_code": observation.get("reason_code"),
+                "observed_at": observation.get("observed_at"),
+            }
+            for event_type in event_types:
+                self._append_event_locked(
+                    session,
+                    event_type=event_type,
+                    reason_code=(
+                        str(payload["reason_code"])[:100]
+                        if payload["reason_code"]
+                        else None
+                    ),
+                    payload=payload,
+                    origin="node-agent",
+                    occurred_at=current,
+                )
+            session.update(
+                {
+                    "relay_client_status": payload["status"],
+                    "relay_client_connected": payload["connected"],
+                    "relay_client_reader_count": payload["reader_count"],
+                    "relay_client_last_reason": payload["reason_code"],
+                    "relay_client_updated_at": payload["observed_at"],
+                    "node_id": node_id,
+                    "updated_at": current,
+                }
+            )
             self._persist()
             return dict(session)
 

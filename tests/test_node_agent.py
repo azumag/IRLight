@@ -190,6 +190,40 @@ class NodeAgentTest(unittest.TestCase):
         self.assertNotIn("stream_key", egress)
         self.assertNotIn("must-not-leak", str(payload))
 
+    def test_relay_only_heartbeat_reports_anonymous_client_state(self) -> None:
+        self.control.egress_mode = "RELAY_ONLY"
+        status_path = self.secret_dir.parent / f"direct-egress-{uuid.uuid4().hex}.json"
+        status_path.write_text(
+            json.dumps({"status": "CONNECTED", "connected": True, "observed_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        class Observer:
+            def observe(self):
+                return {
+                    "status": "CONNECTED",
+                    "connected": True,
+                    "reader_count": 1,
+                    "reason_code": None,
+                    "observed_at": 123.0,
+                }
+
+        self.agent.relay_client_observer = Observer()
+        self.agent.egress_status_file = status_path
+        response = self.agent.bootstrap()
+        self.agent.write_secret(response)
+        self.supervisor.start("session-test")
+        self.agent.heartbeat()
+
+        payload = self.control.last_heartbeat or {}
+        self.assertIsNone(payload.get("egress"))
+        relay = payload.get("relay_client")
+        self.assertIsInstance(relay, dict)
+        assert isinstance(relay, dict)
+        self.assertTrue(relay["connected"])
+        self.assertEqual(relay["reader_count"], 1)
+        self.assertNotIn("client_id", relay)
+
     def test_transport_failure_is_wrapped_as_runtime_error(self) -> None:
         unused = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
         port = int(unused.server_address[1])
