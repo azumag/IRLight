@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+CREDENTIAL_SCOPES = {"INGEST", "RELAY_CLIENT"}
 SUPPORTED_PROTOCOLS = {"rtmp", "srt"}
 DEFAULT_TTL_SECONDS = 12 * 3600
 
@@ -87,12 +88,15 @@ class IngestCredentialStore:
         *,
         session_id: str,
         user_id: str,
+        scope: str = "INGEST",
         protocols: Iterable[str] = ("rtmp", "srt"),
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         now: float | None = None,
     ) -> tuple[dict[str, Any], str]:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
+        if scope not in CREDENTIAL_SCOPES:
+            raise ValueError(f"scope must be one of {sorted(CREDENTIAL_SCOPES)}")
         normalized = self._normalize_protocols(protocols)
         issued_at = time.time() if now is None else now
         secret = secrets.token_urlsafe(32)
@@ -101,6 +105,7 @@ class IngestCredentialStore:
             "id": credential_id,
             "session_id": session_id,
             "user_id": user_id,
+            "scope": scope,
             "username": session_id,
             "secret_sha256": self._digest(secret),
             "protocols": normalized,
@@ -115,7 +120,11 @@ class IngestCredentialStore:
             # accepted per Session, so an old copied key stops working as soon
             # as the user asks for a replacement.
             for existing in self._credentials.values():
-                if existing.get("session_id") == session_id and existing.get("revoked_at") is None:
+                if (
+                    existing.get("session_id") == session_id
+                    and existing.get("scope", "INGEST") == scope
+                    and existing.get("revoked_at") is None
+                ):
                     existing["revoked_at"] = issued_at
             self._credentials[credential_id] = record
             self._persist()
@@ -128,16 +137,24 @@ class IngestCredentialStore:
         secret: str,
         protocol: str,
         now: float | None = None,
-    ) -> dict[str, Any] | None:
+        scope: str = "INGEST",
+) -> dict[str, Any] | None:
         current = time.time() if now is None else now
         protocol = protocol.lower()
-        if protocol not in SUPPORTED_PROTOCOLS or not username or not secret:
+        if (
+            protocol not in SUPPORTED_PROTOCOLS
+            or scope not in CREDENTIAL_SCOPES
+            or not username
+            or not secret
+        ):
             return None
         candidate = self._digest(secret)
 
         with self.lock:
             for record in self._credentials.values():
                 if record.get("username") != username:
+                    continue
+                if record.get("scope", "INGEST") != scope:
                     continue
                 if record.get("revoked_at") is not None:
                     continue
@@ -179,11 +196,21 @@ class IngestCredentialStore:
                 self._persist()
         return changed
 
-    def active_for_session(self, session_id: str, *, now: float | None = None) -> dict[str, Any] | None:
+    def active_for_session(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+        scope: str = "INGEST",
+    ) -> dict[str, Any] | None:
         current = time.time() if now is None else now
         with self.lock:
             for record in reversed(list(self._credentials.values())):
-                if record.get("session_id") != session_id or record.get("revoked_at") is not None:
+                if (
+                    record.get("session_id") != session_id
+                    or record.get("scope", "INGEST") != scope
+                    or record.get("revoked_at") is not None
+                ):
                     continue
                 try:
                     if float(record.get("expires_at", 0)) <= current:
