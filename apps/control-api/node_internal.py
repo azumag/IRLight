@@ -177,6 +177,9 @@ def _resolve_egress_url(assigned_session: dict[str, Any] | None) -> str:
     The fully credentialed URL is never copied into Session or Node state. The
     Node Agent immediately writes it into its tmpfs secret file.
     """
+    if assigned_session is not None and assigned_session.get("egress_mode") == "RELAY_ONLY":
+        return ""
+
     if assigned_session is None or not assigned_session.get("destination_id"):
         return os.getenv("NODE_EGRESS_URL", "")
 
@@ -504,6 +507,12 @@ def bootstrap(
         "status": "BOOTSTRAPPING",
         "absolute_deadline": absolute_deadline,
         "egress_url": egress_url,
+        "egress_mode": (
+            "RELAY_ONLY"
+            if assigned_session is not None
+            and assigned_session.get("egress_mode") == "RELAY_ONLY"
+            else "DIRECT_PUSH"
+        ),
         "media_mtx_config_ref": "config/mediamtx.yml",
     }
 

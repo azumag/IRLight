@@ -91,6 +91,7 @@ def new_session(
     *,
     user_id: str,
     environment: str = "dev",
+    egress_mode: str = "DIRECT_PUSH",
     absolute_deadline_hours: float | None = None,
 ) -> dict[str, Any]:
     now = time.time()
@@ -98,6 +99,7 @@ def new_session(
         "session_id": new_session_id(),
         "user_id": user_id,
         "environment": environment,
+        "egress_mode": egress_mode,
         "status": "STOPPED",
         "idempotency_key": None,
         "version": 0,

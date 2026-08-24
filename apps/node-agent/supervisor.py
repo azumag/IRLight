@@ -60,8 +60,16 @@ class ComposeSupervisor(MediaSupervisor):
             check=False,
         )
 
+    @staticmethod
+    def _egress_gateway_enabled() -> bool:
+        configured = os.getenv("EGRESS_GATEWAY_ENABLED", "1").strip().lower()
+        return configured not in {"0", "false", "no", "off"}
+
     def start(self, session_id: str) -> SupervisionResult:
-        result = self._compose("up", "-d")
+        args = ["up", "-d"]
+        if not self._egress_gateway_enabled():
+            args.extend(["--scale", "egress-gateway=0"])
+        result = self._compose(*args)
         if result.returncode != 0:
             return SupervisionResult(False, result.stderr.strip() or "compose up failed")
         time.sleep(3)

@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import threading
 import time
 import unittest
@@ -16,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "node-agent"))
 
 from agent import NodeAgent, http_json  # noqa: E402
-from supervisor import FakeSupervisor  # noqa: E402
+from supervisor import ComposeSupervisor, FakeSupervisor  # noqa: E402
 
 
 class FakeControlPlane:
@@ -27,6 +29,7 @@ class FakeControlPlane:
         self.heartbeat_count = 0
         self.last_heartbeat: dict[str, object] | None = None
         self.egress_url = "rtmp://fake-egress/output/relay"
+        self.egress_mode = "DIRECT_PUSH"
         self.bootstrap_token = "test-bootstrap-token"
 
     def run(self) -> None:
@@ -75,6 +78,7 @@ class FakeControlPlane:
                             "status": "BOOTSTRAPPING",
                             "absolute_deadline": 10**12,
                             "egress_url": control.egress_url,
+                            "egress_mode": control.egress_mode,
                             "media_mtx_config_ref": "config/mediamtx.yml",
                         }
                     )
@@ -123,6 +127,28 @@ class NodeAgentTest(unittest.TestCase):
         self.assertEqual(self.secret_dir.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.agent.node_id, self.control.node_id)
         self.assertIsNotNone(self.agent.session_id)
+
+    def test_relay_only_clears_stale_secrets_and_ignores_status(self) -> None:
+        self.control.egress_mode = "RELAY_ONLY"
+        stale_secret = self.secret_dir / "egress_url"
+        stale_peer = self.secret_dir / "egress_verified_peer_ip"
+        stale_secret.write_text("rtmp://stale/output/relay", encoding="utf-8")
+        stale_peer.write_text("192.0.2.1", encoding="utf-8")
+        status_path = self.secret_dir.parent / f"egress-status-{uuid.uuid4().hex}.json"
+        status_path.write_text(
+            json.dumps({"status": "CONNECTED", "connected": True, "observed_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        response = self.agent.bootstrap()
+        secret_path = self.agent.write_secret(response)
+        self.agent.egress_status_file = status_path
+
+        self.assertIsNone(secret_path)
+        self.assertFalse(stale_secret.exists())
+        self.assertFalse(stale_peer.exists())
+        self.assertEqual(self.agent.egress_mode, "RELAY_ONLY")
+        self.assertIsNone(self.agent._egress_observation())
 
     def test_heartbeat_reports_ready_and_receives_desired_state(self) -> None:
         response = self.agent.bootstrap()
@@ -194,6 +220,52 @@ class NodeAgentTest(unittest.TestCase):
         self.assertIn(session_id, self.supervisor.stopped_sessions)
         self.assertFalse(self.supervisor.running)
         self.assertFalse((self.secret_dir / "egress_url").exists())
+
+
+class ComposeSupervisorTest(unittest.TestCase):
+    def test_disabled_egress_gateway_is_scaled_to_zero(self) -> None:
+        supervisor = ComposeSupervisor(compose_file="docker-compose.node.yml")
+        calls: list[list[str]] = []
+
+        def fake_compose(*args: str):
+            calls.append(list(args))
+            output = "running" if args[0] == "ps" else "started"
+            if args[0] == "ps":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f'{{"State":"{output}"}}',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+        with patch.dict("os.environ", {"EGRESS_GATEWAY_ENABLED": "0"}), patch.object(
+            supervisor,
+            "_compose",
+            side_effect=fake_compose,
+        ):
+            result = supervisor.start("session-relay-only")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls[0], ["up", "-d", "--scale", "egress-gateway=0"])
+
+    def test_enabled_egress_gateway_does_not_scale_services(self) -> None:
+        supervisor = ComposeSupervisor(compose_file="docker-compose.node.yml")
+        calls: list[list[str]] = []
+
+        def fake_compose(*args: str):
+            calls.append(list(args))
+            output = "running" if args[0] == "ps" else "started"
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+        with patch.dict("os.environ", {"EGRESS_GATEWAY_ENABLED": "1"}), patch.object(
+            supervisor,
+            "_compose",
+            side_effect=fake_compose,
+        ):
+            result = supervisor.start("session-direct-push")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls[0], ["up", "-d"])
 
 
 if __name__ == "__main__":
