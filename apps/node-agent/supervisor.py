@@ -23,7 +23,12 @@ class SupervisionResult:
 
 class MediaSupervisor(abc.ABC):
     @abc.abstractmethod
-    def start(self, session_id: str) -> SupervisionResult:
+    def start(
+        self,
+        session_id: str,
+        *,
+        egress_mode: str = "DIRECT_PUSH",
+    ) -> SupervisionResult:
         """Bring the media stack up and return health status."""
 
     @abc.abstractmethod
@@ -65,9 +70,14 @@ class ComposeSupervisor(MediaSupervisor):
         configured = os.getenv("EGRESS_GATEWAY_ENABLED", "1").strip().lower()
         return configured not in {"0", "false", "no", "off"}
 
-    def start(self, session_id: str) -> SupervisionResult:
+    def start(
+        self,
+        session_id: str,
+        *,
+        egress_mode: str = "DIRECT_PUSH",
+    ) -> SupervisionResult:
         args = ["up", "-d"]
-        if not self._egress_gateway_enabled():
+        if egress_mode == "RELAY_ONLY" or not self._egress_gateway_enabled():
             args.extend(["--scale", "egress-gateway=0"])
         result = self._compose(*args)
         if result.returncode != 0:
@@ -96,11 +106,18 @@ class FakeSupervisor(MediaSupervisor):
 
     def __init__(self) -> None:
         self.started_sessions: list[str] = []
+        self.started_egress_modes: list[str] = []
         self.stopped_sessions: list[str] = []
         self.running = False
 
-    def start(self, session_id: str) -> SupervisionResult:
+    def start(
+        self,
+        session_id: str,
+        *,
+        egress_mode: str = "DIRECT_PUSH",
+    ) -> SupervisionResult:
         self.started_sessions.append(session_id)
+        self.started_egress_modes.append(egress_mode)
         self.running = True
         return SupervisionResult(True, "fake media stack started")
 
