@@ -38,9 +38,108 @@ from session_store import ACTIVE_STATES
 from state_safety import mark_initialized, was_initialized
 
 
-STATE_DIR = Path(os.getenv("NODE_STATE_DIR", "/state"))
-NODES_PATH = STATE_DIR / "nodes.json"
-TOKENS_PATH = STATE_DIR / "bootstrap_tokens.json"
+def _state_dir() -> Path:
+    # Tests patch ``node_internal.STATE_DIR`` to a concrete temp dir via
+    # ``patch.object``. Respect that patch so integration tests keep working
+    # even after we made the module-level constants dynamic.
+    current = globals().get("STATE_DIR")
+    if isinstance(current, Path):
+        # Plain Path patch from a test - use it directly. DynamicPath is not a
+        # Path subclass, so this distinguishes a real patch from the proxy.
+        return current
+    # Fallback to env-based dynamic path for normal operation and for the
+    # shared ``DynamicPath`` proxy.
+    return Path(os.getenv("NODE_STATE_DIR", os.getenv("STATE_DIR", "/state")))
+
+
+def _nodes_path() -> Path:
+    # Tests patch ``NODES_PATH`` directly; respect that.
+    current = globals().get("NODES_PATH")
+    if isinstance(current, Path):
+        return current
+    state = _state_dir()
+    # ``state`` may be a DynamicPath proxy; ensure we return a real Path.
+    if isinstance(state, _DynamicPath):
+        state = state._path()
+    return state / "nodes.json"
+
+
+def _tokens_path() -> Path:
+    current = globals().get("TOKENS_PATH")
+    if isinstance(current, Path):
+        return current
+    state = _state_dir()
+    if isinstance(state, _DynamicPath):
+        state = state._path()
+    return state / "bootstrap_tokens.json"
+
+
+class _DynamicPath:
+    """Proxy that always resolves to the current env-based path.
+
+    ``from node_internal import NODES_PATH`` captures this object once; every
+    attribute access re-resolves the underlying Path so later
+    ``NODE_STATE_DIR`` changes are still observed.
+    """
+
+    def __init__(self, getter):
+        self._getter = getter
+
+    def _path(self) -> Path:
+        return self._getter()
+
+    def __fspath__(self) -> str:
+        return os.fspath(self._path())
+
+    def __str__(self) -> str:
+        return str(self._path())
+
+    def __repr__(self) -> str:
+        return repr(self._path())
+
+    def __truediv__(self, other):
+        return self._path() / other
+
+    def __rtruediv__(self, other):
+        return other / self._path()
+
+    def __getattr__(self, name: str):
+        return getattr(self._path(), name)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, _DynamicPath):
+            return self._path() == other._path()
+        if isinstance(other, Path):
+            return self._path() == other
+        return False
+
+    def __hash__(self) -> int:
+        return hash(self._path())
+
+
+# Legacy module-level constants for callers that imported them once.
+# They are dynamic proxies so ``from node_internal import NODES_PATH`` inside
+# a test still follows later ``NODE_STATE_DIR`` changes.
+STATE_DIR = _DynamicPath(_state_dir)
+NODES_PATH = _DynamicPath(_nodes_path)
+TOKENS_PATH = _DynamicPath(_tokens_path)
+
+
+def _refresh_legacy_paths() -> None:
+    # Kept for compatibility; dynamic proxies already follow the env.
+    pass
+
+
+def __getattr__(name: str) -> Path:  # PEP 562
+    if name == "STATE_DIR":
+        return _state_dir()
+    if name == "NODES_PATH":
+        return _nodes_path()
+    if name == "TOKENS_PATH":
+        return _tokens_path()
+    raise AttributeError(name)
+
+
 NODE_STATE_THREAD_LOCK = threading.RLock()
 
 
@@ -52,9 +151,10 @@ class NodeStateError(RuntimeError):
 def node_state_lock(*, exclusive: bool):
     """Serialize Node/token transactions across threads and API workers."""
     with NODE_STATE_THREAD_LOCK:
+        _refresh_legacy_paths()
         try:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            lock_path = STATE_DIR / ".node-state.lock"
+            _state_dir().mkdir(parents=True, exist_ok=True)
+            lock_path = _state_dir() / ".node-state.lock"
             with lock_path.open("a+", encoding="utf-8") as handle:
                 operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
                 fcntl.flock(handle.fileno(), operation)
@@ -210,12 +310,13 @@ def _default_tokens() -> dict[str, Any]:
 
 def ensure_state() -> None:
     with node_state_lock(exclusive=True):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        if not NODES_PATH.exists():
+        _refresh_legacy_paths()
+        _state_dir().mkdir(parents=True, exist_ok=True)
+        if not _nodes_path().exists():
             if (
-                was_initialized(NODES_PATH)
-                or TOKENS_PATH.exists()
-                or was_initialized(TOKENS_PATH)
+                was_initialized(_nodes_path())
+                or _tokens_path().exists()
+                or was_initialized(_tokens_path())
             ):
                 raise NodeStateError(
                     "Node authority disappeared after initialization"
@@ -223,12 +324,12 @@ def ensure_state() -> None:
             _write_authority(_default_nodes())
             return
 
-        authority = _validate_nodes(read_json(NODES_PATH, _default_nodes()))
+        authority = _validate_nodes(read_json(_nodes_path(), _default_nodes()))
         if not isinstance(authority.get("tokens"), dict):
             # One-time migration from the former split token ledger. Keeping
             # the old file is intentional: rollback must not silently lose it.
-            if TOKENS_PATH.exists():
-                legacy = _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
+            if _tokens_path().exists():
+                legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens()))
                 authority["tokens"] = dict(legacy["tokens"])
                 _write_authority(authority)
             elif authority.get("nodes"):
@@ -240,21 +341,22 @@ def ensure_state() -> None:
                 _write_authority(authority)
         else:
             _validate_tokens(authority)
-            mark_initialized(NODES_PATH)
+            mark_initialized(_nodes_path())
 
 
 def _read_authority() -> dict[str, Any]:
-    if not NODES_PATH.exists():
-        detail = " disappeared after initialization" if was_initialized(NODES_PATH) else " is missing"
-        raise NodeStateError(f"Node authority {NODES_PATH}{detail}")
-    authority = _validate_nodes(read_json(NODES_PATH, _default_nodes()))
+    _refresh_legacy_paths()
+    if not _nodes_path().exists():
+        detail = " disappeared after initialization" if was_initialized(_nodes_path()) else " is missing"
+        raise NodeStateError(f"Node authority {_nodes_path()}{detail}")
+    authority = _validate_nodes(read_json(_nodes_path(), _default_nodes()))
     _validate_tokens(authority)
     # The rollback ledger is also a write-ahead consumption fuse. If a process
     # dies after committing that fuse but before replacing nodes.json, merge
     # every consumed record into the in-memory authority so the current build
     # also rejects reuse. A later successful authority write persists it.
-    if TOKENS_PATH.exists():
-        legacy = _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
+    if _tokens_path().exists():
+        legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens()))
         for digest, record in legacy["tokens"].items():
             if not isinstance(digest, str) or not isinstance(record, dict):
                 raise NodeStateError("bootstrap token fuse has an invalid record")
@@ -263,7 +365,7 @@ def _read_authority() -> dict[str, Any]:
             canonical = authority["tokens"].get(digest)
             if not isinstance(canonical, dict) or not canonical.get("consumed"):
                 authority["tokens"][digest] = dict(record)
-    elif was_initialized(TOKENS_PATH):
+    elif was_initialized(_tokens_path()):
         # A lost write-ahead fuse could hide consumption that never reached the
         # canonical file. Its absence is therefore not evidence of an empty
         # ledger, even when nodes.json itself remains readable.
@@ -272,10 +374,11 @@ def _read_authority() -> dict[str, Any]:
 
 
 def _write_authority(authority: dict[str, Any]) -> None:
+    _refresh_legacy_paths()
     _validate_nodes(authority)
     _validate_tokens(authority)
-    atomic_write_json(NODES_PATH, authority)
-    mark_initialized(NODES_PATH)
+    atomic_write_json(_nodes_path(), authority)
+    mark_initialized(_nodes_path())
 
 
 def _write_legacy_token_fuse(
@@ -287,9 +390,10 @@ def _write_legacy_token_fuse(
     the canonical authority commit can at worst burn a token if the later
     write fails; neither build can ever reuse it.
     """
+    _refresh_legacy_paths()
     legacy = (
-        _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
-        if TOKENS_PATH.exists()
+        _validate_tokens(read_json(_tokens_path(), _default_tokens()))
+        if _tokens_path().exists()
         else _default_tokens()
     )
     legacy["tokens"][digest] = {
@@ -298,8 +402,8 @@ def _write_legacy_token_fuse(
         "node_id": node_id,
         "session_id": session_id,
     }
-    atomic_write_json(TOKENS_PATH, legacy)
-    mark_initialized(TOKENS_PATH)
+    atomic_write_json(_tokens_path(), legacy)
+    mark_initialized(_tokens_path())
 
 
 def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
