@@ -8,13 +8,10 @@ logLevel: info
 authMethod: http
 authHTTPAddress: http://control-ui:8080/internal/ingest/auth
 authHTTPExclude:
-  - action: read
   - action: playback
   - action: api
   - action: metrics
   - action: pprof
-  - action: publish
-    path: output/relay
 
 rtsp: yes
 rtspAddress: :8554
@@ -46,4 +43,5 @@ paths:
     maxReaders: 4
   output/relay:
     source: publisher
-    maxReaders: 4
+    overridePublisher: false
+    maxReaders: 1

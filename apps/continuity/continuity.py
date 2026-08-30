@@ -15,7 +15,8 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst, GstApp  # noqa: E402
 
-from secret_files import read_secret_file_or_env  # noqa: E402
+from secret_files import read_secret_file_or_env, redact_stream_url  # noqa: E402
+from control_state import ControlStateReader  # noqa: E402
 from state import ActualAudio, AudioMode, ContinuityState, VideoSource  # noqa: E402
 
 
@@ -57,17 +58,6 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         return default
 
 
-def redact_url(url: str) -> str:
-    """Avoid writing a stream key/userinfo to status or logs."""
-    if "/" not in url:
-        return "<configured>"
-    scheme, _, rest = url.partition("://")
-    host, separator, _path = rest.partition("/")
-    if not separator:
-        return f"{scheme}://{host}/…"
-    return f"{scheme}://{host}/…"
-
-
 def _gst_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -91,12 +81,15 @@ class ContinuityPipeline:
             "PASSTHROUGH",
         ):
             raise ValueError(f"unsupported PROFILE: {self.profile}")
-        self.input_uri = os.getenv("INPUT_URI", "rtsp://mediamtx:8554/live/input")
+        self.input_uri = read_secret_file_or_env(
+            "INPUT_URI", "rtsp://mediamtx:8554/live/input"
+        )
         self.egress_url = read_secret_file_or_env(
             "EGRESS_URL", "rtmp://mediamtx:1935/output/relay"
         )
         self.state_dir = Path(os.getenv("STATE_DIR", "/state"))
         self.control_path = self.state_dir / "control.json"
+        self.control_reader = ControlStateReader(self.control_path)
         self.status_path = self.state_dir / "status.json"
 
         self.width = env_int("VIDEO_WIDTH", 1280)
@@ -131,12 +124,12 @@ class ContinuityPipeline:
         self.last_control_version = 0
         self.last_command_id: str | None = None
         self.last_error: str | None = None
+        self.control_error: str | None = None
         self.started_at = time.time()
         self.main_loop = GLib.MainLoop()
 
     def run(self) -> None:
         Gst.init(None)
-        self._ensure_default_control()
         self._build_output_pipeline()
         assert self.pipeline is not None
 
@@ -161,8 +154,8 @@ class ContinuityPipeline:
 
         LOG.info(
             "continuity pipeline started input=%s egress=%s profile=%s",
-            self.input_uri,
-            redact_url(self.egress_url),
+            redact_stream_url(self.input_uri),
+            redact_stream_url(self.egress_url),
             self.profile,
         )
         self.main_loop.run()
@@ -175,18 +168,6 @@ class ContinuityPipeline:
         for thread in self._bridge_threads:
             thread.join(timeout=3.0)
         self.pipeline.set_state(Gst.State.NULL)
-
-    def _ensure_default_control(self) -> None:
-        if not self.control_path.exists():
-            atomic_write_json(
-                self.control_path,
-                {
-                    "audio_mode": AudioMode.LIVE,
-                    "version": 0,
-                    "command_id": None,
-                    "updated_at": time.time(),
-                },
-            )
 
     def _build_output_pipeline(self) -> None:
         egress_literal = json.dumps(self.egress_url)
@@ -576,22 +557,11 @@ class ContinuityPipeline:
     def _reconcile(self) -> bool:
         now_wall = time.time()
         now_mono = time.monotonic()
-        control = read_json(
-            self.control_path,
-            {
-                "audio_mode": AudioMode.LIVE,
-                "version": 0,
-                "command_id": None,
-            },
-        )
-        try:
-            desired = AudioMode(str(control.get("audio_mode", AudioMode.LIVE)))
-        except ValueError:
-            desired = AudioMode.LIVE
-            self.last_error = "INVALID_AUDIO_MODE"
+        control, self.control_error = self.control_reader.read()
+        desired = AudioMode(control.audio_mode)
         self.model.set_audio_mode(desired)
-        self.last_control_version = int(control.get("version", 0))
-        self.last_command_id = control.get("command_id")
+        self.last_control_version = control.version
+        self.last_command_id = control.command_id
 
         decision = self.model.decide(now_mono)
         assert self.video_selector is not None and self.audio_selector is not None
@@ -626,8 +596,8 @@ class ContinuityPipeline:
                 "command_id": self.last_command_id,
                 "source_generation": self.source_generation,
                 "source_retrying": self._input_pipeline is None,
-                "last_error": self.last_error,
-                "egress": redact_url(self.egress_url),
+                "last_error": self.control_error or self.last_error,
+                "egress": redact_stream_url(self.egress_url),
                 "started_at": self.started_at,
                 "updated_at": now_wall,
             },

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/session-events.override.yml"
@@ -8,6 +9,7 @@ base_url="${BASE_URL:-http://127.0.0.1:8080}"
 publisher_pid=""
 email="session-events-$(date +%s)-$RANDOM@example.invalid"
 password='SmokePassword123!'
+# shellcheck disable=SC2034 # documented bootstrap token; compose override uses literal for determinism
 bootstrap_token="session-events-node-token"
 
 cat >"$override" <<'YAML'
@@ -111,7 +113,7 @@ wait_assigned_node() {
   local timeout="${1:-45}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 session_id=sys.argv[1]
@@ -123,7 +125,7 @@ raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_i
     sleep 1
   done
   echo "Node did not bind to user Session" >&2
-  curl -fsS "$base_url/internal/nodes" >&2 || true
+  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
   return 1
 }
 

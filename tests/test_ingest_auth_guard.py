@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from ingest_api import MediaMTXAuthRequest, authorize_mediamtx_publish  # noqa: E402
-from ingest_auth_guard import IngestAuthGuard, IngestAuthGuardConfig  # noqa: E402
+from ingest_auth_guard import (  # noqa: E402
+    IngestAuthGuard,
+    IngestAuthGuardConfig,
+    IngestAuthGuardStateError,
+)
 from ingest_store import IngestCredentialStore  # noqa: E402
 
 
@@ -49,7 +54,71 @@ def _config(
     )
 
 
+def _record_failure_in_process(
+    state_dir: str,
+    start: multiprocessing.synchronize.Event,
+    source_ip: str,
+    username: str,
+    now: float,
+) -> None:
+    guard = IngestAuthGuard(state_dir, config=_config())
+    start.wait(timeout=5)
+    guard.record_failure(source_ip=source_ip, username=username, now=now)
+
+
 class IngestAuthGuardTest(unittest.TestCase):
+    def test_initialized_state_deletion_and_corruption_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = IngestAuthGuard(tmp, config=_config())
+            guard.record_failure(
+                source_ip="203.0.113.1", username="candidate", now=1.0
+            )
+            guard.path.unlink()
+            with self.assertRaises(IngestAuthGuardStateError):
+                guard.check(
+                    source_ip="203.0.113.1", username="candidate", now=2.0
+                )
+            with self.assertRaises(IngestAuthGuardStateError):
+                IngestAuthGuard(tmp, config=_config())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "ingest_auth_guard.json")
+            path.write_text("{broken", encoding="utf-8")
+            with self.assertRaises(IngestAuthGuardStateError):
+                IngestAuthGuard(tmp, config=_config())
+
+    def test_processes_preserve_both_failure_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = multiprocessing.get_context("fork")
+            start = context.Event()
+            processes = [
+                context.Process(
+                    target=_record_failure_in_process,
+                    args=(
+                        tmp,
+                        start,
+                        f"203.0.113.{index + 1}",
+                        f"candidate-{index}",
+                        10.0 + index,
+                    ),
+                )
+                for index in range(2)
+            ]
+            for process in processes:
+                process.start()
+            start.set()
+            for process in processes:
+                process.join(timeout=10)
+                self.assertEqual(process.exitcode, 0)
+
+            snapshot = IngestAuthGuard(tmp, config=_config()).snapshot()
+            self.assertEqual(len(snapshot["buckets"]), 4)
+            failed_events = [
+                event
+                for event in snapshot["events"]
+                if event.get("type") == "ingest.auth_failed"
+            ]
+            self.assertEqual(len(failed_events), 2)
     def test_credential_lockout_expires_with_a_fresh_failure_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             guard = IngestAuthGuard(tmp, config=_config(max_credential=3, lockout=30.0))

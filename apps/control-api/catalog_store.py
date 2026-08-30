@@ -6,22 +6,48 @@ without the web framework. The API layer in catalog_api.py wraps this store.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from destination_probe import DestinationProbeError, probe_destination
+from state_safety import mark_initialized, was_initialized
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
 CATALOG_PATH = STATE_DIR / "catalog.json"
-LOCK = threading.Lock()
+CATALOG_LOCK_PATH = STATE_DIR / ".catalog.lock"
+LOCK = threading.RLock()
+
+
+class CatalogStateError(RuntimeError):
+    pass
+
+
+@contextmanager
+def _catalog_lock(*, exclusive: bool):
+    with LOCK:
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with CATALOG_LOCK_PATH.open("a+", encoding="utf-8") as handle:
+                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(handle.fileno(), operation)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except CatalogStateError:
+            raise
+        except OSError as exc:
+            raise CatalogStateError("catalog state cannot be locked") from exc
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -33,6 +59,12 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        mark_initialized(path)
     finally:
         try:
             os.unlink(temporary)
@@ -44,9 +76,17 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
-        return value if isinstance(value, dict) else default
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        if was_initialized(path):
+            raise CatalogStateError(
+                f"catalog state {path} disappeared after initialization"
+            )
         return default
+    except (json.JSONDecodeError, OSError) as exc:
+        raise CatalogStateError(f"catalog state {path} cannot be read") from exc
+    if not isinstance(value, dict):
+        raise CatalogStateError(f"catalog state {path} has invalid structure")
+    return value
 
 
 def _default_catalog() -> dict[str, Any]:
@@ -54,13 +94,30 @@ def _default_catalog() -> dict[str, Any]:
 
 
 def ensure_catalog() -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if not CATALOG_PATH.exists():
-        atomic_write_json(CATALOG_PATH, _default_catalog())
+    with _catalog_lock(exclusive=True):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if not CATALOG_PATH.exists():
+            if was_initialized(CATALOG_PATH):
+                raise CatalogStateError("catalog state disappeared after initialization")
+            atomic_write_json(CATALOG_PATH, _default_catalog())
+        else:
+            _load()
+            mark_initialized(CATALOG_PATH)
 
 
 def _load() -> dict[str, Any]:
-    return read_json(CATALOG_PATH, _default_catalog())
+    catalog = read_json(CATALOG_PATH, _default_catalog())
+    if not isinstance(catalog.get("destinations"), dict) or not isinstance(
+        catalog.get("assets"), dict
+    ):
+        raise CatalogStateError("catalog state has invalid structure")
+    for section in ("destinations", "assets"):
+        if any(
+            not isinstance(key, str) or not isinstance(item, dict)
+            for key, item in catalog[section].items()
+        ):
+            raise CatalogStateError("catalog state has an invalid record")
+    return catalog
 
 
 def _save(catalog: dict[str, Any]) -> None:
@@ -91,7 +148,7 @@ def create_destination(
     server_url: str,
     secret_ref: str,
 ) -> dict[str, Any]:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         item_id = str(uuid.uuid4())
         now = time.time()
@@ -116,16 +173,17 @@ def create_destination(
 
 
 def list_destinations(user_id: str) -> list[dict[str, Any]]:
-    catalog = _load()
-    return [
-        item
-        for item in catalog.get("destinations", {}).values()
-        if item.get("user_id") == user_id
-    ]
+    with _catalog_lock(exclusive=False):
+        catalog = _load()
+        return [
+            dict(item)
+            for item in catalog["destinations"].values()
+            if item.get("user_id") == user_id
+        ]
 
 
 def get_destination(destination_id: str, user_id: str) -> dict[str, Any]:
-    with LOCK:
+    with _catalog_lock(exclusive=False):
         catalog = _load()
         return dict(_get_owned(catalog, "destinations", destination_id, user_id))
 
@@ -139,7 +197,7 @@ def update_destination(
     secret_ref: str | None = None,
     enabled: bool | None = None,
 ) -> dict[str, Any]:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
         if display_name is not None:
@@ -162,7 +220,7 @@ def update_destination(
 
 
 def delete_destination(destination_id: str, user_id: str) -> None:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         _get_owned(catalog, "destinations", destination_id, user_id)
         del catalog["destinations"][destination_id]
@@ -183,7 +241,7 @@ def verify_destination(
     cannot stamp a result for an old URL onto a newer destination.
     """
     verifier = probe or probe_destination
-    with LOCK:
+    with _catalog_lock(exclusive=False):
         catalog = _load()
         item = dict(_get_owned(catalog, "destinations", destination_id, user_id))
         url = str(item.get("server_url", ""))
@@ -211,7 +269,7 @@ def verify_destination(
         _record_verification_failure(destination_id, user_id, url, reason)
         raise CatalogVerifyFailed(reason)
 
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         current = _get_owned(catalog, "destinations", destination_id, user_id)
         if current.get("server_url") != url:
@@ -238,7 +296,7 @@ def _record_verification_failure(
     expected_url: str,
     reason: str,
 ) -> None:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
         if item.get("server_url") != expected_url:
@@ -252,7 +310,7 @@ def _record_verification_failure(
 
 
 def create_asset(*, user_id: str, source_object_key: str) -> dict[str, Any]:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         asset_id = str(uuid.uuid4())
         now = time.time()
@@ -270,22 +328,23 @@ def create_asset(*, user_id: str, source_object_key: str) -> dict[str, Any]:
 
 
 def list_assets(user_id: str) -> list[dict[str, Any]]:
-    catalog = _load()
-    return [
-        item
-        for item in catalog.get("assets", {}).values()
-        if item.get("user_id") == user_id
-    ]
+    with _catalog_lock(exclusive=False):
+        catalog = _load()
+        return [
+            dict(item)
+            for item in catalog["assets"].values()
+            if item.get("user_id") == user_id
+        ]
 
 
 def get_asset(asset_id: str, user_id: str) -> dict[str, Any]:
-    with LOCK:
+    with _catalog_lock(exclusive=False):
         catalog = _load()
         return dict(_get_owned(catalog, "assets", asset_id, user_id))
 
 
 def delete_asset(asset_id: str, user_id: str) -> None:
-    with LOCK:
+    with _catalog_lock(exclusive=True):
         catalog = _load()
         _get_owned(catalog, "assets", asset_id, user_id)
         del catalog["assets"][asset_id]

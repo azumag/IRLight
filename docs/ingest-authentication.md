@@ -2,10 +2,9 @@
 
 ## Scope
 
-This slice implements the first authenticated ingest boundary for Issue #3.
-It covers credential issuance/rotation/revocation and MediaMTX publish
-authorization for RTMP and SRT. RTMPS certificate termination and media-format
-policy enforcement are intentionally left for the next slice.
+This boundary covers credential issuance/rotation/revocation, MediaMTX
+authorization for RTMP/SRT, node-local outage fallback, abuse lockout, media
+format enforcement and ingest event propagation.
 
 ## Credential model
 
@@ -58,18 +57,25 @@ X-CSRF-Token: ...
 
 ## MediaMTX authentication
 
-MediaMTX uses external HTTP authentication:
+MediaMTX uses the Node Agent's external HTTP authentication proxy:
 
 ```yaml
 authMethod: http
-authHTTPAddress: http://control-ui:8080/internal/ingest/auth
+authHTTPAddress: http://node-agent:8090/auth
 ```
 
-Production nodes override `authHTTPAddress` with `NODE_INGEST_AUTH_URL` /
-`MTX_AUTHHTTPADDRESS` so the Media Node can reach the Control Plane.
+The proxy forwards user publisher/reader decisions to the Control Plane and
+applies bounded positive-cache fallback only to previously accepted publisher
+reconnects. Internal media traffic is also authenticated: the Node Agent
+generates a random `irlight-internal` credential, keeps the secret in memory,
+and writes only authenticated URIs to 0600 tmpfs files. The local proxy accepts
+that credential for exactly these tuples:
 
-Only publish to `live/input` is authenticated. Internal reads and the
-`output/relay` publisher used by the Continuity Engine are excluded.
+- RTMP publish `output/relay`;
+- RTSP read `live/input`;
+- RTSP read `output/relay`.
+
+Playback, API, metrics and pprof are the only configured auth exclusions.
 
 The Control Plane accepts a publish only when:
 
@@ -124,10 +130,8 @@ must not be exposed as an unrestricted public API. Production deployment still
 needs the final machine-network protection (private network, mTLS or equivalent)
 before public beta.
 
-The following are intentionally not included yet:
+The remaining deployment validation is:
 
-- RTMPS listener certificate provisioning / rotation;
-- ingest auth attempt rate limiting and account/IP lockout;
-- H.264/AAC, resolution, fps, bitrate and GOP enforcement;
-- `ingest.connected` / `ingest.disconnected` audit event propagation;
-- node-local auth cache for temporary Control Plane outages.
+- automated production RTMPS certificate provisioning / rotation;
+- final private-network or mTLS protection for machine endpoints;
+- real OBS/mobile/hardware-encoder compatibility validation.

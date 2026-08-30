@@ -8,16 +8,21 @@ they must never be exposed to the public internet.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
+import math
 import os
+import secrets
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from catalog_store import CatalogNotFound, get_destination as store_get_destination
 from destination_secret_store import (
@@ -30,22 +35,81 @@ from egress_destination import EgressDestinationError, build_egress_url
 from fake_provider_for_api import default_store, provider_mode
 from pipeline_health import apply_pipeline_health
 from session_store import ACTIVE_STATES
+from state_safety import mark_initialized, was_initialized
 
 
 STATE_DIR = Path(os.getenv("NODE_STATE_DIR", "/state"))
 NODES_PATH = STATE_DIR / "nodes.json"
 TOKENS_PATH = STATE_DIR / "bootstrap_tokens.json"
+NODE_STATE_THREAD_LOCK = threading.RLock()
 
 
-class BootstrapRequest(BaseModel):
+class NodeStateError(RuntimeError):
+    """Raised when persisted Node authority cannot be read safely."""
+
+
+@contextmanager
+def node_state_lock(*, exclusive: bool):
+    """Serialize Node/token transactions across threads and API workers."""
+    with NODE_STATE_THREAD_LOCK:
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            lock_path = STATE_DIR / ".node-state.lock"
+            with lock_path.open("a+", encoding="utf-8") as handle:
+                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(handle.fileno(), operation)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except NodeStateError:
+            raise
+        except OSError as exc:
+            raise NodeStateError("cannot lock Node state") from exc
+
+
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+BoundedReason = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class BootstrapRequest(StrictRequest):
     provider_server_id: str = Field(min_length=1, max_length=200)
     boot_id: str = Field(min_length=1, max_length=200)
     agent_version: str = Field(min_length=1, max_length=100)
+    bootstrap_request_id: str = Field(min_length=16, max_length=200)
+    node_access_token: str = Field(min_length=32, max_length=200)
     public_address: str | None = Field(default=None, max_length=200)
     private_address: str | None = Field(default=None, max_length=200)
 
 
-class IngestObservationRequest(BaseModel):
+class TrackObservation(StrictRequest):
+    codec: str = Field(min_length=1, max_length=100)
+    width: int | None = Field(default=None, ge=1, le=16_384)
+    height: int | None = Field(default=None, ge=1, le=16_384)
+    profile: str | int | None = Field(default=None)
+    level: str | int | None = Field(default=None)
+    sampleRate: int | None = Field(default=None, ge=1, le=768_000)
+    channelCount: int | None = Field(default=None, ge=1, le=64)
+
+
+class QualityObservation(StrictRequest):
+    sample_elapsed_seconds: float | None = Field(default=None, ge=0, le=60)
+    video_frames: int | None = Field(default=None, ge=0, le=1_000_000)
+    audio_frames: int | None = Field(default=None, ge=0, le=10_000_000)
+    video_fps: float | None = Field(default=None, ge=0, le=1_000)
+    video_timestamp_span_seconds: float | None = Field(default=None, ge=0, le=60)
+    audio_timestamp_span_seconds: float | None = Field(default=None, ge=0, le=60)
+    keyframes: int | None = Field(default=None, ge=0, le=1_000_000)
+    max_gop_seconds: float | None = Field(default=None, ge=0, le=60)
+    video_timestamp_regressions: int | None = Field(default=None, ge=0, le=1_000_000)
+    audio_timestamp_regressions: int | None = Field(default=None, ge=0, le=1_000_000)
+    error: str | None = Field(default=None, max_length=200)
+
+
+class IngestObservationRequest(StrictRequest):
     status: str = Field(
         pattern="^(OFFLINE|UNKNOWN|PENDING|ACCEPTED|WARNING|DEGRADED|REJECTED)$"
     )
@@ -55,16 +119,16 @@ class IngestObservationRequest(BaseModel):
     source_id: str | None = Field(default=None, max_length=200)
     bitrate_bps: float | None = Field(default=None, ge=0)
     max_bitrate_bps: int | None = Field(default=None, ge=0)
-    tracks: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
-    reasons: list[str] = Field(default_factory=list, max_length=16)
-    warnings: list[str] = Field(default_factory=list, max_length=16)
-    quality: dict[str, Any] | None = None
+    tracks: list[TrackObservation] = Field(default_factory=list, max_length=8)
+    reasons: list[BoundedReason] = Field(default_factory=list, max_length=16)
+    warnings: list[BoundedReason] = Field(default_factory=list, max_length=16)
+    quality: QualityObservation | None = None
     enforced: bool = False
     enforcement_error: str | None = Field(default=None, max_length=200)
     observed_at: float
 
 
-class EgressObservationRequest(BaseModel):
+class EgressObservationRequest(StrictRequest):
     status: str = Field(
         pattern="^(UNKNOWN|STARTING|CONNECTED|RECONNECTING|AUTH_FAILED|FAILED|STOPPED)$"
     )
@@ -78,7 +142,7 @@ class EgressObservationRequest(BaseModel):
     observed_at: float
 
 
-class RelayClientObservationRequest(BaseModel):
+class RelayClientObservationRequest(StrictRequest):
     status: str = Field(pattern="^(UNKNOWN|CONNECTED|DISCONNECTED)$")
     connected: bool = False
     reader_count: int = Field(default=0, ge=0)
@@ -86,7 +150,7 @@ class RelayClientObservationRequest(BaseModel):
     observed_at: float
 
 
-class HeartbeatRequest(BaseModel):
+class HeartbeatRequest(StrictRequest):
     status: str = Field(
         default="READY", pattern="^(BOOTSTRAPPING|READY|STOPPING|STOPPED|FAILED)$"
     )
@@ -111,6 +175,11 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         try:
             os.unlink(temporary)
@@ -122,13 +191,17 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
-        return value if isinstance(value, dict) else default
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
         return default
+    except (json.JSONDecodeError, OSError) as exc:
+        raise NodeStateError(f"cannot read Node state {path}") from exc
+    if not isinstance(value, dict):
+        raise NodeStateError(f"invalid Node state payload in {path}")
+    return value
 
 
 def _default_nodes() -> dict[str, Any]:
-    return {"nodes": {}, "next_node_seq": 1}
+    return {"nodes": {}, "next_node_seq": 1, "tokens": {}}
 
 
 def _default_tokens() -> dict[str, Any]:
@@ -136,11 +209,187 @@ def _default_tokens() -> dict[str, Any]:
 
 
 def ensure_state() -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with node_state_lock(exclusive=True):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if not NODES_PATH.exists():
+            if (
+                was_initialized(NODES_PATH)
+                or TOKENS_PATH.exists()
+                or was_initialized(TOKENS_PATH)
+            ):
+                raise NodeStateError(
+                    "Node authority disappeared after initialization"
+                )
+            _write_authority(_default_nodes())
+            return
+
+        authority = _validate_nodes(read_json(NODES_PATH, _default_nodes()))
+        if not isinstance(authority.get("tokens"), dict):
+            # One-time migration from the former split token ledger. Keeping
+            # the old file is intentional: rollback must not silently lose it.
+            if TOKENS_PATH.exists():
+                legacy = _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
+                authority["tokens"] = dict(legacy["tokens"])
+                _write_authority(authority)
+            elif authority.get("nodes"):
+                raise NodeStateError(
+                    "bootstrap token ledger is missing for existing Nodes"
+                )
+            else:
+                authority["tokens"] = {}
+                _write_authority(authority)
+        else:
+            _validate_tokens(authority)
+            mark_initialized(NODES_PATH)
+
+
+def _read_authority() -> dict[str, Any]:
     if not NODES_PATH.exists():
-        atomic_write_json(NODES_PATH, _default_nodes())
-    if not TOKENS_PATH.exists():
-        atomic_write_json(TOKENS_PATH, _default_tokens())
+        detail = " disappeared after initialization" if was_initialized(NODES_PATH) else " is missing"
+        raise NodeStateError(f"Node authority {NODES_PATH}{detail}")
+    authority = _validate_nodes(read_json(NODES_PATH, _default_nodes()))
+    _validate_tokens(authority)
+    # The rollback ledger is also a write-ahead consumption fuse. If a process
+    # dies after committing that fuse but before replacing nodes.json, merge
+    # every consumed record into the in-memory authority so the current build
+    # also rejects reuse. A later successful authority write persists it.
+    if TOKENS_PATH.exists():
+        legacy = _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
+        for digest, record in legacy["tokens"].items():
+            if not isinstance(digest, str) or not isinstance(record, dict):
+                raise NodeStateError("bootstrap token fuse has an invalid record")
+            if not record.get("consumed"):
+                continue
+            canonical = authority["tokens"].get(digest)
+            if not isinstance(canonical, dict) or not canonical.get("consumed"):
+                authority["tokens"][digest] = dict(record)
+    elif was_initialized(TOKENS_PATH):
+        # A lost write-ahead fuse could hide consumption that never reached the
+        # canonical file. Its absence is therefore not evidence of an empty
+        # ledger, even when nodes.json itself remains readable.
+        raise NodeStateError("bootstrap token fuse disappeared after initialization")
+    return authority
+
+
+def _write_authority(authority: dict[str, Any]) -> None:
+    _validate_nodes(authority)
+    _validate_tokens(authority)
+    atomic_write_json(NODES_PATH, authority)
+    mark_initialized(NODES_PATH)
+
+
+def _write_legacy_token_fuse(
+    digest: str, *, node_id: str, session_id: str
+) -> None:
+    """Keep rollback to the former split-ledger build fail-closed.
+
+    Both current and former builds read this consumed bit. Writing it before
+    the canonical authority commit can at worst burn a token if the later
+    write fails; neither build can ever reuse it.
+    """
+    legacy = (
+        _validate_tokens(read_json(TOKENS_PATH, _default_tokens()))
+        if TOKENS_PATH.exists()
+        else _default_tokens()
+    )
+    legacy["tokens"][digest] = {
+        "consumed": True,
+        "consumed_at": time.time(),
+        "node_id": node_id,
+        "session_id": session_id,
+    }
+    atomic_write_json(TOKENS_PATH, legacy)
+    mark_initialized(TOKENS_PATH)
+
+
+def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, dict):
+        raise NodeStateError("Node state has no nodes mapping")
+    try:
+        next_node_seq = int(payload.get("next_node_seq", 1))
+    except (TypeError, ValueError) as exc:
+        raise NodeStateError("Node state has an invalid sequence") from exc
+    if next_node_seq < 1:
+        raise NodeStateError("Node state has an invalid sequence")
+    for node_id, node in nodes.items():
+        if not isinstance(node_id, str) or not isinstance(node, dict):
+            raise NodeStateError("Node state has an invalid Node record")
+        if node.get("node_id") != node_id:
+            raise NodeStateError("Node state has an inconsistent Node id")
+        if not isinstance(node.get("session_id"), str) or not node.get("session_id"):
+            raise NodeStateError("Node state has an invalid Session binding")
+        access_digest = node.get("access_token_sha256")
+        if not _is_sha256(access_digest):
+            raise NodeStateError("Node state has an invalid access token digest")
+        if "session_assigned" in node and not isinstance(node["session_assigned"], bool):
+            raise NodeStateError("Node state has an invalid assignment flag")
+    payload["next_node_seq"] = next_node_seq
+    return payload
+
+
+def _validate_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+    token_records = payload.get("tokens")
+    if not isinstance(token_records, dict):
+        raise NodeStateError("bootstrap token state has no tokens mapping")
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else None
+    canonical_fields = {
+        "bootstrap_request_id",
+        "provider_server_id",
+        "boot_id",
+        "node_access_token_sha256",
+    }
+    for digest, record in token_records.items():
+        if not _is_sha256(digest) or not isinstance(record, dict):
+            raise NodeStateError("bootstrap token state has an invalid record")
+        if record.get("consumed") is not True:
+            # Ambiguous or reverted consumption must never become reusable.
+            raise NodeStateError("bootstrap token state has an invalid consumed flag")
+        consumed_at = record.get("consumed_at")
+        if (
+            isinstance(consumed_at, bool)
+            or not isinstance(consumed_at, (int, float))
+            or not math.isfinite(float(consumed_at))
+            or float(consumed_at) < 0
+        ):
+            raise NodeStateError("bootstrap token state has an invalid timestamp")
+        node_id = record.get("node_id")
+        session_id = record.get("session_id")
+        if not isinstance(node_id, str) or not node_id or not isinstance(session_id, str) or not session_id:
+            raise NodeStateError("bootstrap token state has an invalid binding")
+
+        present_canonical = canonical_fields.intersection(record)
+        if present_canonical and present_canonical != canonical_fields:
+            raise NodeStateError("bootstrap token state has a partial attempt identity")
+        if present_canonical:
+            for field in ("bootstrap_request_id", "provider_server_id", "boot_id"):
+                if not isinstance(record.get(field), str) or not record.get(field):
+                    raise NodeStateError("bootstrap token state has an invalid attempt identity")
+            access_digest = record.get("node_access_token_sha256")
+            if not _is_sha256(access_digest):
+                raise NodeStateError("bootstrap token state has an invalid access digest")
+            if nodes is not None:
+                node = nodes.get(node_id)
+                if not isinstance(node, dict):
+                    raise NodeStateError("bootstrap token references a missing Node")
+                if (
+                    node.get("session_id") != session_id
+                    or node.get("provider_server_id") != record.get("provider_server_id")
+                    or node.get("boot_id") != record.get("boot_id")
+                    or not secrets.compare_digest(
+                        str(node.get("access_token_sha256", "")), str(access_digest)
+                    )
+                ):
+                    raise NodeStateError("bootstrap token and Node authority disagree")
+    return payload
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def hash_token(token: str) -> str:
@@ -150,6 +399,75 @@ def hash_token(token: str) -> str:
 def configured_token_digests() -> set[str]:
     raw = os.getenv("NODE_BOOTSTRAP_TOKENS", "")
     return {hash_token(item.strip()) for item in raw.split(",") if item.strip()}
+
+
+def configured_admin_token_digests() -> set[str]:
+    values = [
+        item.strip()
+        for item in os.getenv("NODE_INTERNAL_ADMIN_TOKENS", "").split(",")
+        if item.strip()
+    ]
+    token_file = os.getenv("NODE_INTERNAL_ADMIN_TOKEN_FILE", "").strip()
+    if token_file:
+        try:
+            value = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail="node admin authentication is unavailable"
+            ) from exc
+        if value:
+            values.append(value)
+    return {hash_token(value) for value in values}
+
+
+def _bearer(authorization: str | None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="empty bearer token")
+    return token
+
+
+def _require_node_access(node: dict[str, Any], authorization: str | None) -> None:
+    supplied = hash_token(_bearer(authorization))
+    expected = str(node.get("access_token_sha256", ""))
+    if not expected or not secrets.compare_digest(expected, supplied):
+        raise HTTPException(status_code=401, detail="invalid node access token")
+
+
+def require_assigned_node(
+    authorization: str | None,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Authenticate one Node and bind an internal request to its Session."""
+    supplied = hash_token(_bearer(authorization))
+    with node_state_lock(exclusive=False):
+        authority = _read_authority()
+        matched: dict[str, Any] | None = None
+        for node in authority["nodes"].values():
+            expected = str(node.get("access_token_sha256", ""))
+            if expected and secrets.compare_digest(expected, supplied):
+                matched = node
+                break
+        if (
+            matched is None
+            or not bool(matched.get("session_assigned"))
+            or str(matched.get("session_id") or "") != session_id
+            or str(matched.get("desired_state", "RUNNING")) != "RUNNING"
+        ):
+            raise HTTPException(status_code=401, detail="invalid node access token")
+        return dict(matched)
+
+
+def _require_admin_access(authorization: str | None) -> None:
+    supplied = hash_token(_bearer(authorization))
+    configured = configured_admin_token_digests()
+    if not configured or not any(
+        secrets.compare_digest(expected, supplied) for expected in configured
+    ):
+        raise HTTPException(status_code=401, detail="invalid node admin token")
 
 
 def _issue_node_id(state: dict[str, Any]) -> str:
@@ -180,17 +498,19 @@ def _resolve_assigned_session(provider_server_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _resolve_egress_url(assigned_session: dict[str, Any] | None) -> str:
+def _resolve_egress_delivery(
+    assigned_session: dict[str, Any] | None,
+) -> tuple[str, str | None]:
     """Resolve a Session Destination only for the bootstrap response.
 
     The fully credentialed URL is never copied into Session or Node state. The
     Node Agent immediately writes it into its tmpfs secret file.
     """
     if assigned_session is not None and assigned_session.get("egress_mode") == "RELAY_ONLY":
-        return ""
+        return "", None
 
     if assigned_session is None or not assigned_session.get("destination_id"):
-        return os.getenv("NODE_EGRESS_URL", "")
+        return os.getenv("NODE_EGRESS_URL", ""), os.getenv("NODE_EGRESS_VERIFIED_PEER_IP")
 
     user_id = str(assigned_session.get("user_id", ""))
     destination_id = str(assigned_session["destination_id"])
@@ -218,9 +538,16 @@ def _resolve_egress_url(assigned_session: dict[str, Any] | None) -> str:
         raise HTTPException(status_code=500, detail="session destination secret is unavailable") from exc
 
     try:
-        return build_egress_url(destination, secret)
+        transport = destination.get("verification_transport") or {}
+        peer_ip = str(transport.get("peer_ip") or "").strip() or None
+        return build_egress_url(destination, secret), peer_ip
     except EgressDestinationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _resolve_egress_url(assigned_session: dict[str, Any] | None) -> str:
+    """Backward-compatible URL-only helper for callers that do not deliver secrets."""
+    return _resolve_egress_delivery(assigned_session)[0]
 
 
 def _ingest_event_types(
@@ -494,23 +821,55 @@ def bootstrap(
     request: BootstrapRequest,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, Any]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="empty bearer token")
+    token = _bearer(authorization)
     digest = hash_token(token)
     if digest not in configured_token_digests():
         raise HTTPException(status_code=401, detail="unknown bootstrap token")
 
-    tokens = read_json(TOKENS_PATH, _default_tokens())
-    if tokens["tokens"].get(digest, {}).get("consumed"):
+    with node_state_lock(exclusive=True):
+        return _bootstrap_locked(request, digest)
+
+
+def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
+    """Consume one bootstrap token and create one Node under a single write."""
+    authority = _read_authority()
+    token_records = authority["tokens"]
+    consumed = token_records.get(digest)
+    if isinstance(consumed, dict) and consumed.get("consumed"):
+        node = authority["nodes"].get(consumed.get("node_id"))
+        supplied_access_digest = hash_token(request.node_access_token)
+        same_attempt = bool(
+            isinstance(node, dict)
+            and consumed.get("bootstrap_request_id") == request.bootstrap_request_id
+            and consumed.get("provider_server_id") == request.provider_server_id
+            and consumed.get("boot_id") == request.boot_id
+            and secrets.compare_digest(
+                str(consumed.get("node_access_token_sha256", "")),
+                supplied_access_digest,
+            )
+            and secrets.compare_digest(
+                str(node.get("access_token_sha256", "")),
+                supplied_access_digest,
+            )
+        )
+        if same_attempt:
+            assigned_session = (
+                default_store().get(str(node["session_id"]))
+                if node.get("session_assigned")
+                else None
+            )
+            if node.get("session_assigned") and assigned_session is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="assigned Session is no longer available",
+                )
+            return _bootstrap_response(
+                node, assigned_session, request.node_access_token
+            )
         raise HTTPException(status_code=409, detail="bootstrap token already consumed")
 
     assigned_session = _resolve_assigned_session(request.provider_server_id)
-    egress_url = _resolve_egress_url(assigned_session)
-    nodes = read_json(NODES_PATH, _default_nodes())
-    node_id = _issue_node_id(nodes)
+    node_id = _issue_node_id(authority)
     session_id = (
         str(assigned_session["session_id"])
         if assigned_session is not None
@@ -538,6 +897,13 @@ def bootstrap(
         except (KeyError, RuntimeError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    node_access_digest = hash_token(request.node_access_token)
+    egress_mode = (
+        "RELAY_ONLY"
+        if assigned_session is not None
+        and assigned_session.get("egress_mode") == "RELAY_ONLY"
+        else "DIRECT_PUSH"
+    )
     node = {
         "node_id": node_id,
         "session_id": session_id,
@@ -545,6 +911,7 @@ def bootstrap(
         "destination_id": (
             assigned_session.get("destination_id") if assigned_session is not None else None
         ),
+        "egress_mode": egress_mode,
         "provider_server_id": request.provider_server_id,
         "boot_id": request.boot_id,
         "agent_version": request.agent_version,
@@ -563,32 +930,55 @@ def bootstrap(
         "events": [],
         "next_event_seq": 1,
         "created_at": time.time(),
+        "access_token_sha256": node_access_digest,
     }
-    nodes["nodes"][node_id] = node
-    atomic_write_json(NODES_PATH, nodes)
+    authority["nodes"][node_id] = node
 
-    tokens["tokens"][digest] = {
+    # Node and token consumption share one atomic authority file. The Agent
+    # chooses and retains its access token, so an identical retry can prove
+    # ownership without the Control Plane persisting or reissuing a raw token.
+    token_records[digest] = {
         "consumed": True,
         "consumed_at": time.time(),
         "node_id": node_id,
         "session_id": session_id,
+        "bootstrap_request_id": request.bootstrap_request_id,
+        "provider_server_id": request.provider_server_id,
+        "boot_id": request.boot_id,
+        "node_access_token_sha256": node_access_digest,
     }
-    atomic_write_json(TOKENS_PATH, tokens)
+    _write_legacy_token_fuse(digest, node_id=node_id, session_id=session_id)
+    _write_authority(authority)
+
+    return _bootstrap_response(node, assigned_session, request.node_access_token)
+
+
+def _bootstrap_response(
+    node: dict[str, Any],
+    assigned_session: dict[str, Any] | None,
+    node_access_token: str,
+) -> dict[str, Any]:
+    egress_mode = str(node.get("egress_mode", "DIRECT_PUSH"))
+    egress_url, peer_ip = _resolve_egress_delivery(assigned_session)
+    if egress_mode == "DIRECT_PUSH" and egress_url and not peer_ip:
+        raise HTTPException(status_code=409, detail="verified destination peer IP is unavailable")
 
     return {
-        "node_id": node_id,
-        "session_id": session_id,
-        "session_assigned": assigned_session is not None,
+        "node_id": node["node_id"],
+        "session_id": node["session_id"],
+        "session_assigned": bool(node.get("session_assigned")),
         "status": "BOOTSTRAPPING",
-        "absolute_deadline": absolute_deadline,
+        "absolute_deadline": node["absolute_deadline"],
         "egress_url": egress_url,
-        "egress_mode": (
-            "RELAY_ONLY"
-            if assigned_session is not None
-            and assigned_session.get("egress_mode") == "RELAY_ONLY"
-            else "DIRECT_PUSH"
-        ),
+        "egress_verified_peer_ip": peer_ip,
+        "audio_mode": os.getenv("NODE_INITIAL_AUDIO_MODE", "LIVE"),
+        "audio_version": 0,
+        "audio_command_id": None,
+        "audio_idempotency_key": None,
+        "audio_updated_at": time.time(),
+        "egress_mode": egress_mode,
         "media_mtx_config_ref": "config/mediamtx.yml",
+        "node_access_token": node_access_token,
     }
 
 
@@ -596,14 +986,26 @@ def bootstrap(
 def heartbeat(
     node_id: str,
     request: HeartbeatRequest,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, Any]:
-    nodes = read_json(NODES_PATH, _default_nodes())
-    node = nodes["nodes"].get(node_id)
+    with node_state_lock(exclusive=True):
+        return _heartbeat_locked(node_id, request, authorization)
+
+
+def _heartbeat_locked(
+    node_id: str,
+    request: HeartbeatRequest,
+    authorization: str | None,
+) -> dict[str, Any]:
+    authority = _read_authority()
+    node = authority["nodes"].get(node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="unknown node")
+    _require_node_access(node, authorization)
 
+    observed_at = time.time()
     node["status"] = request.status
-    node["last_heartbeat_at"] = time.time()
+    node["last_heartbeat_at"] = observed_at
     node["media_health"] = request.media_health
     node["active_publisher"] = request.active_publisher
     node["egress_connected"] = request.egress_connected
@@ -615,6 +1017,19 @@ def heartbeat(
         node["memory_mb"] = request.memory_mb
     if request.deadline_remaining_seconds is not None:
         node["deadline_remaining_seconds"] = request.deadline_remaining_seconds
+    if node.get("session_assigned"):
+        heartbeat_recorded = default_store().record_node_heartbeat(
+            str(node["session_id"]),
+            node_id=node_id,
+            boot_id=str(node.get("boot_id") or ""),
+            observed_at=observed_at,
+            node_ready=(request.status == "READY" and request.media_health == "running"),
+        )
+        if not heartbeat_recorded:
+            raise HTTPException(
+                status_code=409,
+                detail="assigned Session no longer accepts this Node heartbeat",
+            )
     if request.ingest is not None:
         previous = node.get("ingest")
         current = request.ingest.model_dump()
@@ -682,24 +1097,44 @@ def heartbeat(
             node.pop("pipeline_session_event_error", None)
         except (KeyError, RuntimeError) as exc:
             node["pipeline_session_event_error"] = str(exc)[:200]
-    atomic_write_json(NODES_PATH, nodes)
+    _write_authority(authority)
 
     return {"desired_state": node.get("desired_state", "RUNNING")}
 
 
 @router.post("/nodes/{node_id}/stop")
-def stop_node(node_id: str) -> dict[str, Any]:
-    nodes = read_json(NODES_PATH, _default_nodes())
-    node = nodes["nodes"].get(node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="unknown node")
-    node["desired_state"] = "STOPPED"
-    node["status"] = "STOPPING"
-    atomic_write_json(NODES_PATH, nodes)
-    return {"node_id": node_id, "desired_state": "STOPPED"}
+def stop_node(
+    node_id: str,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> dict[str, Any]:
+    _require_admin_access(authorization)
+    with node_state_lock(exclusive=True):
+        authority = _read_authority()
+        node = authority["nodes"].get(node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="unknown node")
+        node["desired_state"] = "STOPPED"
+        node["status"] = "STOPPING"
+        _write_authority(authority)
+        return {"node_id": node_id, "desired_state": "STOPPED"}
 
 
 @router.get("/nodes")
-def list_nodes() -> dict[str, Any]:
-    nodes = read_json(NODES_PATH, _default_nodes())
-    return nodes
+def list_nodes(
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> dict[str, Any]:
+    _require_admin_access(authorization)
+    with node_state_lock(exclusive=False):
+        authority = _read_authority()
+        return {
+            "next_node_seq": authority["next_node_seq"],
+            "nodes": {
+                node_id: {
+                    key: value
+                    for key, value in node.items()
+                    if key != "access_token_sha256"
+                }
+                for node_id, node in authority.get("nodes", {}).items()
+                if isinstance(node, dict)
+            },
+        }

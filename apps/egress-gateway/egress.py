@@ -48,6 +48,33 @@ def env_int(name: str, default: int) -> int:
     return default if raw is None else int(raw)
 
 
+def _read_input_uri() -> str:
+    path_value = os.getenv("EGRESS_INPUT_URI_FILE", "").strip()
+    if not path_value:
+        return os.getenv("EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay")
+    try:
+        wait_seconds = float(os.getenv("IRLIGHT_SECRET_WAIT_SECONDS", "60"))
+    except ValueError:
+        wait_seconds = 60.0
+    wait_seconds = min(max(0.0, wait_seconds), 300.0)
+    deadline = time.monotonic() + wait_seconds
+    path = Path(path_value)
+    while True:
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            if time.monotonic() < deadline:
+                time.sleep(0.1)
+                continue
+            raise RuntimeError("egress input secret file is unavailable") from exc
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() == "rtsp" and parsed.hostname:
+            return value
+        if time.monotonic() >= deadline:
+            raise RuntimeError("egress input URL is invalid")
+        time.sleep(0.1)
+
+
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -411,15 +438,13 @@ class EgressAttempt:
 
 class EgressGateway:
     def __init__(self) -> None:
-        self.input_uri = os.getenv(
-            "EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay"
-        )
+        self.input_uri = _read_input_uri()
         self.destination_file = Path(
-            os.getenv("EGRESS_URL_FILE", "/run/irlight/secrets/egress_url")
+            os.getenv("EGRESS_URL_FILE", "/run/irlight/egress-secrets/egress_url")
         )
         verified_peer_file = os.getenv(
             "EGRESS_VERIFIED_PEER_IP_FILE",
-            "/run/irlight/secrets/egress_verified_peer_ip",
+            "/run/irlight/egress-secrets/egress_verified_peer_ip",
         )
         self.verified_peer_ip_file = Path(verified_peer_file) if verified_peer_file else None
         self.allow_private_targets = os.getenv("EGRESS_ALLOW_PRIVATE_TARGETS", "") == "1"

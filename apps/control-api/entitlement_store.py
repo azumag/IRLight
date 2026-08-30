@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from state_safety import mark_initialized, was_initialized
 
 
 DEFAULT_PLAN = "default"
 DEFAULT_MAX_CONCURRENT_SESSIONS = 1
+
+
+class EntitlementStateError(RuntimeError):
+    pass
 
 
 def _default_limit() -> int:
@@ -28,22 +36,60 @@ class EntitlementStore:
     def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "entitlements.json"
+        self.lock_path = self.state_dir / ".entitlements.lock"
         self.lock = threading.Lock()
         self._entitlements: dict[str, dict[str, Any]] = {}
-        self._load()
+        with self._state_lock(exclusive=False):
+            pass
+
+    @contextmanager
+    def _state_lock(self, *, exclusive: bool):
+        with self.lock:
+            try:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                with self.lock_path.open("a+", encoding="utf-8") as handle:
+                    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(handle.fileno(), operation)
+                    try:
+                        self._load()
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except EntitlementStateError:
+                raise
+            except OSError as exc:
+                raise EntitlementStateError(
+                    f"cannot lock entitlement state {self.path}"
+                ) from exc
 
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            data = raw if isinstance(raw, dict) else {}
-            self._entitlements = {
-                str(key): value
-                for key, value in data.get("entitlements", {}).items()
-                if isinstance(value, dict)
-            }
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            if was_initialized(self.path):
+                raise EntitlementStateError(
+                    f"entitlement state {self.path} disappeared after initialization"
+                )
             self._entitlements = {}
+            return
+        except (json.JSONDecodeError, OSError) as exc:
+            raise EntitlementStateError(
+                f"cannot read entitlement state {self.path}"
+            ) from exc
+        if not isinstance(raw, dict) or not isinstance(raw.get("entitlements"), dict):
+            raise EntitlementStateError(
+                f"invalid entitlement state payload in {self.path}"
+            )
+        if any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in raw["entitlements"].items()
+        ):
+            raise EntitlementStateError(
+                f"invalid entitlement state record in {self.path}"
+            )
+        self._entitlements = dict(raw["entitlements"])
+        mark_initialized(self.path)
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +105,12 @@ class EntitlementStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            directory_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
@@ -66,7 +118,7 @@ class EntitlementStore:
                 pass
 
     def get(self, user_id: str) -> dict[str, Any]:
-        with self.lock:
+        with self._state_lock(exclusive=False):
             stored = self._entitlements.get(user_id)
             if stored is None:
                 return {
@@ -89,7 +141,7 @@ class EntitlementStore:
             raise ValueError("max_concurrent_sessions must be at least 0")
         if not plan.strip():
             raise ValueError("plan must not be empty")
-        with self.lock:
+        with self._state_lock(exclusive=True):
             entitlement = {
                 "id": f"user:{user_id}",
                 "user_id": user_id,

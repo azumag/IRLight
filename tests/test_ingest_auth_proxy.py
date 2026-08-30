@@ -26,6 +26,7 @@ class FakeAuthUpstream:
         self.mode = "allow"
         self.request_count = 0
         self.cache_seconds = 60.0
+        self.last_authorization: str | None = None
 
     def start(self) -> None:
         upstream = self
@@ -38,6 +39,7 @@ class FakeAuthUpstream:
                 length = int(self.headers.get("Content-Length", "0"))
                 self.rfile.read(length)
                 upstream.request_count += 1
+                upstream.last_authorization = self.headers.get("Authorization")
                 if upstream.mode == "deny":
                     body = b'{"detail":"invalid ingest credential"}'
                     self.send_response(401)
@@ -78,6 +80,7 @@ class IngestAuthProxyTest(unittest.TestCase):
         self.upstream.start()
         self.proxy = IngestAuthProxy(
             upstream_url=f"http://127.0.0.1:{self.upstream.port}/internal/ingest/auth",
+            upstream_token="node-access-token",
             config=AuthProxyConfig(
                 listen_host="127.0.0.1",
                 listen_port=0,
@@ -101,6 +104,14 @@ class IngestAuthProxyTest(unittest.TestCase):
             "userAgent": "test",
         }
 
+    def test_upstream_request_uses_node_bearer_token(self) -> None:
+        status, _body, _headers = self._request()
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            self.upstream.last_authorization,
+            "Bearer node-access-token",
+        )
+
     def tearDown(self) -> None:
         self.proxy.stop()
         self.upstream.stop()
@@ -119,9 +130,12 @@ class IngestAuthProxyTest(unittest.TestCase):
                 headers = dict(response.headers.items())
                 return int(response.status), json.loads(raw), headers
         except urllib.error.HTTPError as exc:
-            raw = exc.read()
-            headers = dict(exc.headers.items()) if exc.headers else {}
-            return int(exc.code), json.loads(raw), headers
+            try:
+                raw = exc.read()
+                headers = dict(exc.headers.items()) if exc.headers else {}
+                return int(exc.code), json.loads(raw), headers
+            finally:
+                exc.close()
 
     def test_success_primes_cache_and_5xx_falls_back_across_reconnect_id_and_ip(self) -> None:
         status, body, _headers = self._request()

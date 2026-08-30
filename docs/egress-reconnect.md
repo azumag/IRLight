@@ -32,11 +32,13 @@ Egress Gatewayは `rtsp://mediamtx:8554/output/relay` を読み、H.264 / AACを
 
 ## Secret boundary
 
-外部のcredentialed URLはNode bootstrap時にだけ配送され、Node Agentがtmpfsの `/run/irlight/secrets/egress_url` へ作成時点から0600で保存します。
+外部のcredentialed URLはNode bootstrap時にだけ配送され、Node Agentが専用tmpfsの
+`/run/irlight/egress-secrets/egress_url`へatomicに0600で保存します。
 
-- Continuity: secret volumeをmountしない
-- Egress Gateway: secret volumeをread-only mount
-- Node Agent: secretを作成し、media stack停止後に削除
+- Continuity: `continuity-secrets` volumeだけをread-only mount
+- Egress Gateway: `relay-secrets`と`egress-secrets`だけをread-only mount
+- Node Agent: 内部・外部secret fileを作成し、media stack停止後に削除
+- Continuityは外部Destination secretを読まない
 - `egress.json`: stream key / credentialed URLを含めない
 - Node / Session event: scheme / host / status / reason codeのみ
 

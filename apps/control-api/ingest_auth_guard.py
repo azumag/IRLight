@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -12,9 +13,19 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from state_safety import mark_initialized, was_initialized
+
+
+_PROCESS_LOCK = threading.RLock()
+
+
+class IngestAuthGuardStateError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -127,12 +138,34 @@ class IngestAuthGuard:
     ) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "ingest_auth_guard.json"
+        self.lock_path = self.state_dir / ".ingest-auth-guard.lock"
         self.config = config or IngestAuthGuardConfig.from_env()
-        self.lock = threading.Lock()
         self._buckets: dict[str, dict[str, Any]] = {}
         self._events: list[dict[str, Any]] = []
         self._next_sequence = 1
-        self._load()
+        with self._state_lock(exclusive=True):
+            self._reload()
+            if self.path.exists():
+                mark_initialized(self.path)
+
+    @contextmanager
+    def _state_lock(self, *, exclusive: bool):
+        with _PROCESS_LOCK:
+            try:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                with self.lock_path.open("a+", encoding="utf-8") as handle:
+                    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(handle.fileno(), operation)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except IngestAuthGuardStateError:
+                raise
+            except OSError as exc:
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard state cannot be locked"
+                ) from exc
 
     @staticmethod
     def _bucket_key(scope: str, value: str) -> str:
@@ -151,30 +184,149 @@ class IngestAuthGuard:
             )
         return specs
 
-    def _load(self) -> None:
+    def _reload(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            if not isinstance(raw, dict):
-                return
-            buckets = raw.get("buckets", {})
-            events = raw.get("events", [])
-            self._buckets = {
-                str(key): value
-                for key, value in buckets.items()
-                if isinstance(key, str) and isinstance(value, dict)
-            } if isinstance(buckets, dict) else {}
-            self._events = [event for event in events if isinstance(event, dict)][
-                -self.config.event_limit :
-            ] if isinstance(events, list) else []
-            try:
-                self._next_sequence = max(1, int(raw.get("next_sequence", 1)))
-            except (TypeError, ValueError):
-                self._next_sequence = 1
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            if was_initialized(self.path):
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard state disappeared after initialization"
+                )
             self._buckets = {}
             self._events = []
             self._next_sequence = 1
+            return
+        except (json.JSONDecodeError, OSError) as exc:
+            raise IngestAuthGuardStateError(
+                "ingest authentication guard state cannot be read"
+            ) from exc
+
+        buckets, events, next_sequence = self._validate_state(raw)
+        self._buckets = buckets
+        self._events = events[-self.config.event_limit :]
+        self._next_sequence = next_sequence
+
+    @staticmethod
+    def _validate_state(
+        raw: Any,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], int]:
+        if not isinstance(raw, dict):
+            raise IngestAuthGuardStateError(
+                "ingest authentication guard state has invalid structure"
+            )
+        buckets = raw.get("buckets")
+        events = raw.get("events")
+        next_sequence = raw.get("next_sequence")
+        if not isinstance(buckets, dict) or not isinstance(events, list):
+            raise IngestAuthGuardStateError(
+                "ingest authentication guard state has invalid structure"
+            )
+        if (
+            isinstance(next_sequence, bool)
+            or not isinstance(next_sequence, int)
+            or next_sequence < 1
+        ):
+            raise IngestAuthGuardStateError(
+                "ingest authentication guard sequence is invalid"
+            )
+
+        validated_buckets: dict[str, dict[str, Any]] = {}
+        for key, bucket in buckets.items():
+            if not isinstance(key, str) or not isinstance(bucket, dict):
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard bucket is invalid"
+                )
+            scope, separator, digest = key.partition(":")
+            if (
+                scope not in {"ip", "credential"}
+                or not separator
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard bucket key is invalid"
+                )
+            if set(bucket) - {
+                "failures",
+                "locked_until",
+                "last_seen_at",
+                "last_blocked_event_at",
+            }:
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard bucket has unknown fields"
+                )
+            failures = bucket.get("failures")
+            if not isinstance(failures, list):
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard failures are invalid"
+                )
+            normalized_failures: list[float] = []
+            for failure in failures:
+                if isinstance(failure, bool) or not isinstance(failure, (int, float)):
+                    raise IngestAuthGuardStateError(
+                        "ingest authentication guard failure time is invalid"
+                    )
+                timestamp = float(failure)
+                if not math.isfinite(timestamp) or timestamp < 0:
+                    raise IngestAuthGuardStateError(
+                        "ingest authentication guard failure time is invalid"
+                    )
+                normalized_failures.append(timestamp)
+            normalized_bucket: dict[str, Any] = {"failures": normalized_failures}
+            for field in ("locked_until", "last_seen_at", "last_blocked_event_at"):
+                value = bucket.get(field, 0.0)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise IngestAuthGuardStateError(
+                        "ingest authentication guard bucket time is invalid"
+                    )
+                number = float(value)
+                if not math.isfinite(number) or number < 0:
+                    raise IngestAuthGuardStateError(
+                        "ingest authentication guard bucket time is invalid"
+                    )
+                if field in bucket or field != "last_blocked_event_at":
+                    normalized_bucket[field] = number
+            validated_buckets[key] = normalized_bucket
+
+        validated_events: list[dict[str, Any]] = []
+        maximum_sequence = 0
+        for event in events:
+            if not isinstance(event, dict) or set(event) != {
+                "sequence",
+                "type",
+                "occurred_at",
+                "payload",
+            }:
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard event is invalid"
+                )
+            sequence = event.get("sequence")
+            event_type = event.get("type")
+            occurred_at = event.get("occurred_at")
+            payload = event.get("payload")
+            if (
+                isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or sequence < 1
+                or event_type
+                not in {"ingest.auth_failed", "ingest.auth_locked", "ingest.auth_blocked"}
+                or isinstance(occurred_at, bool)
+                or not isinstance(occurred_at, (int, float))
+                or not math.isfinite(float(occurred_at))
+                or float(occurred_at) < 0
+                or not isinstance(payload, dict)
+            ):
+                raise IngestAuthGuardStateError(
+                    "ingest authentication guard event is invalid"
+                )
+            maximum_sequence = max(maximum_sequence, sequence)
+            validated_events.append(copy.deepcopy(event))
+        if next_sequence <= maximum_sequence:
+            raise IngestAuthGuardStateError(
+                "ingest authentication guard sequence is stale"
+            )
+        return validated_buckets, validated_events, next_sequence
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -194,6 +346,12 @@ class IngestAuthGuard:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            directory_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
@@ -298,7 +456,8 @@ class IngestAuthGuard:
             return AuthGuardDecision(False)
         current = time.time() if now is None else now
         specs = self._scope_specs(source_ip, username)
-        with self.lock:
+        with self._state_lock(exclusive=False):
+            self._reload()
             self._compact_buckets(current)
             return self._decision(specs, current)
 
@@ -315,7 +474,8 @@ class IngestAuthGuard:
             return AuthGuardDecision(False)
         current = time.time() if now is None else now
         specs = self._scope_specs(source_ip, username)
-        with self.lock:
+        with self._state_lock(exclusive=True):
+            self._reload()
             self._compact_buckets(current)
             newly_locked: set[str] = set()
             for scope, value, limit in specs:
@@ -366,7 +526,8 @@ class IngestAuthGuard:
             return AuthGuardDecision(False)
         current = time.time() if now is None else now
         specs = self._scope_specs(source_ip, username)
-        with self.lock:
+        with self._state_lock(exclusive=True):
+            self._reload()
             self._compact_buckets(current)
             decision = self._decision(specs, current)
             if not decision.blocked:
@@ -417,14 +578,16 @@ class IngestAuthGuard:
             return
         current = time.time() if now is None else now
         key = self._bucket_key("credential", normalized)
-        with self.lock:
+        with self._state_lock(exclusive=True):
+            self._reload()
             changed = self._buckets.pop(key, None) is not None
             self._compact_buckets(current)
             if changed:
                 self._persist()
 
     def snapshot(self) -> dict[str, Any]:
-        with self.lock:
+        with self._state_lock(exclusive=False):
+            self._reload()
             return copy.deepcopy(
                 {
                     "buckets": self._buckets,

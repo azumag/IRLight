@@ -188,7 +188,9 @@ interface IngestDns {
 
 ### 5.6 Node Agent
 
-- bootstrap tokenを1回だけ交換する
+- bootstrap tokenを1回だけ交換する。Agentはattempt IDとNode access tokenを生成し、
+  同一attemptの再送だけを冪等に回復できる
+- Node access tokenの平文はAgentのメモリだけに保持する
 - Node ID、Session ID、provider server ID、software versionを登録する
 - Session config、credential digest、Destination secret、TLS material、absolute deadlineを取得する
 - Docker Composeまたはprocess supervisorを起動する
@@ -398,8 +400,12 @@ Nodeは次を送る。
 - boot ID
 - agent version
 - public/private address
+- bootstrap attempt ID
+- Agentが生成したNode access token（Control Planeはdigestだけを保存）
 
-Control Planeはtoken hash、Session、provider instance ID、期限、未使用状態を検証し、成功後にtokenをconsumedへする。
+Control Planeはtoken hash、Session、provider instance ID、期限、未使用状態を検証し、
+Node recordとtoken消費を単一のatomic authority writeで確定する。応答喪失後の同一attemptは
+同じNodeを返し、identityまたはNode tokenが異なる再利用は409で拒否する。
 
 ### Bootstrap response
 
@@ -411,7 +417,7 @@ Control Planeはtoken hash、Session、provider instance ID、期限、未使用
 - Destination secret referenceまたは一回限り取得URL
 - RTMPS certificate material reference
 - expected container image digests
-- heartbeat credential
+- `node_access_token`（Agentが送った同じ値を確認用に返し、Control PlaneはSHA-256 digestだけ保存）
 
 大きなSecretをresponse logへ残さず、必要なら用途別の一回限りURLで取得する。
 
@@ -419,7 +425,11 @@ Control Planeはtoken hash、Session、provider instance ID、期限、未使用
 
 ```http
 POST /internal/nodes/{nodeId}/heartbeat
+Authorization: Bearer <node-access-token>
 ```
+
+別Nodeのtoken、bootstrap token、管理tokenではheartbeatできない。Node一覧にも
+token digestを返さない。
 
 - status
 - media health
@@ -429,6 +439,17 @@ POST /internal/nodes/{nodeId}/heartbeat
 - software version
 - last media packet time
 - deadline remaining
+
+### Node administration
+
+```http
+GET /internal/nodes
+POST /internal/nodes/{nodeId}/stop
+Authorization: Bearer <node-admin-token>
+```
+
+list / stopはNode access tokenとは別の管理Bearerを要求する。本番では
+`NODE_INTERNAL_ADMIN_TOKEN_FILE`から読み、公開ネットワークへ露出しない。
 
 ### Events
 
@@ -553,14 +574,20 @@ provider credentialは専用API sub-userを使い、必要なCompute / Volume / 
 Node AgentがtmpfsへSecretを取得する。
 
 ```text
-/run/irlight/secrets/
+/run/irlight/continuity-secrets/  # Continuityだけがread
+  media_input_uri
+  media_publish_uri
+/run/irlight/relay-secrets/       # Egress Gatewayだけがread
+  media_relay_uri
+/run/irlight/egress-secrets/      # 外部Destination、Egress Gatewayだけがread
   egress_url
-  tls.crt
-  tls.key
-  node-credential
+  egress_verified_peer_ip
 ```
 
-owner、permission、mount先を限定する。Docker ComposeではSecret値をenvironmentへ展開せず、file pathだけ渡す。
+owner、permission、mount先を限定する。内部3 actionは別々のcredentialを使い、
+`media_*`はそのcredentialを含む0600 URI fileである。Node access tokenはメモリ保持し、
+fileへ保存しない。Docker ComposeではSecret値をenvironmentへ展開せず、file
+pathだけ渡す。
 
 ### Step 7: media readiness
 

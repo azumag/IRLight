@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-secret.override.yml"
@@ -7,6 +8,7 @@ cookie_jar="$tmp_dir/cookies.txt"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 email="egress-secret-$(date +%s)-$RANDOM@example.invalid"
 password='SmokePassword123!'
+# shellcheck disable=SC2034 # documented bootstrap token; compose override uses literal for determinism
 bootstrap_token='egress-secret-node-token'
 secret_ref="egress/smoke-$RANDOM"
 stream_key="delivery-secret-$RANDOM/with?chars"
@@ -71,7 +73,7 @@ wait_assigned_node() {
   local timeout="${2:-45}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 session_id=sys.argv[1]
@@ -215,7 +217,7 @@ if grep -Fq "$expected_url" <<<"$state_dump"; then
   exit 1
 fi
 
-node_listing="$(curl -fsS --max-time 5 "$base_url/internal/nodes")"
+node_listing="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes")"
 if grep -Fq "$stream_key" <<<"$node_listing" || grep -Fq "$expected_url" <<<"$node_listing"; then
   echo "Node API leaked credentialed egress URL" >&2
   exit 1

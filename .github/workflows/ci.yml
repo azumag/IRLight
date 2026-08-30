@@ -11,58 +11,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  materialize:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-      - name: Expand the reviewed source bundle when present
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if ! compgen -G "bootstrap/phase0.tar.gz.b64.part-*" >/dev/null; then
-            echo "No bootstrap bundle to expand."
-            exit 0
-          fi
-          cat bootstrap/phase0.tar.gz.b64.part-* | base64 --decode | tar -xzf -
-          rm -f bootstrap/phase0.tar.gz.b64.part-*
-          rmdir bootstrap 2>/dev/null || true
-      - name: Commit materialized Phase 0 files
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
-            echo "No materialization changes."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Materialize Phase 0 vertical slice"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
-
   unit:
-    needs: materialize
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/control-api/requirements.txt
       - name: Install Python dependencies
         run: pip install -r apps/control-api/requirements.txt
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
-        run: python -m py_compile apps/continuity/state.py apps/continuity/continuity.py apps/continuity/secret_files.py apps/egress-gateway/egress.py apps/egress-gateway/egress_policy.py apps/egress-gateway/destination_guard.py apps/control-api/app.py apps/control-api/node_internal.py apps/control-api/auth_store.py apps/control-api/auth_api.py apps/control-api/catalog_api.py apps/control-api/catalog_store.py apps/control-api/destination_probe.py apps/control-api/destination_secret_store.py apps/control-api/egress_destination.py apps/control-api/entitlement_store.py apps/control-api/ingest_api.py apps/control-api/ingest_auth_guard.py apps/control-api/ingest_store.py apps/control-api/session_api.py apps/control-api/session_store.py apps/control-api/session_workflow.py apps/control-api/reaper.py apps/control-api/reaper_cli.py apps/control-api/fake_provider_for_api.py apps/node-agent/agent.py apps/node-agent/node_entrypoint.py apps/node-agent/egress_status.py apps/node-agent/ingest_auth_proxy.py apps/node-agent/ingest_policy.py apps/node-agent/ingest_quality.py apps/node-agent/supervisor.py provider/admin_cli.py provider/conoha.py provider/fake_provider.py provider/provider_client.py
+        run: python -m compileall -q apps provider
       - name: Validate shell scripts
-        run: bash -n scripts/publish-test.sh scripts/preview-output.sh scripts/smoke-control.sh scripts/smoke-compose.sh scripts/smoke-continuity-restart.sh scripts/smoke-rtmps.sh scripts/smoke-ingest-quality.sh scripts/smoke-unusable-media-holding.sh scripts/smoke-ingest-auth-abuse.sh scripts/smoke-ingest-auth-cache.sh scripts/smoke-session-ingest-events.sh scripts/smoke-egress-secret-delivery.sh scripts/smoke-egress-reconnect.sh scripts/smoke-egress-stop-terminal.sh scripts/smoke-egress-dns-tls.sh scripts/smoke-egress-publish-conflict.sh
+        run: find scripts -type f -name '*.sh' -exec bash -n {} +
       - name: Validate production RTMPS compose overlays
         run: |
           mkdir -p secrets
@@ -76,158 +44,150 @@ jobs:
               -f docker-compose.node.public.yml \
               -f docker-compose.node.rtmps.yml config >/dev/null
 
+  node-agent-image-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the Node Agent can control Docker Compose
+        run: |
+          docker build \
+            -t irlight-node-agent-ci \
+            -f apps/node-agent/Dockerfile \
+            apps/node-agent
+          docker run --rm --entrypoint docker irlight-node-agent-ci compose version
+          docker run --rm --entrypoint test irlight-node-agent-ci \
+            -r /opt/irlight/docker-compose.control.yml
+          docker compose -f apps/node-agent/docker-compose.control.yml config >/dev/null
+
   docker-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Build and exercise the vertical slice
         run: ./scripts/smoke-compose.sh
 
   continuity-restart-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise Continuity process restart and desired/actual reconcile
         run: bash ./scripts/smoke-continuity-restart.sh
 
   rtmps-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise certificate-validated RTMPS handshake
         run: bash ./scripts/smoke-rtmps.sh
 
   ingest-quality-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise FPS degradation without kicking publisher
         run: bash ./scripts/smoke-ingest-quality.sh
 
   unusable-media-holding-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise one-sided media loss and format-change HOLDING
         run: bash ./scripts/smoke-unusable-media-holding.sh
 
   ingest-auth-abuse-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise ingest auth failure lockout
         run: bash ./scripts/smoke-ingest-auth-abuse.sh
 
   ingest-auth-cache-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise node-local auth fallback and revoke eviction
         run: bash ./scripts/smoke-ingest-auth-cache.sh
 
   session-ingest-events-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise user Session assignment and ingest events
         run: bash ./scripts/smoke-session-ingest-events.sh
 
   egress-secret-delivery-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise encrypted Destination secret delivery
         run: bash ./scripts/smoke-egress-secret-delivery.sh
 
   egress-reconnect-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise isolated egress outage and recovery
         run: bash ./scripts/smoke-egress-reconnect.sh
 
   egress-stop-terminal-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise egress stop/reconnect race and terminal guard failure
         run: bash ./scripts/smoke-egress-stop-terminal.sh
 
   egress-dns-tls-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise egress DNS and RTMPS certificate failures
         run: bash ./scripts/smoke-egress-dns-tls.sh
 
   egress-publish-conflict-smoke:
-    needs: materialize
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
       - name: Exercise terminal egress publish conflict
         run: bash ./scripts/smoke-egress-publish-conflict.sh

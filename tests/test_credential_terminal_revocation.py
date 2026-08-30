@@ -42,6 +42,8 @@ class RelayAuthorizationTest(unittest.TestCase):
         credential_store: IngestCredentialStore,
         request,
         state_dir: str,
+        *,
+        egress_mode: str = "RELAY_ONLY",
     ):
         session_id = "11111111-1111-4111-8111-111111111111"
         session_store = _SessionStore(
@@ -49,6 +51,7 @@ class RelayAuthorizationTest(unittest.TestCase):
                 "session_id": session_id,
                 "user_id": "user-1",
                 "status": "READY_WAIT_INGEST",
+                "egress_mode": egress_mode,
             }
         )
         with patch("ingest_api.default_store", return_value=session_store), patch(
@@ -56,8 +59,16 @@ class RelayAuthorizationTest(unittest.TestCase):
         ), patch(
             "ingest_api.default_ingest_auth_guard",
             return_value=IngestAuthGuard(state_dir),
-        ):
-            return authorize_mediamtx_request(request)
+        ), patch("ingest_api.require_assigned_node") as require_node:
+            result = authorize_mediamtx_request(
+                request,
+                authorization="Bearer node-access-token",
+            )
+            require_node.assert_called_once_with(
+                "Bearer node-access-token",
+                session_id=session_id,
+            )
+            return result
 
     def test_relay_client_credential_authorizes_output_read(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
@@ -104,6 +115,31 @@ class RelayAuthorizationTest(unittest.TestCase):
                         protocol="rtmp",
                     ),
                     state_dir,
+                )
+        self.assertEqual(failure.exception.status_code, 401)
+
+    def test_relay_credential_is_rejected_for_direct_push_session(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            session_id = "11111111-1111-4111-8111-111111111111"
+            _record, secret = store.issue(
+                session_id=session_id,
+                user_id="user-1",
+                scope="RELAY_CLIENT",
+                protocols=["rtmp"],
+            )
+            with self.assertRaises(HTTPException) as failure:
+                self._authorize(
+                    store,
+                    MediaMTXAuthRequest(
+                        user=session_id,
+                        password=secret,
+                        action="read",
+                        path="output/relay",
+                        protocol="rtmp",
+                    ),
+                    state_dir,
+                    egress_mode="DIRECT_PUSH",
                 )
         self.assertEqual(failure.exception.status_code, 401)
 

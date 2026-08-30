@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import secrets
 import threading
 import time
 import urllib.error
@@ -19,6 +20,12 @@ from typing import Any
 MAX_REQUEST_BYTES = 16 * 1024
 CACHE_KEY_FIELDS = ("action", "path", "protocol", "user", "password", "token")
 CACHED_ACTION = "publish"
+INTERNAL_MEDIA_USERNAME = "irlight-internal"
+INTERNAL_MEDIA_ACTIONS = {
+    ("rtmp", "publish", "output/relay"),
+    ("rtsp", "read", "live/input"),
+    ("rtsp", "read", "output/relay"),
+}
 
 
 @dataclass(frozen=True)
@@ -143,13 +150,25 @@ class IngestAuthProxy:
         upstream_url: str,
         config: AuthProxyConfig | None = None,
         cache: PositiveAuthCache | None = None,
+        upstream_token: str | None = None,
+        internal_media_secret: str | None = None,
+        internal_media_secrets: dict[tuple[str, str, str], str] | None = None,
     ) -> None:
         self.upstream_url = upstream_url
+        self.upstream_token = upstream_token
         self.config = config or AuthProxyConfig.from_env()
         self.cache = cache or PositiveAuthCache(
             max_age_seconds=self.config.cache_max_age_seconds,
             max_entries=self.config.cache_max_entries,
         )
+        if internal_media_secrets is not None:
+            self.internal_media_secrets = dict(internal_media_secrets)
+        elif internal_media_secret:
+            self.internal_media_secrets = {
+                action: internal_media_secret for action in INTERNAL_MEDIA_ACTIONS
+            }
+        else:
+            self.internal_media_secrets = {}
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -195,11 +214,17 @@ class IngestAuthProxy:
                     return
                 self._send(proxy.authorize(payload))
 
-        self.server = ThreadingHTTPServer(
+        server = ThreadingHTTPServer(
             (self.config.listen_host, self.config.listen_port), Handler
         )
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            server.server_close()
+            raise
+        self.server = server
+        self.thread = thread
 
     def stop(self) -> None:
         if self.server is None:
@@ -218,11 +243,17 @@ class IngestAuthProxy:
         return int(self.server.server_address[1])
 
     def authorize(self, payload: dict[str, Any]) -> ProxyResponse:
+        internal = self._authorize_internal_media(payload)
+        if internal is not None:
+            return internal
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.upstream_token:
+            headers["Authorization"] = f"Bearer {self.upstream_token}"
         request = urllib.request.Request(
             self.upstream_url,
             data=raw,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -233,9 +264,12 @@ class IngestAuthProxy:
                 status = int(response.status)
                 retry_after = response.headers.get("Retry-After")
         except urllib.error.HTTPError as exc:
-            body = exc.read()
-            status = int(exc.code)
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                body = exc.read()
+                status = int(exc.code)
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            finally:
+                exc.close()
             if 400 <= status < 500:
                 self.cache.evict(payload)
                 headers = {"Retry-After": retry_after} if retry_after else {}
@@ -265,6 +299,24 @@ class IngestAuthProxy:
             self.cache.store(payload, upstream_valid_until=cache_valid_until)
         headers = {"Retry-After": retry_after} if retry_after else {}
         return ProxyResponse(status=status, body=body, headers=headers)
+
+    def _authorize_internal_media(
+        self, payload: dict[str, Any]
+    ) -> ProxyResponse | None:
+        if str(payload.get("user", "")) != INTERNAL_MEDIA_USERNAME:
+            return None
+        action = (
+            str(payload.get("protocol", "")).lower(),
+            str(payload.get("action", "")).lower(),
+            str(payload.get("path", "")),
+        )
+        if action not in INTERNAL_MEDIA_ACTIONS:
+            return _json_response(403, {"detail": "unsupported internal media action"})
+        configured = self.internal_media_secrets.get(action, "")
+        supplied = str(payload.get("password", ""))
+        if not configured or not secrets.compare_digest(configured, supplied):
+            return _json_response(401, {"detail": "invalid internal media credential"})
+        return _json_response(200, {"authorized": True, "internal": True})
 
     def _fallback(self, payload: dict[str, Any]) -> ProxyResponse:
         if not self._cacheable(payload) or not self.cache.allowed(payload):

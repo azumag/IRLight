@@ -17,7 +17,12 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from provider.conoha import ManagedResource, ProviderServer, ProviderVolume
+from provider.conoha import (
+    ManagedResource,
+    ProviderServer,
+    ProviderVolume,
+    parse_timestamp,
+)
 
 
 class ConohaError(RuntimeError):
@@ -97,16 +102,18 @@ class ConohaClient:
         }
         data = json.dumps(payload).encode("utf-8")
         response = self._request(
-            "POST", self._config.identity_endpoint + "/tokens", headers=headers, data=data
+            "POST",
+            self._config.identity_endpoint + "/tokens",
+            headers=headers,
+            data=data,
+            authenticated=False,
         )
         token_info = response["access"]["token"]
         self._token = token_info["id"]
         expires_at = token_info.get("expires")
         if expires_at:
             try:
-                self._token_expires_at = time.mktime(
-                    time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ")
-                )
+                self._token_expires_at = parse_timestamp(expires_at)
             except ValueError:
                 self._token_expires_at = time.time() + 3600
         else:
@@ -135,22 +142,79 @@ class ConohaClient:
                     return None
                 return json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
             raise ConohaError(exc.code, body) from exc
         except urllib.error.URLError as exc:
             raise ConohaError(-1, f"network error: {exc.reason}") from exc
 
     # -- volumes ----------------------------------------------------------
 
+    def _paginated_items(
+        self,
+        *,
+        endpoint: str,
+        path: str,
+        item_key: str,
+        links_key: str,
+    ) -> list[dict[str, Any]]:
+        """Read every OpenStack page without following cross-origin links."""
+        current = endpoint.rstrip("/") + path
+        endpoint_parts = urllib.parse.urlsplit(endpoint)
+        endpoint_path = endpoint_parts.path.rstrip("/")
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for _page in range(1000):
+            if current in seen:
+                raise ConohaError(-1, "pagination loop detected")
+            seen.add(current)
+            data = self._request("GET", current)
+            if not isinstance(data, dict) or not isinstance(data.get(item_key, []), list):
+                raise ConohaError(-1, f"invalid {item_key} list response")
+            for item in data.get(item_key, []):
+                if not isinstance(item, dict):
+                    raise ConohaError(-1, f"invalid {item_key} list item")
+                result.append(item)
+
+            next_href = None
+            links = data.get(links_key, [])
+            if not isinstance(links, list):
+                raise ConohaError(-1, f"invalid {links_key} response")
+            for link in links:
+                if isinstance(link, dict) and link.get("rel") == "next":
+                    next_href = link.get("href")
+                    break
+            if next_href is None:
+                return result
+            if not isinstance(next_href, str) or not next_href:
+                raise ConohaError(-1, "invalid pagination URL")
+            candidate = urllib.parse.urljoin(current, next_href)
+            candidate_parts = urllib.parse.urlsplit(candidate)
+            if (
+                candidate_parts.scheme != endpoint_parts.scheme
+                or candidate_parts.netloc != endpoint_parts.netloc
+                or not (
+                    candidate_parts.path == endpoint_path
+                    or candidate_parts.path.startswith(endpoint_path + "/")
+                )
+            ):
+                raise ConohaError(-1, "cross-origin pagination URL refused")
+            current = candidate
+        raise ConohaError(-1, "pagination limit exceeded")
+
     def list_volumes(self) -> list[ProviderVolume]:
-        data = self._request(
-            "GET", self._config.volume_endpoint + "/volumes"
+        volumes = self._paginated_items(
+            endpoint=self._config.volume_endpoint,
+            path="/volumes/detail",
+            item_key="volumes",
+            links_key="volumes_links",
         )
-        volumes = data.get("volumes", [])
         return [
             ProviderVolume(
                 volume_id=str(item["id"]),
-                name=str(item.get("name", "")),
+                name=str(item.get("display_name", item.get("name", ""))),
                 size_gb=int(item.get("size", 0)),
                 status=str(item.get("status", "")),
                 tags={str(k): str(v) for k, v in (item.get("metadata") or {}).items()},
@@ -202,34 +266,32 @@ class ConohaClient:
     # -- servers ----------------------------------------------------------
 
     def list_servers(self) -> list[ProviderServer]:
-        data = self._request(
-            "GET", self._config.compute_endpoint + "/servers"
+        servers = self._paginated_items(
+            endpoint=self._config.compute_endpoint,
+            path="/servers/detail",
+            item_key="servers",
+            links_key="servers_links",
         )
-        servers = data.get("servers", [])
-        return [
-            ProviderServer(
-                server_id=str(item["id"]),
-                name=str(item.get("name", "")),
-                status=str(item.get("status", "")),
-                tags={str(k): str(v) for k, v in (item.get("metadata") or {}).items()},
-            )
-            for item in servers
-        ]
+        return [self._server_from_item(item) for item in servers]
 
-    def get_server(self, server_id: str) -> ProviderServer:
-        data = self._request(
-            "GET", f"{self._config.compute_endpoint}/servers/{server_id}"
-        )
-        item = data["server"]
+    @staticmethod
+    def _server_from_item(item: dict[str, Any]) -> ProviderServer:
         addresses = item.get("addresses") or {}
         public_ipv4 = None
-        for networks in addresses.values():
-            for address in networks:
-                if address.get("version") == 4 and address.get("addr"):
-                    public_ipv4 = str(address["addr"])
+        if isinstance(addresses, dict):
+            for networks in addresses.values():
+                if not isinstance(networks, list):
+                    continue
+                for address in networks:
+                    if (
+                        isinstance(address, dict)
+                        and address.get("version") == 4
+                        and address.get("addr")
+                    ):
+                        public_ipv4 = str(address["addr"])
+                        break
+                if public_ipv4:
                     break
-            if public_ipv4:
-                break
         return ProviderServer(
             server_id=str(item["id"]),
             name=str(item.get("name", "")),
@@ -237,6 +299,12 @@ class ConohaClient:
             public_ipv4=public_ipv4,
             tags={str(k): str(v) for k, v in (item.get("metadata") or {}).items()},
         )
+
+    def get_server(self, server_id: str) -> ProviderServer:
+        data = self._request(
+            "GET", f"{self._config.compute_endpoint}/servers/{server_id}"
+        )
+        return self._server_from_item(data["server"])
 
     def create_server(
         self,
@@ -323,13 +391,10 @@ class ConohaClient:
 
 
 def parse_delete_after(tags: dict[str, str]) -> float | None:
-    from provider.conoha import format_timestamp
-
     raw = tags.get("irlight-delete-after")
     if not raw:
         return None
     try:
-        return time.mktime(time.strptime(raw, "%Y-%m-%dT%H:%M:%SZ"))
+        return parse_timestamp(raw)
     except (ValueError, TypeError):
         return None
-

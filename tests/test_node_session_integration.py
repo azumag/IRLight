@@ -31,6 +31,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.nodes_path = self.node_state / "nodes.json"
         self.tokens_path = self.node_state / "bootstrap_tokens.json"
         self.token = "session-integration-token"
+        self.node_tokens: dict[str, str] = {}
         self.old_tokens = os.environ.get("NODE_BOOTSTRAP_TOKENS")
         self.old_require = os.environ.get("NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT")
         os.environ["NODE_BOOTSTRAP_TOKENS"] = self.token
@@ -81,14 +82,25 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         return session_id
 
     def _bootstrap(self, provider_server_id: str) -> dict[str, object]:
-        return node_internal.bootstrap(
+        response = node_internal.bootstrap(
             BootstrapRequest(
                 provider_server_id=provider_server_id,
                 boot_id="boot-session-1",
                 agent_version="test",
+                bootstrap_request_id="bootstrap-session-request-1",
+                node_access_token="node-session-access-token-0123456789abcdef",
                 public_address="198.51.100.10",
             ),
             authorization=f"Bearer {self.token}",
+        )
+        self.node_tokens[str(response["node_id"])] = str(response["node_access_token"])
+        return response
+
+    def _heartbeat(self, node_id: str, request: HeartbeatRequest):
+        return node_internal.heartbeat(
+            node_id,
+            request,
+            authorization=f"Bearer {self.node_tokens[node_id]}",
         )
 
     @staticmethod
@@ -135,6 +147,30 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertEqual(session["node_boot_id"], "boot-session-1")
         self.assertIsNotNone(session["node_registered_at"])
 
+    def test_internal_auth_token_is_bound_to_assigned_session(self) -> None:
+        session_id = self._prepared_session()
+        response = self._bootstrap("provider-server-1")
+        authorization = f"Bearer {response['node_access_token']}"
+
+        matched = node_internal.require_assigned_node(
+            authorization,
+            session_id=session_id,
+        )
+        self.assertEqual(matched["node_id"], response["node_id"])
+
+        for supplied, requested_session in (
+            (None, session_id),
+            ("Bearer wrong-token", session_id),
+            (authorization, str(uuid.uuid4())),
+        ):
+            with self.subTest(supplied=supplied, requested_session=requested_session):
+                with self.assertRaises(HTTPException) as failure:
+                    node_internal.require_assigned_node(
+                        supplied,
+                        session_id=requested_session,
+                    )
+                self.assertEqual(failure.exception.status_code, 401)
+
     def test_unassigned_provider_is_rejected_in_strict_mode_without_consuming_token(self) -> None:
         with self.assertRaises(HTTPException) as failure:
             self._bootstrap("unknown-provider")
@@ -150,7 +186,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         response = self._bootstrap("provider-server-1")
         node_id = str(response["node_id"])
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -176,7 +212,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
             self.assertEqual(event["payload"]["node_id"], node_id)
             self.assertNotIn("credential_secret", event["payload"])
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -202,7 +238,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertEqual(session["events"][-1]["payload"]["from_state"], "LIVE")
         self.assertEqual(session["events"][-1]["payload"]["to_state"], "DEGRADED")
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -222,7 +258,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertEqual(session["events"][-1]["payload"]["from_state"], "DEGRADED")
         self.assertEqual(session["events"][-1]["payload"]["to_state"], "LIVE")
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -242,7 +278,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertEqual(session["events"][-1]["reason_code"], "INGEST_DISCONNECTED")
         self.assertIsNotNone(session["last_ingest_at"])
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -274,7 +310,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         self.assertEqual(session["events"][-1]["payload"]["to_state"], "DEGRADED")
         self.assertIsNone(session["hold_deadline_at"])
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",
@@ -295,7 +331,7 @@ class NodeSessionIntegrationTest(unittest.TestCase):
         response = self._bootstrap("provider-server-1")
         node_id = str(response["node_id"])
 
-        node_internal.heartbeat(
+        self._heartbeat(
             node_id,
             HeartbeatRequest(
                 status="READY",

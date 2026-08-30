@@ -47,6 +47,23 @@ class DestinationSecretStoreTest(unittest.TestCase):
             self.assertEqual(store.resolve(user_id="user-a", secret_ref="primary"), "alpha")
             self.assertEqual(store.resolve(user_id="user-b", secret_ref="primary"), "bravo")
 
+    def test_stale_store_cannot_overwrite_another_process_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Fernet.generate_key()
+            first = DestinationSecretStore(tmp, master_key=key)
+            second = DestinationSecretStore(tmp, master_key=key)
+
+            first.put(user_id="user-a", secret_ref="primary", value="alpha")
+            second.put(user_id="user-b", secret_ref="primary", value="bravo")
+
+            reloaded = DestinationSecretStore(tmp, master_key=key)
+            self.assertEqual(
+                reloaded.resolve(user_id="user-a", secret_ref="primary"), "alpha"
+            )
+            self.assertEqual(
+                reloaded.resolve(user_id="user-b", secret_ref="primary"), "bravo"
+            )
+
     def test_wrong_master_key_cannot_decrypt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             first = DestinationSecretStore(tmp, master_key=Fernet.generate_key())
@@ -70,7 +87,9 @@ class DestinationSecretStoreTest(unittest.TestCase):
                 "destination_secret_store.Path.open",
                 side_effect=PermissionError("permission denied"),
             ):
-                with self.assertRaisesRegex(DestinationSecretError, "cannot be read"):
+                with self.assertRaisesRegex(
+                    DestinationSecretError, "cannot be (read|locked)"
+                ):
                     DestinationSecretStore(tmp, master_key=Fernet.generate_key())
 
     def test_invalid_state_record_fails_closed(self) -> None:

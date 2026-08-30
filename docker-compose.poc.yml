@@ -23,7 +23,9 @@ services:
       - mediamtx
     environment:
       INPUT_URI: ${INPUT_URI:-rtsp://mediamtx:8554/live/input}
+      INPUT_URI_FILE: /run/irlight/continuity-secrets/media_input_uri
       EGRESS_URL: ${EGRESS_URL:-rtmp://mediamtx:1935/output/relay}
+      EGRESS_URL_FILE: /run/irlight/continuity-secrets/media_publish_uri
       STATE_DIR: /state
       VIDEO_WIDTH: ${VIDEO_WIDTH:-1280}
       VIDEO_HEIGHT: ${VIDEO_HEIGHT:-720}
@@ -35,6 +37,7 @@ services:
       PROFILE: ${PROFILE:-COMPOSITED_VIDEO_POC}
     volumes:
       - irlight-state:/state
+      - irlight-continuity-secrets:/run/irlight/continuity-secrets:ro
 
   control-ui:
     build:
@@ -49,7 +52,9 @@ services:
       RECOVERY_STABLE_SECONDS: ${RECOVERY_STABLE_SECONDS:-3.0}
       NODE_MEDIA_HEALTH_FAILURE_GRACE_SECONDS: ${NODE_MEDIA_HEALTH_FAILURE_GRACE_SECONDS:-30}
       NODE_BOOTSTRAP_TOKENS: poc-node-token
+      NODE_INTERNAL_ADMIN_TOKENS: poc-admin-token
       NODE_EGRESS_URL: rtmp://mediamtx:1935/output/relay
+      NODE_EGRESS_VERIFIED_PEER_IP: 198.51.100.10
       COOKIE_INSECURE: "1"
       IRLIGHT_VERIFY_ALLOW_PRIVATE_TARGETS: "1"
       # Development-only fallback key. Production must mount its own key file.
@@ -72,7 +77,8 @@ services:
     build:
       context: ./apps/node-agent
       dockerfile: Dockerfile
-    restart: unless-stopped
+    restart: "no"
+    stop_grace_period: 30s
     depends_on:
       - mediamtx
       - control-ui
@@ -82,8 +88,13 @@ services:
       NODE_PROVIDER_SERVER_ID: poc-node
       NODE_BOOT_ID: poc-boot
       NODE_AGENT_VERSION: 0.4.0-spike
-      NODE_SECRET_DIR: /tmp/irlight-node-secrets
+      NODE_MEDIA_SECRET_DIR: /run/irlight/continuity-secrets
+      NODE_RELAY_SECRET_DIR: /run/irlight/relay-secrets
+      NODE_EGRESS_SECRET_DIR: /run/irlight/egress-secrets
+      NODE_CONTROL_STATE_FILE: /state/control.json
       NODE_HEARTBEAT_INTERVAL: "2"
+      NODE_BOOTSTRAP_TIMEOUT_SECONDS: "120"
+      NODE_BOOTSTRAP_RETRY_SECONDS: "1"
       NODE_SUPERVISOR: fake
       NODE_INGEST_AUTH_PROXY_ENABLED: "1"
       NODE_INGEST_AUTH_LISTEN_HOST: 0.0.0.0
@@ -98,6 +109,7 @@ services:
       NODE_INGEST_BITRATE_VIOLATION_SAMPLES: "2"
       NODE_INGEST_QUALITY_ENABLED: "1"
       NODE_INGEST_SAMPLE_URL: rtsp://mediamtx:8554/live/input
+      NODE_INGEST_SAMPLE_URL_FILE: /run/irlight/continuity-secrets/media_input_uri
       NODE_INGEST_SAMPLE_SECONDS: "3"
       NODE_INGEST_MIN_FPS: "20"
       NODE_INGEST_PREFERRED_MIN_FPS: "24"
@@ -107,6 +119,29 @@ services:
       NODE_INGEST_MIN_PROGRESS_RATIO: "0.55"
       NODE_INGEST_MIN_BITRATE_BPS: "500000"
       NODE_INGEST_LOW_BITRATE_SAMPLES: "2"
+    volumes:
+      - irlight-state:/state
+      - irlight-continuity-secrets:/run/irlight/continuity-secrets
+      - irlight-relay-secrets:/run/irlight/relay-secrets
+      - irlight-egress-secrets:/run/irlight/egress-secrets
 
 volumes:
   irlight-state:
+  irlight-continuity-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=700
+  irlight-relay-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=700
+  irlight-egress-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=700

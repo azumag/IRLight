@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
-from entitlement_store import EntitlementStore  # noqa: E402
+from entitlement_store import EntitlementStateError, EntitlementStore  # noqa: E402
 from session_store import EntitlementExceeded, SessionStore  # noqa: E402
 
 
@@ -46,6 +46,24 @@ class EntitlementStoreTest(unittest.TestCase):
             "user-a", max_concurrent_sessions=0, plan="disabled"
         )
         self.assertEqual(entitlement["max_concurrent_sessions"], 0)
+
+    def test_stale_store_cannot_overwrite_another_process_update(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            first = EntitlementStore(state_dir)
+            second = EntitlementStore(state_dir)
+
+            first.set("user-a", max_concurrent_sessions=2, plan="supporter")
+            second.set("user-b", max_concurrent_sessions=3, plan="creator")
+
+            reloaded = EntitlementStore(state_dir)
+            self.assertEqual(reloaded.get("user-a")["max_concurrent_sessions"], 2)
+            self.assertEqual(reloaded.get("user-b")["max_concurrent_sessions"], 3)
+
+    def test_corrupt_state_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            Path(state_dir, "entitlements.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(EntitlementStateError):
+                EntitlementStore(state_dir)
 
 
 class ConcurrentSessionLimitTest(unittest.TestCase):

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 compose=(docker compose -f docker-compose.poc.yml)
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
@@ -58,7 +59,7 @@ login() {
 wait_node_registered() {
   local deadline=$((SECONDS + 45))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
       return 0
     fi

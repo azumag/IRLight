@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+smoke_project="${IRLIGHT_SMOKE_PROJECT:-irlight-poc-smoke-$$-$RANDOM}"
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
-  compose=(docker compose -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE")
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE")
 else
-  compose=(docker compose -f docker-compose.poc.yml)
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml)
 fi
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
@@ -51,7 +53,7 @@ show_logs_and_cleanup() {
     wait "$publisher_pid" 2>/dev/null || true
   fi
   rm -f "$auth_cookie_jar"
-  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
   exit "$status"
 }
 trap show_logs_and_cleanup EXIT
@@ -94,7 +96,7 @@ wait_node_registered() {
   local timeout="${1:-30}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
       return 0
     fi
@@ -109,7 +111,7 @@ wait_node_ingest_status() {
   local timeout="${2:-20}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any((n.get("ingest") or {}).get("status") == expected for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
@@ -124,7 +126,7 @@ wait_node_event() {
   local timeout="${2:-20}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any(any(e.get("type") == expected for e in n.get("events",[])) for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
@@ -132,6 +134,79 @@ wait_node_event() {
   done
   echo "Node event $expected が記録されませんでした" >&2
   return 1
+}
+
+assert_runtime_secret_boundaries() {
+  # Continuity needs only its two node-local media URIs. It must not be able to
+  # read the relay or external-destination volumes even when running as root.
+  "${compose[@]}" exec -T continuity sh -c \
+    'test ! -e /run/irlight/relay-secrets && test ! -e /run/irlight/egress-secrets'
+
+  # Scan the live container PID namespace without printing any credential.
+  # This catches regressions that put a generated URI or its password/query
+  # token back into ffprobe (or another child process) argv.
+  "${compose[@]}" exec -T node-agent python3 -c '
+from pathlib import Path
+import time
+import urllib.parse
+import sys
+
+protected = []
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    try:
+        uri = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"required secret file unavailable: {path.name}") from exc
+    if not uri:
+        raise SystemExit(f"required secret file empty: {path.name}")
+    protected.append(uri.encode())
+    parsed = urllib.parse.urlsplit(uri)
+    candidates = [parsed.password or ""]
+    for values in urllib.parse.parse_qs(parsed.query).values():
+        candidates.extend(values)
+    protected.extend(
+        urllib.parse.unquote(value).encode()
+        for value in candidates
+        if len(value) >= 8
+    )
+
+deadline = time.monotonic() + 8.0
+while time.monotonic() < deadline:
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            command = (process / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if any(value and value in command for value in protected):
+            raise SystemExit("protected media credential present in process arguments")
+    time.sleep(0.05)
+' \
+    /run/irlight/continuity-secrets/media_input_uri \
+    /run/irlight/continuity-secrets/media_publish_uri \
+    /run/irlight/relay-secrets/media_relay_uri \
+    /run/irlight/egress-secrets/egress_url
+
+  "${compose[@]}" logs --no-color 2>&1 | \
+    "${compose[@]}" exec -T node-agent python3 -c '
+from pathlib import Path
+import sys
+
+logs = sys.stdin.buffer.read()
+for raw_path in sys.argv[1:]:
+    try:
+        value = Path(raw_path).read_text(encoding="utf-8").strip().encode()
+    except OSError as exc:
+        raise SystemExit("required secret file unavailable during log scan") from exc
+    if value and value in logs:
+        raise SystemExit("protected media credential present in container logs")
+' \
+      /run/irlight/continuity-secrets/media_input_uri \
+      /run/irlight/continuity-secrets/media_publish_uri \
+      /run/irlight/relay-secrets/media_relay_uri \
+      /run/irlight/egress-secrets/egress_url
 }
 
 control_mode() {
@@ -243,7 +318,7 @@ wait_status \
   --video-source STANDBY
 
 current_stage="first-live"
-start_publisher 20 1280 720
+start_publisher 35 1280 720
 wait_status \
   --timeout 45 \
   --session-status LIVE \
@@ -251,6 +326,9 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual LIVE
 wait_node_ingest_status "ACCEPTED" 12
+
+current_stage="runtime-secret-boundaries"
+assert_runtime_secret_boundaries
 
 current_stage="mute"
 control_mode MUTED

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/rtmps-ingest.override.yml"
@@ -184,7 +185,7 @@ wait_assigned_node() {
   local timeout="${1:-45}" deadline payload
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 sid=sys.argv[1]; d=json.load(sys.stdin)

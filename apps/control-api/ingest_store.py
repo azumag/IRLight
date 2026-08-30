@@ -10,8 +10,12 @@ import tempfile
 import threading
 import time
 import uuid
+import fcntl
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
+
+from state_safety import mark_initialized, was_initialized
 
 
 CREDENTIAL_SCOPES = {"INGEST", "RELAY_CLIENT"}
@@ -35,22 +39,62 @@ class IngestCredentialStore:
     def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "ingest_credentials.json"
+        self.lock_path = self.state_dir / ".ingest-credentials.lock"
         self.lock = threading.Lock()
         self._credentials: dict[str, dict[str, Any]] = {}
-        self._load()
+        with self._state_lock(exclusive=False):
+            pass
+
+    @contextmanager
+    def _state_lock(self, *, exclusive: bool):
+        with self.lock:
+            try:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                with self.lock_path.open("a+", encoding="utf-8") as handle:
+                    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(handle.fileno(), operation)
+                    try:
+                        self._load()
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except IngestCredentialError:
+                raise
+            except OSError as exc:
+                raise IngestCredentialError(
+                    f"cannot lock ingest credential state {self.path}: {exc}"
+                ) from exc
 
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            data = raw if isinstance(raw, dict) else {}
-            self._credentials = {
-                str(key): value
-                for key, value in data.get("credentials", {}).items()
-                if isinstance(value, dict)
-            }
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            if was_initialized(self.path):
+                raise IngestCredentialError(
+                    f"ingest credential state {self.path} disappeared after initialization"
+                )
             self._credentials = {}
+            return
+        except (json.JSONDecodeError, OSError) as exc:
+            raise IngestCredentialError(
+                f"cannot read ingest credential state {self.path}: {exc}"
+            ) from exc
+
+        if not isinstance(raw, dict) or not isinstance(raw.get("credentials"), dict):
+            raise IngestCredentialError(
+                f"invalid ingest credential state payload in {self.path}"
+            )
+        credentials = raw["credentials"]
+        if any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in credentials.items()
+        ):
+            raise IngestCredentialError(
+                f"invalid ingest credential record in {self.path}"
+            )
+        self._credentials = dict(credentials)
+        mark_initialized(self.path)
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +110,12 @@ class IngestCredentialStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            directory_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
@@ -115,7 +165,7 @@ class IngestCredentialStore:
             "last_authenticated_at": None,
         }
 
-        with self.lock:
+        with self._state_lock(exclusive=True):
             # Rotation is deliberate: at most one active ingest credential is
             # accepted per Session, so an old copied key stops working as soon
             # as the user asks for a replacement.
@@ -150,7 +200,7 @@ class IngestCredentialStore:
             return None
         candidate = self._digest(secret)
 
-        with self.lock:
+        with self._state_lock(exclusive=True):
             for record in self._credentials.values():
                 if record.get("username") != username:
                     continue
@@ -175,7 +225,7 @@ class IngestCredentialStore:
         return None
 
     def revoke(self, credential_id: str, *, user_id: str | None = None) -> dict[str, Any]:
-        with self.lock:
+        with self._state_lock(exclusive=True):
             record = self._credentials.get(credential_id)
             if record is None or (user_id is not None and record.get("user_id") != user_id):
                 raise KeyError(credential_id)
@@ -187,7 +237,7 @@ class IngestCredentialStore:
     def revoke_session(self, session_id: str, *, now: float | None = None) -> int:
         revoked_at = time.time() if now is None else now
         changed = 0
-        with self.lock:
+        with self._state_lock(exclusive=True):
             for record in self._credentials.values():
                 if record.get("session_id") == session_id and record.get("revoked_at") is None:
                     record["revoked_at"] = revoked_at
@@ -204,7 +254,7 @@ class IngestCredentialStore:
         scope: str = "INGEST",
     ) -> dict[str, Any] | None:
         current = time.time() if now is None else now
-        with self.lock:
+        with self._state_lock(exclusive=False):
             for record in reversed(list(self._credentials.values())):
                 if (
                     record.get("session_id") != session_id
@@ -220,6 +270,11 @@ class IngestCredentialStore:
                 return self.public_record(record)
         return None
 
+    def get(self, credential_id: str) -> dict[str, Any] | None:
+        with self._state_lock(exclusive=False):
+            record = self._credentials.get(credential_id)
+            return self.public_record(record) if record is not None else None
+
     @staticmethod
     def public_record(record: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in record.items() if key != "secret_sha256"}
@@ -228,8 +283,12 @@ class IngestCredentialStore:
 _DEFAULT_STORE: IngestCredentialStore | None = None
 
 
-def default_ingest_store() -> IngestCredentialStore:
+def default_ingest_store(
+    state_dir: str | os.PathLike[str] | None = None,
+) -> IngestCredentialStore:
     global _DEFAULT_STORE
+    if state_dir is not None:
+        return IngestCredentialStore(state_dir)
     if _DEFAULT_STORE is None:
         _DEFAULT_STORE = IngestCredentialStore()
     return _DEFAULT_STORE

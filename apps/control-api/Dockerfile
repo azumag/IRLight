@@ -17,11 +17,15 @@ COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/egress_destination.py apps/control-api/entitlement_store.py \
      apps/control-api/ingest_api.py apps/control-api/ingest_auth_guard.py \
      apps/control-api/ingest_store.py apps/control-api/pipeline_health.py \
+     apps/control-api/control_store.py \
      apps/control-api/session_api.py apps/control-api/session_store.py \
-     apps/control-api/session_workflow.py apps/control-api/reaper.py \
+     apps/control-api/session_workflow.py apps/control-api/state_safety.py \
+     apps/control-api/reaper.py \
      apps/control-api/reaper_cli.py apps/control-api/fake_provider_for_api.py ./
 COPY provider ./provider
 COPY apps/control-api/static ./static
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()" || exit 1
 
 EXPOSE 8080
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

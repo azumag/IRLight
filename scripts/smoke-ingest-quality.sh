@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 compose=(docker compose -f docker-compose.poc.yml)
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
@@ -47,7 +48,7 @@ wait_node_status() {
   local timeout="${3:-40}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json, sys
 expected, reason = sys.argv[1], sys.argv[2]
@@ -63,7 +64,7 @@ raise SystemExit(1)
     sleep 1
   done
   echo "Node ingest status did not become $expected reason=$reason" >&2
-  curl -fsS "$base_url/internal/nodes" >&2 || true
+  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
   return 1
 }
 
@@ -72,7 +73,7 @@ wait_node_event() {
   local timeout="${2:-30}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json, sys
 expected = sys.argv[1]
