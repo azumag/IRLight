@@ -114,7 +114,9 @@ assert value.get("reason_code") == expected_reason, value
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-target egress-gateway
+# Start Node Agent and Control Plane as well: Continuity consumes authenticated
+# local-media URIs from the Agent-owned tmpfs secret volume.
+"${compose[@]}" up -d --build
 wait_egress_status CONNECTED 60
 
 # Phase 1: remote outage enters a long reconnect backoff. An explicit user stop
