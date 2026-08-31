@@ -141,7 +141,9 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-tls-target
+# Continuity consumes Agent-generated authenticated local-media URIs, so start
+# the complete PoC dependency chain before introducing the two test gateways.
+"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent egress-tls-target
 
 # Runtime DNS lookup fails before GStreamer is created. It is retryable and
 # therefore must surface as RECONNECTING/DNS_FAILED rather than an opaque error.
