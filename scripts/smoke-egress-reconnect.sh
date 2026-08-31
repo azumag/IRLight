@@ -153,7 +153,10 @@ raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-target egress-gateway
+# Continuity now receives its authenticated local-media URIs from Node Agent
+# tmpfs files. Start the complete PoC dependency chain so the test exercises
+# production-equivalent secret delivery instead of bypassing it.
+"${compose[@]}" up -d --build
 wait_target_api 60
 wait_egress_status CONNECTED 60
 wait_target_path 60
