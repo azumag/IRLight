@@ -144,6 +144,40 @@ start_publisher() {
   publisher_pid=$!
 }
 
+wrong_secret_status() {
+  "${compose[@]}" exec -T \
+    -e AUTH_USER="$ingest_username" \
+    node-agent python3 -c '
+import json, os, urllib.error, urllib.request
+payload = {
+    "user": os.environ["AUTH_USER"],
+    "password": "wrong-secret",
+    "token": "",
+    "ip": "203.0.113.88",
+    "action": "publish",
+    "path": "live/input",
+    "protocol": "rtmp",
+    "id": "session-event-auth-smoke",
+    "query": "",
+    "userAgent": "session-event-smoke",
+}
+request = urllib.request.Request(
+    "http://127.0.0.1:8090/auth",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=5) as response:
+        print(response.status)
+except urllib.error.HTTPError as exc:
+    try:
+        print(exc.code)
+    finally:
+        exc.close()
+'
+}
+
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 # Start the Control Plane/media dependencies without Node Agent. This lets the
 # user Session allocate its provider_server_id before the Node bootstraps.
@@ -190,11 +224,9 @@ ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["user
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
 # A known Session with a wrong secret must get a formal, secret-free
-# ingest.auth_failed entry before the real publisher connects.
-auth_status="$(curl -sS -o /tmp/irlight-session-auth-failure.json -w '%{http_code}' --max-time 5 \
-  -X POST "$base_url/internal/ingest/auth" \
-  -H 'Content-Type: application/json' \
-  --data "{\"user\":\"$ingest_username\",\"password\":\"wrong-secret\",\"ip\":\"203.0.113.88\",\"action\":\"publish\",\"path\":\"live/input\",\"protocol\":\"rtmp\",\"id\":\"session-event-auth-smoke\"}")"
+# ingest.auth_failed entry. Route it through the Node-local proxy so the
+# Control Plane also receives the assigned Node bearer token.
+auth_status="$(wrong_secret_status)"
 if [[ "$auth_status" != "401" ]]; then
   echo "wrong credential expected HTTP 401, got $auth_status" >&2
   exit 1
