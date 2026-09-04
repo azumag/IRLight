@@ -104,13 +104,13 @@ class EntitlementStore:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
             directory_fd = os.open(self.state_dir, os.O_RDONLY)
             try:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
