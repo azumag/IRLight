@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+smoke_project="irlight-ingest-auth-cache-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/node-assignment.override.yml"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
-cookie_jar="/tmp/irlight-cache-smoke-cookies.txt"
+cookie_jar="$tmp_dir/cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
 publisher_pid=""
 email="cache-smoke-$(date +%s)-$RANDOM@example.invalid"
 password="SmokePassword123!"
@@ -15,7 +18,7 @@ provider_server_id=""
 ingest_username=""
 ingest_secret=""
 credential_id=""
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$override")
 
 cat >"$override" <<'EOF'
 services:
@@ -41,8 +44,7 @@ cleanup() {
     echo "--- control logs ---" >&2
     "${compose[@]}" logs --no-color --tail=100 control-ui >&2 || true
   fi
-  rm -f "$cookie_jar"
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -100,7 +102,7 @@ start_publisher() {
         video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
       audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample ! \
         audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
-  " >/tmp/irlight-cache-publisher.log 2>&1 &
+  " >"$publisher_log" 2>&1 &
   publisher_pid=$!
 }
 
@@ -163,7 +165,10 @@ except urllib.error.HTTPError as exc:
 '
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# The project name is generated for this process and is never borrowed from
+# COMPOSE_PROJECT_NAME or an existing developer stack. Any cleanup below is
+# therefore scoped to resources created by this smoke run.
+"${compose[@]}" config >/dev/null
 # Start only the Control Plane (plus its media dependencies) first. The Node
 # must bootstrap after Session prepare so node-bound ingest auth can authorize
 # this Session instead of receiving an unassigned synthetic binding.
