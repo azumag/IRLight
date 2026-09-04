@@ -58,13 +58,16 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
+        # Arm the initialization fuse before publishing authoritative state.
+        # If this commit is interrupted, the next process fails closed rather
+        # than treating a once-written catalog as a brand-new empty catalog.
+        mark_initialized(path)
         os.replace(temporary, path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        mark_initialized(path)
     finally:
         try:
             os.unlink(temporary)
