@@ -262,13 +262,16 @@ class SessionStore:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            # A missing sessions.json must never look like a pristine store
+            # after an attempted authoritative commit. Arm the durable fuse
+            # before publishing the payload, matching state_safety's contract.
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
             directory_fd = os.open(self.state_dir, os.O_RDONLY)
             try:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            mark_initialized(self.path)
             self._authoritative = True
         finally:
             try:
