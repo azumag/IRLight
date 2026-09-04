@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-egress-reconnect-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-reconnect.override.yml"
 secret_file="$tmp_dir/egress_url"
@@ -55,7 +57,7 @@ services:
       - ${EGRESS_SECRET_FILE}:/run/irlight/secrets/egress_url:ro
 YAML
 
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -69,7 +71,7 @@ cleanup() {
     echo "--- target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 egress-target >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -94,6 +96,11 @@ wait_target_api() {
   local deadline=$((SECONDS + timeout))
   until target_api >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
+      # One last observation avoids a false timeout when readiness changes on
+      # the deadline boundary after the preceding failed probe.
+      if target_api >/dev/null 2>&1; then
+        return 0
+      fi
       echo "target Control API did not become ready" >&2
       return 1
     fi
@@ -105,14 +112,11 @@ read_egress_status() {
   "${compose[@]}" exec -T egress-gateway cat /state/egress.json 2>/dev/null || true
 }
 
-wait_egress_status() {
+egress_status_matches() {
   local expected="$1"
-  local timeout="${2:-45}"
-  local deadline=$((SECONDS + timeout))
-  local payload=""
-  while (( SECONDS < deadline )); do
-    payload="$(read_egress_status)"
-    if python3 -c '
+  local payload
+  payload="$(read_egress_status)"
+  python3 -c '
 import json,sys
 expected=sys.argv[1]
 try:
@@ -120,22 +124,32 @@ try:
 except Exception:
     raise SystemExit(1)
 raise SystemExit(0 if value.get("status") == expected else 1)
-' "$expected" <<<"$payload" 2>/dev/null; then
+' "$expected" <<<"$payload" 2>/dev/null
+}
+
+wait_egress_status() {
+  local expected="$1"
+  local timeout="${2:-45}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if egress_status_matches "$expected"; then
       return 0
     fi
     sleep 1
   done
-  echo "egress status did not become $expected; last=$payload" >&2
+  # The status file can be atomically replaced on the timeout boundary between
+  # the last poll and the deadline check. Observe it once more before failing.
+  if egress_status_matches "$expected"; then
+    return 0
+  fi
+  echo "egress status did not become $expected; last=$(read_egress_status)" >&2
   return 1
 }
 
-wait_target_path() {
-  local timeout="${1:-45}"
-  local deadline=$((SECONDS + timeout))
-  local payload=""
-  while (( SECONDS < deadline )); do
-    payload="$(target_api 2>/dev/null || true)"
-    if python3 -c '
+target_path_ready() {
+  local payload
+  payload="$(target_api 2>/dev/null || true)"
+  python3 -c '
 import json,sys
 name=sys.argv[1]
 try:
@@ -144,16 +158,29 @@ except Exception:
     raise SystemExit(1)
 items=value.get("items", [])
 raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True for item in items) else 1)
-' "live/$stream_key" <<<"$payload" 2>/dev/null; then
+' "live/$stream_key" <<<"$payload" 2>/dev/null
+}
+
+wait_target_path() {
+  local timeout="${1:-45}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if target_path_ready; then
       return 0
     fi
     sleep 1
   done
-  echo "target did not receive live/$stream_key" >&2
+  # Match wait_egress_status's final-observation rule for MediaMTX readiness.
+  if target_path_ready; then
+    return 0
+  fi
+  echo "target did not receive live/$stream_key; paths=$(target_api 2>/dev/null || true)" >&2
   return 1
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# The generated project must never borrow or tear down a developer stack. If a
+# fixed host port is occupied, let `up` fail rather than preempting that owner.
+"${compose[@]}" config >/dev/null
 # Continuity now receives its authenticated local-media URIs from Node Agent
 # tmpfs files. Start the complete PoC dependency chain so the test exercises
 # production-equivalent secret delivery instead of bypassing it.
