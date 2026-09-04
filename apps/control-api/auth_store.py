@@ -80,13 +80,16 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
+        # Initialization is a durable write-intent fuse. It must be armed
+        # before replacing the authority file so a crash cannot publish state
+        # without leaving evidence that implicit empty recreation is forbidden.
+        mark_initialized(path)
         os.replace(temporary, path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        mark_initialized(path)
     finally:
         try:
             os.unlink(temporary)
