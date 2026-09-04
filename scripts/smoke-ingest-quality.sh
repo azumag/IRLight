@@ -2,12 +2,27 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
-compose=(docker compose -f docker-compose.poc.yml)
+tmp_dir="$(mktemp -d)"
+override="$tmp_dir/ingest-quality.override.yml"
+cat >"$override" <<'YAML'
+services:
+  control-ui:
+    environment:
+      NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT: "1"
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: ingest-quality-smoke-boot
+YAML
+
+compose=(docker compose -f docker-compose.poc.yml -f "$override")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 cookie_jar="/tmp/irlight-quality-cookies.txt"
 publisher_pid=""
 ingest_username=""
 ingest_secret=""
+provider_server_id=""
+session_id=""
 
 cleanup() {
   status=$?
@@ -25,6 +40,7 @@ cleanup() {
   fi
   rm -f "$cookie_jar"
   "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
   exit "$status"
 }
 trap cleanup EXIT
@@ -40,6 +56,25 @@ wait_http() {
     fi
     sleep 1
   done
+}
+
+wait_assigned_node() {
+  local timeout="${1:-45}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+d=json.load(sys.stdin)
+raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_id") == session_id for n in d.get("nodes", {}).values()) else 1)
+' "$session_id" <<<"$payload" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node did not bind to ingest quality Session" >&2
+  return 1
 }
 
 wait_node_status() {
@@ -92,7 +127,7 @@ raise SystemExit(1)
 }
 
 setup_ingest() {
-  local email password login csrf session_id credential
+  local email password login csrf credential prepared
   email="quality-$(date +%s)-$RANDOM@example.invalid"
   password="QualitySmoke123!"
   rm -f "$cookie_jar"
@@ -106,12 +141,13 @@ setup_ingest() {
   csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
   session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 
-  curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
+  prepared="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
     "$base_url/v1/sessions/$session_id/prepare" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
     -H "Idempotency-Key: quality-$session_id" \
-    --data '{"environment":"dev"}' >/dev/null
+    --data '{"environment":"dev"}')"
+  provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
 
   credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
     "$base_url/v1/sessions/$session_id/ingest-credentials" \
@@ -142,9 +178,14 @@ start_publisher() {
 
 "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
-"${compose[@]}" up -d --build
+# User ingest authorization is node-bound after hardening. Prepare the fake
+# provider Session first, then bootstrap a Node with its assigned server id.
+"${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 90
 setup_ingest
+export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
+"${compose[@]}" up -d --build node-agent
+wait_assigned_node 45
 
 # 10fps is valid H.264/AAC/720p, so the hard policy must not kick it. The
 # quality sampler should instead surface DEGRADED/FPS_OUT_OF_RANGE.
