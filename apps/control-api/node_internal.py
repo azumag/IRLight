@@ -274,6 +274,9 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
+        # nodes.json and the rollback token ledger are both authority. Arm the
+        # durable initialization fuse before publishing either payload.
+        mark_initialized(path)
         os.replace(temporary, path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -378,7 +381,6 @@ def _write_authority(authority: dict[str, Any]) -> None:
     _validate_nodes(authority)
     _validate_tokens(authority)
     atomic_write_json(_nodes_path(), authority)
-    mark_initialized(_nodes_path())
 
 
 def _write_legacy_token_fuse(
@@ -403,7 +405,6 @@ def _write_legacy_token_fuse(
         "session_id": session_id,
     }
     atomic_write_json(_tokens_path(), legacy)
-    mark_initialized(_tokens_path())
 
 
 def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
