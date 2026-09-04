@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
+smoke_project="irlight-rtmps-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/rtmps.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$override")
 
 cleanup() {
   status=$?
-  docker compose -f docker-compose.poc.yml -f "$override" down --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -41,8 +44,8 @@ services:
       - $tmp_dir/server.crt:/run/irlight/tls/ca.crt:ro
 EOF
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
-"${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+# This project name is generated for the current process. Do not tear down a
+# developer stack to make fixed test ports available; `up` must fail instead.
 "${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build
 
