@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+smoke_project="irlight-ingest-auth-abuse-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/auth-abuse.override.yml"
 cat >"$override" <<'YAML'
@@ -15,11 +17,11 @@ services:
       NODE_BOOT_ID: auth-abuse-smoke-boot
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$override")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 source_ip="203.0.113.50"
 wrong_secret="abuse-secret-must-never-persist"
-cookie_jar="/tmp/irlight-auth-abuse-cookies.txt"
+cookie_jar="$tmp_dir/cookies.txt"
 email="auth-abuse-$(date +%s)-$RANDOM@example.invalid"
 password="SmokePassword123!"
 csrf=""
@@ -41,8 +43,7 @@ cleanup() {
     echo "--- control-ui logs ---" >&2
     "${compose[@]}" logs --no-color --tail=150 control-ui >&2 || true
   fi
-  rm -f "$cookie_jar"
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -131,7 +132,9 @@ response_retry_after() {
   python3 -c 'import json,sys; print(json.load(sys.stdin).get("retry_after") or "")'
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# The generated project must never borrow or tear down a developer stack. If a
+# fixed host port is occupied, let `up` fail rather than preempting that owner.
+"${compose[@]}" config >/dev/null
 # Allocate the Session first, then bootstrap a Node whose bearer is formally
 # bound to that Session. The abuse guard must be tested behind the same node
 # authentication boundary used in production.

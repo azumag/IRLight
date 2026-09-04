@@ -20,6 +20,7 @@ The disposable project may remove its own volumes during cleanup. This permissio
 The isolation pattern is applied to:
 
 - `scripts/smoke-ingest-auth-cache.sh`
+- `scripts/smoke-ingest-auth-abuse.sh`
 - `scripts/smoke-rtmps.sh`
 
 Other `scripts/smoke-*.sh` and soak scripts still need to be audited and migrated under issue #85. Until that migration is complete, do not assume all smoke scripts are safe to run concurrently with a persistent PoC stack.
