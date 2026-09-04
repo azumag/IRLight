@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,7 @@ os.environ["STATE_DIR"] = _TMP
 from auth_store import (  # noqa: E402
     AUTH_SESSIONS_PATH,
     AuthError,
+    AuthStateError,
     EmailAlreadyRegistered,
     InvalidCredentials,
     USERS_PATH,
@@ -30,6 +32,7 @@ from auth_store import (  # noqa: E402
     register_user,
     revoke_session,
 )
+from state_safety import initialization_marker  # noqa: E402
 
 
 class AuthStoreTest(unittest.TestCase):
@@ -37,6 +40,7 @@ class AuthStoreTest(unittest.TestCase):
         for path in (USERS_PATH, AUTH_SESSIONS_PATH):
             if path.exists():
                 path.unlink()
+            initialization_marker(path).unlink(missing_ok=True)
         ensure_auth_state()
 
     def _register(
@@ -55,6 +59,37 @@ class AuthStoreTest(unittest.TestCase):
         self._register(email="  Alice@Example.com  ")
         with self.assertRaises(EmailAlreadyRegistered):
             self._register(email="alice@example.com")
+
+    def test_concurrent_duplicate_registration_has_one_winner(self) -> None:
+        users: list[dict[str, object]] = []
+        failures: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                users.append(self._register())
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertEqual(len(users), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], EmailAlreadyRegistered)
+
+    def test_corrupt_user_state_fails_closed(self) -> None:
+        USERS_PATH.write_text("[]", encoding="utf-8")
+        with self.assertRaises(AuthStateError):
+            get_user("user-a")
+
+    def test_initialized_user_state_deletion_fails_closed(self) -> None:
+        self._register()
+        USERS_PATH.unlink()
+        with self.assertRaises(AuthStateError):
+            self._register(email="bob@example.com")
 
     def test_register_rejects_invalid_email(self) -> None:
         with self.assertRaises(AuthError):

@@ -20,7 +20,6 @@ from destination_secret_store import (
 from egress_destination import EgressDestinationError, build_egress_url
 from entitlement_store import default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
-from ingest_store import default_ingest_store
 from session_store import EntitlementExceeded
 from session_workflow import ProvisioningWorkflow
 
@@ -124,46 +123,68 @@ def prepare_session(
 
     user_id = str(current_user["id"])
     store = default_store()
-    existing = store.get(session_id)
-    if existing is not None and existing.get("user_id") != user_id:
-        raise HTTPException(status_code=404, detail="unknown session")
-    if existing is not None and existing.get("idempotency_key") == key:
-        return existing
-
-    destination = _validated_destination(request.destination_id, user_id, request.egress_mode)
-    if (
-        existing is not None
-        and str(existing.get("egress_mode", "DIRECT_PUSH")) != request.egress_mode
-    ):
-        raise HTTPException(status_code=409, detail="egress mode cannot be changed")
-
-    entitlement = default_entitlement_store().get(user_id)
-    workflow = ProvisioningWorkflow(store, default_provider())
     try:
-        store.reserve_prepare_slot(
+        prepared = store.get_prepare_replay(
             session_id,
             user_id=user_id,
             environment=request.environment,
-            entitlement_id=str(entitlement["id"]),
-            max_concurrent_sessions=int(entitlement["max_concurrent_sessions"]),
+            destination_id=request.destination_id,
+            egress_mode=request.egress_mode,
+            idempotency_key=key,
         )
-        changes: dict[str, Any] = {"egress_mode": request.egress_mode}
-        if destination is not None:
-            changes["destination_id"] = str(destination["id"])
-        store.update(session_id, **changes)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown session") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # A committed response is replayable even if external Destination or
+    # entitlement state changed after the original request. STOPPED is the
+    # recoverable crash boundary between binding and provisioning claim.
+    if prepared is not None and prepared.get("status") != "STOPPED":
+        return prepared
+
+    if prepared is None:
+        destination = _validated_destination(
+            request.destination_id, user_id, request.egress_mode
+        )
+        entitlement = default_entitlement_store().get(user_id)
+        try:
+            prepared, replay = store.begin_prepare(
+                session_id,
+                user_id=user_id,
+                environment=request.environment,
+                entitlement_id=str(entitlement["id"]),
+                max_concurrent_sessions=int(entitlement["max_concurrent_sessions"]),
+                destination_id=(
+                    str(destination["id"]) if destination is not None else None
+                ),
+                egress_mode=request.egress_mode,
+                idempotency_key=key,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="unknown session") from exc
+        except EntitlementExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"provisioning failed: {exc}") from exc
+        if replay and prepared.get("status") != "STOPPED":
+            return prepared
+
+    workflow = ProvisioningWorkflow(store, default_provider())
+    try:
         session = workflow.prepare(
             session_id,
             user_id=user_id,
             environment=request.environment,
         )
-    except EntitlementExceeded as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"provisioning failed: {exc}") from exc
 
-    return store.update(session["session_id"], idempotency_key=key)
+    return session
 
 
 @router.post("/{session_id}/stop")
@@ -174,9 +195,7 @@ def stop_session(
     store = default_store()
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
-        session = workflow.stop(session_id)
-        default_ingest_store().revoke_session(session_id)
-        return session
+        return workflow.stop(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
     except Exception as exc:

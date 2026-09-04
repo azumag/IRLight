@@ -227,6 +227,8 @@ class PipelineHealthHeartbeatIntegrationTest(unittest.TestCase):
                 provider_server_id="provider-heartbeat-1",
                 boot_id="boot-heartbeat",
                 agent_version="test",
+                bootstrap_request_id="bootstrap-heartbeat-request",
+                node_access_token="node-heartbeat-access-token-0123456789abcdef",
                 public_address="198.51.100.30",
             ),
             authorization=f"Bearer {self.token}",
@@ -241,6 +243,7 @@ class PipelineHealthHeartbeatIntegrationTest(unittest.TestCase):
                 active_publisher=False,
                 egress_connected=False,
             ),
+            authorization=f"Bearer {response['node_access_token']}",
         )
         self.assertEqual(heartbeat["desired_state"], "STOPPED")
 

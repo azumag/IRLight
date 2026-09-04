@@ -117,7 +117,7 @@ class DestinationProbeTest(unittest.TestCase):
     def test_srt_waits_for_real_connected_event_and_uses_literal_ip(self, popen) -> None:
         process = _FakeProcess(
             b"Media path: 'file://con' --> 'srt://127.0.0.1:8890'\n"
-            b"SRT target connected\n"
+            b"Target connected (caller)\n"
         )
         popen.return_value = process
 

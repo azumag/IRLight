@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/unusable-media.override.yml"
@@ -12,12 +13,6 @@ password='SmokePassword123!'
 
 cat >"$override" <<'YAML'
 services:
-  # For the format-change case we briefly pause Node Agent so the Session does
-  # not observe the intentional publisher handoff as OFFLINE. Keep ingest auth
-  # available through the Control Plane during that short observation gap.
-  mediamtx:
-    environment:
-      MTX_AUTHHTTPADDRESS: http://control-ui:8080/internal/ingest/auth
   control-ui:
     environment:
       NODE_BOOTSTRAP_TOKENS: unusable-media-node-token
@@ -27,10 +22,9 @@ services:
       NODE_BOOTSTRAP_TOKEN: unusable-media-node-token
       NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
       NODE_BOOT_ID: unusable-media-boot
-      # Keep the next quality probe well outside the 3s recovery window after
-      # a recovered heartbeat, so the format-handoff pause cannot catch an
-      # already-running probe and replay a stale timeout after unpause.
-      NODE_HEARTBEAT_INTERVAL: "5"
+      # Leave a deterministic handoff window between observations while keeping
+      # the Node-local auth proxy alive for the replacement publisher.
+      NODE_HEARTBEAT_INTERVAL: "8"
       NODE_INGEST_SAMPLE_SECONDS: "2"
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
@@ -139,7 +133,7 @@ wait_assigned_node() {
   local timeout="${1:-45}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 session_id=sys.argv[1]
@@ -154,7 +148,7 @@ raise SystemExit(0 if any(
     sleep 1
   done
   echo "Node did not bind to user Session" >&2
-  curl -fsS "$base_url/internal/nodes" >&2 || true
+  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
   return 1
 }
 
@@ -265,6 +259,7 @@ PY
 }
 
 start_invalid_resolution_publisher() {
+  # shellcheck disable=SC2016
   "${compose[@]}" exec -T \
     -e IRLIGHT_PUBLISH_USER="$ingest_username" \
     -e IRLIGHT_PUBLISH_PASS="$ingest_secret" \
@@ -345,13 +340,11 @@ set_gate audio 0
 wait_session_status LIVE 50
 
 # Model a fast publisher reconnect whose media format changes before the next
-# Node observation. Pausing Node Agent keeps the Session LIVE across the brief
-# handoff; ingest auth is routed directly to Control Plane for this smoke only.
-"${compose[@]}" pause node-agent >/dev/null
+# Node observation. Keep the Node process alive so MediaMTX still authenticates
+# the replacement publisher through the node-bound proxy.
 stop_controllable_publisher
 start_invalid_resolution_publisher
 wait_mediamtx_resolution 640 360 20
-"${compose[@]}" unpause node-agent >/dev/null
 wait_holding_reason FORMAT_CHANGED 45
 
 final_events="$(session_events)"

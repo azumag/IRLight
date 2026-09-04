@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+smoke_project="${IRLIGHT_SMOKE_PROJECT:-irlight-poc-smoke-$$-$RANDOM}"
+tmp_dir="$(mktemp -d)"
+smoke_override="$tmp_dir/smoke.override.yml"
+cat >"$smoke_override" <<'EOF'
+services:
+  control-ui:
+    environment:
+      IRLIGHT_LEGACY_AUDIO_API_ENABLED: "1"
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: docker-smoke-boot
+EOF
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
-  compose=(docker compose -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE")
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE" -f "$smoke_override")
 else
-  compose=(docker compose -f docker-compose.poc.yml)
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$smoke_override")
 fi
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
@@ -13,6 +27,9 @@ auth_cookie_jar="/tmp/irlight-smoke-cookies.txt"
 ingest_username=""
 ingest_secret=""
 ingest_session_id=""
+ingest_provider_server_id=""
+ingest_csrf=""
+ingest_srt_destination_id=""
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -51,7 +68,8 @@ show_logs_and_cleanup() {
     wait "$publisher_pid" 2>/dev/null || true
   fi
   rm -f "$auth_cookie_jar"
-  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
   exit "$status"
 }
 trap show_logs_and_cleanup EXIT
@@ -94,13 +112,68 @@ wait_node_registered() {
   local timeout="${1:-30}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+d=json.load(sys.stdin)
+raise SystemExit(0 if any(
+    n.get("session_assigned") is True and n.get("session_id") == session_id
+    for n in d.get("nodes", {}).values()
+) else 1)
+' "$ingest_session_id" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "Node Agent がControl Planeへ登録されませんでした" >&2
+  echo "Node Agent が準備済み Session に登録されませんでした" >&2
+  return 1
+}
+
+wait_ingest_auth_proxy_ready() {
+  local timeout="${1:-30}"
+  local deadline=$((SECONDS + timeout))
+  local status
+  while (( SECONDS < deadline )); do
+    status="$(
+      printf '%s\n%s\n' "$ingest_username" "$ingest_secret" | \
+        "${compose[@]}" exec -T node-agent python3 -c '
+import json, sys, urllib.error, urllib.request
+user = sys.stdin.readline().rstrip("\n")
+secret = sys.stdin.readline().rstrip("\n")
+payload = {
+    "user": user,
+    "password": secret,
+    "token": "",
+    "ip": "198.51.100.77",
+    "action": "publish",
+    "path": "live/input",
+    "protocol": "rtmp",
+    "id": "docker-smoke-ready",
+    "query": "",
+    "userAgent": "docker-smoke",
+}
+req = urllib.request.Request(
+    "http://127.0.0.1:8090/auth",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=3) as response:
+        print(response.status)
+except urllib.error.HTTPError as exc:
+    print(exc.code)
+except (urllib.error.URLError, TimeoutError, OSError):
+    print("unavailable")
+' 2>/dev/null || true
+    )"
+    if [[ "$status" == "200" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node ingest auth proxy が対象 Session の credential を認証できませんでした" >&2
   return 1
 }
 
@@ -109,7 +182,7 @@ wait_node_ingest_status() {
   local timeout="${2:-20}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any((n.get("ingest") or {}).get("status") == expected for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
@@ -124,7 +197,7 @@ wait_node_event() {
   local timeout="${2:-20}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c 'import json,sys; expected=sys.argv[1]; d=json.load(sys.stdin); nodes=d.get("nodes",{}).values(); raise SystemExit(0 if any(any(e.get("type") == expected for e in n.get("events",[])) for n in nodes) else 1)' "$expected" <<<"$payload" 2>/dev/null; then
       return 0
     fi
@@ -132,6 +205,74 @@ wait_node_event() {
   done
   echo "Node event $expected が記録されませんでした" >&2
   return 1
+}
+
+assert_runtime_secret_boundaries() {
+  "${compose[@]}" exec -T continuity sh -c \
+    'test ! -e /run/irlight/relay-secrets && test ! -e /run/irlight/egress-secrets'
+
+  "${compose[@]}" exec -T node-agent python3 -c '
+from pathlib import Path
+import time
+import urllib.parse
+import sys
+
+protected = []
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    try:
+        uri = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"required secret file unavailable: {path.name}") from exc
+    if not uri:
+        raise SystemExit(f"required secret file empty: {path.name}")
+    protected.append(uri.encode())
+    parsed = urllib.parse.urlsplit(uri)
+    candidates = [parsed.password or ""]
+    for values in urllib.parse.parse_qs(parsed.query).values():
+        candidates.extend(values)
+    protected.extend(
+        urllib.parse.unquote(value).encode()
+        for value in candidates
+        if len(value) >= 8
+    )
+
+deadline = time.monotonic() + 8.0
+while time.monotonic() < deadline:
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            command = (process / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if any(value and value in command for value in protected):
+            raise SystemExit("protected media credential present in process arguments")
+    time.sleep(0.05)
+' \
+    /run/irlight/continuity-secrets/media_input_uri \
+    /run/irlight/continuity-secrets/media_publish_uri \
+    /run/irlight/relay-secrets/media_relay_uri \
+    /run/irlight/egress-secrets/egress_url
+
+  "${compose[@]}" logs --no-color 2>&1 | \
+    "${compose[@]}" exec -T node-agent python3 -c '
+from pathlib import Path
+import sys
+
+logs = sys.stdin.buffer.read()
+for raw_path in sys.argv[1:]:
+    try:
+        value = Path(raw_path).read_text(encoding="utf-8").strip().encode()
+    except OSError as exc:
+        raise SystemExit("required secret file unavailable during log scan") from exc
+    if value and value in logs:
+        raise SystemExit("protected media credential present in container logs")
+' \
+      /run/irlight/continuity-secrets/media_input_uri \
+      /run/irlight/continuity-secrets/media_publish_uri \
+      /run/irlight/relay-secrets/media_relay_uri \
+      /run/irlight/egress-secrets/egress_url
 }
 
 control_mode() {
@@ -147,7 +288,7 @@ control_mode() {
 }
 
 setup_control_plane_and_ingest() {
-  local email password login csrf destination destination_id credential srt_url srt_payload auth_status
+  local email password login destination destination_id credential srt_url srt_payload auth_status prepared
   email="smoke-$(date +%s)-$RANDOM@example.invalid"
   password="SmokePassword123!"
   rm -f "$auth_cookie_jar"
@@ -159,29 +300,30 @@ setup_control_plane_and_ingest() {
   login="$(curl -fsS --max-time 10 -c "$auth_cookie_jar" -X POST "$base_url/v1/auth/login" \
     -H 'Content-Type: application/json' \
     --data "{\"email\":\"$email\",\"password\":\"$password\"}")"
-  csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
+  ingest_csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
 
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data '{"type":"rtmp","display_name":"Local RTMP probe","server_url":"rtmp://mediamtx:1935/live/input","secret_ref":"smoke/rtmp"}')"
   destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/destinations/$destination_id/verify" \
-    -H "X-CSRF-Token: $csrf" >/dev/null
+    -H "X-CSRF-Token: $ingest_csrf" >/dev/null
 
   ingest_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+  prepared="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/prepare" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     -H "Idempotency-Key: smoke-prepare-$ingest_session_id" \
-    --data '{"environment":"dev"}' >/dev/null
+    --data '{"environment":"dev"}')"
+  ingest_provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
 
   credential="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/ingest-credentials" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data '{"protocols":["rtmp","srt"],"ttl_seconds":3600}')"
   ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
   ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
@@ -199,22 +341,48 @@ setup_control_plane_and_ingest() {
   srt_payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Local SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' "$srt_url")"
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data "$srt_payload")"
-  destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+  ingest_srt_destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+}
+
+verify_srt_destination() {
+  if [[ -z "$ingest_srt_destination_id" || -z "$ingest_csrf" ]]; then
+    echo "SRT destination verification context is not initialized" >&2
+    return 1
+  fi
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
-    "$base_url/v1/destinations/$destination_id/verify" \
-    -H "X-CSRF-Token: $csrf" >/dev/null
+    "$base_url/v1/destinations/$ingest_srt_destination_id/verify" \
+    -H "X-CSRF-Token: $ingest_csrf" >/dev/null
 }
 
 wait_status() {
   ./scripts/wait-status.py --base-url "$base_url" "$@"
 }
 
-current_stage="compose-up"
+current_stage="compose-control-up"
 "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
-"${compose[@]}" up -d --build
+"${compose[@]}" up -d --build control-ui
+wait_http "$base_url/healthz" 60
+
+current_stage="authenticated-ingest-setup"
+setup_control_plane_and_ingest
+if [[ -z "$ingest_provider_server_id" ]]; then
+  echo "prepared Session did not return provider_server_id" >&2
+  exit 1
+fi
+export ASSIGNED_PROVIDER_SERVER_ID="$ingest_provider_server_id"
+
+current_stage="node-up"
+"${compose[@]}" up -d --build node-agent
+
+current_stage="node-auth-ready"
+wait_node_registered 45
+wait_ingest_auth_proxy_ready 30
+
+current_stage="authenticated-srt-verify"
+verify_srt_destination
 
 current_stage="initial-holding"
 wait_status \
@@ -224,10 +392,6 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
-wait_node_registered 45
-
-current_stage="authenticated-ingest-setup"
-setup_control_plane_and_ingest
 
 current_stage="reject-unsupported-resolution"
 start_publisher 15 640 360
@@ -243,7 +407,7 @@ wait_status \
   --video-source STANDBY
 
 current_stage="first-live"
-start_publisher 20 1280 720
+start_publisher 35 1280 720
 wait_status \
   --timeout 45 \
   --session-status LIVE \
@@ -251,6 +415,9 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual LIVE
 wait_node_ingest_status "ACCEPTED" 12
+
+current_stage="runtime-secret-boundaries"
+assert_runtime_secret_boundaries
 
 current_stage="mute"
 control_mode MUTED

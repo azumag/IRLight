@@ -20,8 +20,12 @@ import tempfile
 import threading
 import time
 import uuid
+import fcntl
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from state_safety import mark_initialized, was_initialized
 
 
 SESSION_STATES = {
@@ -83,6 +87,24 @@ class EntitlementExceeded(RuntimeError):
     pass
 
 
+class SessionStateError(RuntimeError):
+    """Raised when persisted Session state cannot be trusted."""
+
+    pass
+
+
+class ProvisioningInProgress(RuntimeError):
+    """Raised when another worker owns the Session provisioning lease."""
+
+    pass
+
+
+class OrphanCleanupInProgress(RuntimeError):
+    """Raised when provider cleanup owns a Session ID tombstone."""
+
+    pass
+
+
 def new_session_id() -> str:
     return str(uuid.uuid4())
 
@@ -107,7 +129,9 @@ def new_session(
         "relay_client_last_reason": None,
         "relay_client_updated_at": None,
         "idempotency_key": None,
+        "prepare_request": None,
         "version": 0,
+        "destination_id": None,
         "provider": None,
         "provider_volume_id": None,
         "provider_server_id": None,
@@ -115,7 +139,11 @@ def new_session(
         "node_id": None,
         "node_boot_id": None,
         "node_registered_at": None,
+        "node_last_heartbeat_at": None,
         "provisioning_started_at": None,
+        "provisioning_operation_id": None,
+        "provisioning_in_progress": False,
+        "provisioning_cancel_requested": False,
         "ready_at": None,
         "first_ingest_at": None,
         "last_ingest_at": None,
@@ -137,7 +165,7 @@ def new_session(
 
 
 class SessionStore:
-    """JSON-file persisted session store with an in-process lock."""
+    """JSON-file persisted session store with process-safe transactions."""
 
     def __init__(
         self,
@@ -147,6 +175,7 @@ class SessionStore:
     ) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "sessions.json"
+        self.lock_path = self.state_dir / ".sessions.lock"
         self.lock = threading.Lock()
         if recovery_stable_seconds is None:
             try:
@@ -157,20 +186,65 @@ class SessionStore:
                 recovery_stable_seconds = 3.0
         self.recovery_stable_seconds = max(0.0, recovery_stable_seconds)
         self._sessions: dict[str, dict[str, Any]] = {}
-        self._load()
+        self._orphan_cleanup_leases: dict[str, dict[str, Any]] = {}
+        self._authoritative = False
+        with self._state_lock(exclusive=False):
+            pass
+
+    @contextmanager
+    def _state_lock(self, *, exclusive: bool):
+        """Reload state while holding both thread and cross-process locks."""
+        with self.lock:
+            try:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                with self.lock_path.open("a+", encoding="utf-8") as handle:
+                    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(handle.fileno(), operation)
+                    try:
+                        self._load()
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except SessionStateError:
+                raise
+            except OSError as exc:
+                raise SessionStateError(
+                    f"cannot lock Session state {self.path}: {exc}"
+                ) from exc
 
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            data = raw if isinstance(raw, dict) else {}
-            self._sessions = {
-                str(key): value
-                for key, value in data.get("sessions", {}).items()
-                if isinstance(value, dict)
-            }
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            if was_initialized(self.path):
+                raise SessionStateError(
+                    f"Session state {self.path} disappeared after initialization"
+                )
             self._sessions = {}
+            self._orphan_cleanup_leases = {}
+            self._authoritative = False
+            return
+        except (json.JSONDecodeError, OSError) as exc:
+            raise SessionStateError(
+                f"cannot read Session state {self.path}: {exc}"
+            ) from exc
+
+        if not isinstance(raw, dict) or not isinstance(raw.get("sessions"), dict):
+            raise SessionStateError(f"invalid Session state payload in {self.path}")
+        sessions = raw["sessions"]
+        if any(not isinstance(key, str) or not isinstance(value, dict) for key, value in sessions.items()):
+            raise SessionStateError(f"invalid Session record in {self.path}")
+        leases = raw.get("orphan_cleanup_leases", {})
+        if not isinstance(leases, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in leases.items()
+        ):
+            raise SessionStateError(f"invalid cleanup lease state in {self.path}")
+        self._sessions = dict(sessions)
+        self._orphan_cleanup_leases = dict(leases)
+        mark_initialized(self.path)
+        self._authoritative = True
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -178,14 +252,27 @@ class SessionStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(
-                    {"sessions": self._sessions},
+                    {
+                        "sessions": self._sessions,
+                        "orphan_cleanup_leases": self._orphan_cleanup_leases,
+                    },
                     handle,
                     ensure_ascii=False,
                     sort_keys=True,
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            # A missing sessions.json must never look like a pristine store
+            # after an attempted authoritative commit. Arm the durable fuse
+            # before publishing the payload, matching state_safety's contract.
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
+            directory_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            self._authoritative = True
         finally:
             try:
                 os.unlink(temporary)
@@ -264,9 +351,10 @@ class SessionStore:
         return dict(event)
 
     def create(self, session_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = new_session(**kwargs)
             if session_id is not None:
+                self._reject_active_cleanup_lease_locked(session_id)
                 if session_id in self._sessions:
                     return dict(self._sessions[session_id])
                 session["session_id"] = session_id
@@ -286,7 +374,8 @@ class SessionStore:
         if max_concurrent_sessions < 1:
             raise EntitlementExceeded("concurrent session entitlement is disabled")
 
-        with self.lock:
+        with self._state_lock(exclusive=True):
+            self._reject_active_cleanup_lease_locked(session_id)
             existing = self._sessions.get(session_id)
             if existing is not None and existing.get("user_id") != user_id:
                 raise KeyError(session_id)
@@ -327,13 +416,148 @@ class SessionStore:
             self._persist()
             return dict(existing)
 
+    def begin_prepare(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        environment: str,
+        entitlement_id: str,
+        max_concurrent_sessions: int,
+        destination_id: str | None,
+        egress_mode: str,
+        idempotency_key: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically bind a prepare request, configuration and capacity slot.
+
+        Returns ``(session, replay)``. Once bound, neither a concurrent request
+        nor a later Idempotency-Key can mutate the Session's transport target.
+        """
+        if max_concurrent_sessions < 1:
+            raise EntitlementExceeded("concurrent session entitlement is disabled")
+        request = {
+            "environment": environment,
+            "destination_id": destination_id,
+            "egress_mode": egress_mode,
+        }
+        with self._state_lock(exclusive=True):
+            self._reject_active_cleanup_lease_locked(session_id)
+            existing = self._sessions.get(session_id)
+            if existing is not None and existing.get("user_id") != user_id:
+                raise KeyError(session_id)
+            if existing is not None and existing.get("status") in {"FINISHED", "FAILED"}:
+                raise InvalidTransition(
+                    f"session {session_id} is {existing.get('status')}"
+                )
+
+            if existing is not None and existing.get("idempotency_key") is not None:
+                configured = existing.get("prepare_request")
+                if not isinstance(configured, dict):
+                    configured = {
+                        "environment": existing.get("environment"),
+                        "destination_id": existing.get("destination_id"),
+                        "egress_mode": existing.get("egress_mode", "DIRECT_PUSH"),
+                    }
+                if configured != request:
+                    if configured.get("egress_mode") != egress_mode:
+                        raise InvalidTransition("egress mode cannot be changed")
+                    if configured.get("destination_id") != destination_id:
+                        raise InvalidTransition("destination cannot be changed")
+                    raise InvalidTransition("environment cannot be changed")
+                if existing.get("idempotency_key") != idempotency_key:
+                    raise InvalidTransition(
+                        "session is already bound to another Idempotency-Key"
+                    )
+                return dict(existing), True
+
+            occupied = 0
+            for other_id, session in self._sessions.items():
+                if other_id == session_id or session.get("user_id") != user_id:
+                    continue
+                if session.get("entitlement_reserved") or session.get("status") in CAPACITY_STATES:
+                    occupied += 1
+            if occupied >= max_concurrent_sessions:
+                raise EntitlementExceeded(
+                    f"concurrent session limit exceeded ({occupied}/{max_concurrent_sessions})"
+                )
+
+            if existing is None:
+                existing = new_session(
+                    user_id=user_id,
+                    environment=environment,
+                    egress_mode=egress_mode,
+                    absolute_deadline_hours=12.0,
+                )
+                existing["session_id"] = session_id
+                self._sessions[session_id] = existing
+            existing.update(
+                {
+                    "environment": environment,
+                    "destination_id": destination_id,
+                    "egress_mode": egress_mode,
+                    "prepare_request": request,
+                    "idempotency_key": idempotency_key,
+                    "entitlement_id": entitlement_id,
+                    "entitlement_reserved": True,
+                    "updated_at": time.time(),
+                }
+            )
+            self._persist()
+            return dict(existing), False
+
+    def get_prepare_replay(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        environment: str,
+        destination_id: str | None,
+        egress_mode: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        """Return an exact committed replay without external revalidation."""
+        request = {
+            "environment": environment,
+            "destination_id": destination_id,
+            "egress_mode": egress_mode,
+        }
+        with self._state_lock(exclusive=False):
+            existing = self._sessions.get(session_id)
+            if existing is None:
+                return None
+            if existing.get("user_id") != user_id:
+                raise KeyError(session_id)
+            if existing.get("idempotency_key") != idempotency_key:
+                return None
+            configured = existing.get("prepare_request")
+            if not isinstance(configured, dict):
+                configured = {
+                    "environment": existing.get("environment"),
+                    "destination_id": existing.get("destination_id"),
+                    "egress_mode": existing.get("egress_mode", "DIRECT_PUSH"),
+                }
+            if configured != request:
+                raise InvalidTransition(
+                    "Idempotency-Key was already used with different prepare parameters"
+                )
+            return dict(existing)
+
     def get(self, session_id: str) -> dict[str, Any] | None:
-        with self.lock:
+        with self._state_lock(exclusive=False):
             value = self._sessions.get(session_id)
             return dict(value) if value else None
 
     def list(self) -> list[dict[str, Any]]:
-        with self.lock:
+        with self._state_lock(exclusive=False):
+            return [dict(value) for value in self._sessions.values()]
+
+    def authoritative_snapshot(self) -> list[dict[str, Any]]:
+        """Return one trusted snapshot or refuse provider-wide decisions."""
+        with self._state_lock(exclusive=False):
+            if not self._authoritative:
+                raise SessionStateError(
+                    f"Session state {self.path} is missing or uninitialized"
+                )
             return [dict(value) for value in self._sessions.values()]
 
     def find_by_provider_server_id(
@@ -342,7 +566,7 @@ class SessionStore:
         *,
         states: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        with self.lock:
+        with self._state_lock(exclusive=False):
             return [
                 dict(session)
                 for session in self._sessions.values()
@@ -351,12 +575,268 @@ class SessionStore:
             ]
 
     def update(self, session_id: str, **changes: Any) -> dict[str, Any]:
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
             session.update(changes)
             session["updated_at"] = time.time()
+            self._persist()
+            return dict(session)
+
+    def claim_provisioning(
+        self,
+        session_id: str,
+        *,
+        operation_id: str,
+        started_at: float,
+    ) -> dict[str, Any]:
+        """Atomically acquire the single provisioning lease for a Session."""
+        with self._state_lock(exclusive=True):
+            self._reject_active_cleanup_lease_locked(session_id)
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            current = str(session.get("status"))
+            existing = session.get("provisioning_operation_id")
+            if current not in {"STOPPED", "PROVISIONING", "BOOTSTRAPPING"}:
+                raise InvalidTransition(f"cannot provision Session in {current}")
+            if existing and existing != operation_id:
+                raise ProvisioningInProgress(
+                    f"session {session_id} is already being provisioned"
+                )
+            session.update(
+                {
+                    "status": "PROVISIONING",
+                    "provisioning_operation_id": operation_id,
+                    "provisioning_in_progress": True,
+                    "provisioning_cancel_requested": False,
+                    "provisioning_started_at": started_at,
+                    "cleanup_pending": False,
+                    "updated_at": time.time(),
+                }
+            )
+            self._persist()
+            return dict(session)
+
+    def _active_cleanup_lease_locked(
+        self, session_id: str, *, current: float | None = None
+    ) -> dict[str, Any] | None:
+        lease = self._orphan_cleanup_leases.get(session_id)
+        if lease is None:
+            return None
+        now = time.time() if current is None else current
+        try:
+            expires_at = float(lease.get("expires_at", 0))
+        except (TypeError, ValueError):
+            expires_at = 0
+        if expires_at <= now:
+            return None
+        return lease
+
+    def _reject_active_cleanup_lease_locked(self, session_id: str) -> None:
+        if self._active_cleanup_lease_locked(session_id) is not None:
+            raise OrphanCleanupInProgress(
+                f"provider cleanup is in progress for Session {session_id}"
+            )
+
+    @staticmethod
+    def _matches_fields(
+        session: dict[str, Any], expected_fields: dict[str, Any] | None
+    ) -> bool:
+        return all(
+            session.get(field) == expected
+            for field, expected in (expected_fields or {}).items()
+        )
+
+    def claim_orphan_cleanup(
+        self,
+        session_id: str,
+        *,
+        resource_id: str,
+        resource_kind: str,
+        lease_seconds: float = 900.0,
+    ) -> str | None:
+        """Tombstone a Session ID so provisioning cannot race a provider delete."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if session is not None and str(session.get("status")) not in TERMINAL_STATES:
+                return None
+            if self._active_cleanup_lease_locked(session_id) is not None:
+                return None
+            lease_id = str(uuid.uuid4())
+            now = time.time()
+            self._orphan_cleanup_leases[session_id] = {
+                "lease_id": lease_id,
+                "scope": "orphan",
+                "resource_id": resource_id,
+                "resource_kind": resource_kind,
+                "created_at": now,
+                "expires_at": now + max(1.0, lease_seconds),
+            }
+            self._persist()
+            return lease_id
+
+    def orphan_cleanup_still_owned(self, session_id: str, lease_id: str) -> bool:
+        with self._state_lock(exclusive=False):
+            session = self._sessions.get(session_id)
+            lease = self._active_cleanup_lease_locked(session_id)
+            return bool(
+                lease is not None
+                and lease.get("lease_id") == lease_id
+                and lease.get("scope", "orphan") == "orphan"
+                and (session is None or str(session.get("status")) in TERMINAL_STATES)
+            )
+
+    def release_orphan_cleanup(self, session_id: str, lease_id: str) -> None:
+        with self._state_lock(exclusive=True):
+            lease = self._orphan_cleanup_leases.get(session_id)
+            if lease is None or lease.get("lease_id") != lease_id:
+                return
+            self._orphan_cleanup_leases.pop(session_id, None)
+            self._persist()
+
+    def claim_session_cleanup(
+        self,
+        session_id: str,
+        *,
+        expected_states: set[str] | None = None,
+        lease_seconds: float = 900.0,
+    ) -> str | None:
+        """Serialize destructive cleanup for one non-terminal Session."""
+        allowed = expected_states or {"STOPPING", "FAILED_CLEANUP"}
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if session is None or str(session.get("status")) not in allowed:
+                return None
+            if self._active_cleanup_lease_locked(session_id) is not None:
+                return None
+            lease_id = str(uuid.uuid4())
+            now = time.time()
+            self._orphan_cleanup_leases[session_id] = {
+                "lease_id": lease_id,
+                "scope": "session",
+                "expected_states": sorted(allowed),
+                "created_at": now,
+                "expires_at": now + max(1.0, lease_seconds),
+            }
+            self._persist()
+            return lease_id
+
+    def session_cleanup_still_owned(self, session_id: str, lease_id: str) -> bool:
+        with self._state_lock(exclusive=False):
+            session = self._sessions.get(session_id)
+            lease = self._active_cleanup_lease_locked(session_id)
+            expected_states = set(lease.get("expected_states", [])) if lease else set()
+            return bool(
+                session is not None
+                and lease is not None
+                and lease.get("lease_id") == lease_id
+                and lease.get("scope") == "session"
+                and str(session.get("status")) in expected_states
+            )
+
+    def release_session_cleanup(self, session_id: str, lease_id: str) -> None:
+        with self._state_lock(exclusive=True):
+            lease = self._orphan_cleanup_leases.get(session_id)
+            if (
+                lease is None
+                or lease.get("lease_id") != lease_id
+                or lease.get("scope") != "session"
+            ):
+                return
+            self._orphan_cleanup_leases.pop(session_id, None)
+            self._persist()
+
+    def provisioning_checkpoint(
+        self,
+        session_id: str,
+        *,
+        operation_id: str,
+        next_state: str | None = None,
+        complete: bool = False,
+        **changes: Any,
+    ) -> dict[str, Any]:
+        """Persist provider IDs and advance only while the lease is owned."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("provisioning_operation_id") != operation_id:
+                raise ProvisioningInProgress(
+                    f"provisioning lease for {session_id} is no longer owned"
+                )
+
+            session.update(changes)
+            current = str(session.get("status"))
+            cancelled = bool(session.get("provisioning_cancel_requested")) or current in {
+                "STOPPING",
+                "FAILED_CLEANUP",
+                "FINISHED",
+                "FAILED",
+            }
+            if next_state is not None and not cancelled:
+                allowed = TRANSITIONS.get(current, set())
+                if next_state not in allowed:
+                    raise InvalidTransition(f"{current} -> {next_state} not allowed")
+                session["status"] = next_state
+                self._clear_recovery_candidate(session)
+            if complete and not cancelled:
+                session["provisioning_operation_id"] = None
+                session["provisioning_in_progress"] = False
+                session["provisioning_cancel_requested"] = False
+            session["updated_at"] = time.time()
+            self._persist()
+            return dict(session)
+
+    def request_stop(self, session_id: str) -> dict[str, Any]:
+        """Atomically request cancellation before any resource cleanup."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            current = str(session.get("status"))
+            if current in TERMINAL_STATES:
+                return dict(session)
+            if current not in ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}:
+                raise InvalidTransition(f"cannot stop Session in {current}")
+            session.update(
+                {
+                    "status": "STOPPING",
+                    "provisioning_cancel_requested": True,
+                    "cleanup_pending": True,
+                    "updated_at": time.time(),
+                }
+            )
+            self._clear_recovery_candidate(session)
+            self._persist()
+            return dict(session)
+
+    def request_stop_if_current(
+        self,
+        session_id: str,
+        *,
+        expected_status: str,
+        expected_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Request STOPPING only if the reaper snapshot is still current."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or str(session.get("status")) != expected_status
+                or not self._matches_fields(session, expected_fields)
+            ):
+                return None
+            session.update(
+                {
+                    "status": "STOPPING",
+                    "provisioning_cancel_requested": True,
+                    "cleanup_pending": True,
+                    "updated_at": time.time(),
+                }
+            )
+            self._clear_recovery_candidate(session)
             self._persist()
             return dict(session)
 
@@ -371,7 +851,7 @@ class SessionStore:
         occurred_at: float | None = None,
     ) -> dict[str, Any]:
         current = time.time() if occurred_at is None else occurred_at
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
@@ -397,7 +877,7 @@ class SessionStore:
         registered_at: float | None = None,
     ) -> dict[str, Any]:
         current = time.time() if registered_at is None else registered_at
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
@@ -408,6 +888,80 @@ class SessionStore:
             session["node_id"] = node_id
             session["node_boot_id"] = boot_id
             session["node_registered_at"] = current
+            session["node_last_heartbeat_at"] = None
+            session["updated_at"] = current
+            self._persist()
+            return dict(session)
+
+    def record_node_heartbeat(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        boot_id: str,
+        observed_at: float,
+        node_ready: bool = False,
+    ) -> bool:
+        """Persist the heartbeat generation used by reaper CAS decisions."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.get("status") not in ACTIVE_STATES
+                or session.get("node_id") != node_id
+                or session.get("node_boot_id") != boot_id
+            ):
+                return False
+            previous = session.get("node_last_heartbeat_at")
+            try:
+                if previous is not None and float(previous) > float(observed_at):
+                    return False
+            except (TypeError, ValueError):
+                return False
+            session["node_last_heartbeat_at"] = float(observed_at)
+            if node_ready and session.get("status") == "BOOTSTRAPPING":
+                session["status"] = "READY_WAIT_INGEST"
+                session["ready_at"] = float(observed_at)
+            # Do not touch updated_at: HOLDING timeout recovery uses it only
+            # as a legacy interval baseline.
+            self._persist()
+            return True
+
+    def update_if_current(
+        self,
+        session_id: str,
+        *,
+        expected_status: str,
+        expected_fields: dict[str, Any],
+        event: dict[str, Any] | None = None,
+        **changes: Any,
+    ) -> dict[str, Any] | None:
+        """Apply an update (and optional audit event) against one snapshot."""
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or str(session.get("status")) != expected_status
+                or not self._matches_fields(session, expected_fields)
+            ):
+                return None
+            current = time.time()
+            session.update(changes)
+            if event is not None:
+                occurred_at = float(event.get("occurred_at", current))
+                self._append_event_locked(
+                    session,
+                    event_type=str(event.get("event_type", "session.updated")),
+                    reason_code=(
+                        str(event["reason_code"])
+                        if event.get("reason_code") is not None
+                        else None
+                    ),
+                    payload=dict(event.get("payload", {})),
+                    origin=str(event.get("origin", "control-api")),
+                    occurred_at=occurred_at,
+                )
+                current = occurred_at
             session["updated_at"] = current
             self._persist()
             return dict(session)
@@ -423,7 +977,7 @@ class SessionStore:
     ) -> dict[str, Any]:
         """Atomically append Node ingest events and update Session lifecycle."""
         current = time.time() if occurred_at is None else occurred_at
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
@@ -575,7 +1129,7 @@ class SessionStore:
     ) -> dict[str, Any]:
         """Audit relay client changes and persist the safe aggregate state."""
         current = time.time()
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
@@ -629,7 +1183,7 @@ class SessionStore:
     ) -> dict[str, Any]:
         if new_state not in SESSION_STATES:
             raise InvalidTransition(f"unknown state: {new_state}")
-        with self.lock:
+        with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
@@ -650,10 +1204,45 @@ class SessionStore:
             self._persist()
             return dict(session)
 
+    def transition_if_current(
+        self,
+        session_id: str,
+        new_state: str,
+        *,
+        allow_from: set[str],
+        expected_fields: dict[str, Any],
+        **changes: Any,
+    ) -> dict[str, Any] | None:
+        """Transition only if all fields from a reaper snapshot still match."""
+        if new_state not in SESSION_STATES:
+            raise InvalidTransition(f"unknown state: {new_state}")
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or str(session.get("status")) not in allow_from
+                or not self._matches_fields(session, expected_fields)
+            ):
+                return None
+            session.update(changes)
+            session["status"] = new_state
+            self._clear_recovery_candidate(session)
+            if new_state in {"FINISHED", "FAILED"}:
+                session["entitlement_reserved"] = False
+            session["updated_at"] = time.time()
+            self._persist()
+            return dict(session)
+
     def sessions_in_states(self, states: set[str]) -> list[dict[str, Any]]:
-        with self.lock:
+        with self._state_lock(exclusive=False):
             return [
                 dict(session)
                 for session in self._sessions.values()
                 if session.get("status") in states
             ]
+
+    @property
+    def is_authoritative(self) -> bool:
+        """Whether an existing, valid persisted state file was loaded."""
+        with self._state_lock(exclusive=False):
+            return self._authoritative

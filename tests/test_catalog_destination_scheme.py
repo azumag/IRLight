@@ -22,11 +22,13 @@ from catalog_store import (  # noqa: E402
     get_destination,
     verify_destination,
 )
+from state_safety import initialization_marker  # noqa: E402
 
 
 class CatalogDestinationSchemeTest(unittest.TestCase):
     def setUp(self) -> None:
         CATALOG_PATH.unlink(missing_ok=True)
+        initialization_marker(CATALOG_PATH).unlink(missing_ok=True)
         ensure_catalog()
 
     def test_verification_rejects_type_url_scheme_mismatch_before_probe(self) -> None:

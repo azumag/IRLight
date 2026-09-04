@@ -7,13 +7,14 @@ import os
 import time
 from typing import Annotated, Any, Iterable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from auth_api import require_csrf, require_user
 from fake_provider_for_api import default_store
 from ingest_auth_guard import default_ingest_auth_guard
 from ingest_store import default_ingest_store
+from node_internal import require_assigned_node
 
 
 ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "DEGRADED", "HOLDING"}
@@ -236,6 +237,11 @@ def issue_ingest_credential(
         raise HTTPException(status_code=409, detail="session is not ready to accept ingest")
     if request.scope == "RELAY_CLIENT" and request.protocols != ["rtmp"]:
         raise HTTPException(status_code=409, detail="RELAY_CLIENT supports only rtmp")
+    if request.scope == "RELAY_CLIENT" and session.get("egress_mode") != "RELAY_ONLY":
+        raise HTTPException(
+            status_code=409,
+            detail="relay client credentials require RELAY_ONLY mode",
+        )
 
     ttl = float(request.ttl_seconds)
     deadline = session.get("absolute_deadline_at")
@@ -297,6 +303,8 @@ def get_connection_info(session_id: str, current_user: CurrentUser) -> dict[str,
 def get_relay_client_info(session_id: str, current_user: CurrentUser) -> dict[str, Any]:
     user_id = str(current_user["id"])
     session = _owned_session(session_id, user_id)
+    if session.get("egress_mode") != "RELAY_ONLY":
+        raise HTTPException(status_code=409, detail="session is not in RELAY_ONLY mode")
     record = default_ingest_store().active_for_session(
         session_id,
         scope="RELAY_CLIENT",
@@ -323,11 +331,13 @@ def revoke_ingest_credential(
     user_id = str(current_user["id"])
     _owned_session(session_id, user_id)
     store = default_ingest_store()
-    active = store.active_for_session(
-        session_id,
-        scope="INGEST",
-    )
-    if active is None or active.get("id") != credential_id or active.get("user_id") != user_id:
+    record = store.get(credential_id)
+    if (
+        record is None
+        or record.get("session_id") != session_id
+        or record.get("user_id") != user_id
+        or record.get("scope", "INGEST") not in {"INGEST", "RELAY_CLIENT"}
+    ):
         raise HTTPException(status_code=404, detail="unknown ingest credential")
     try:
         return store.revoke(credential_id, user_id=user_id)
@@ -337,7 +347,10 @@ def revoke_ingest_credential(
 
 @internal_router.post("/authorize")
 @internal_router.post("/auth")
-def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
+def authorize_mediamtx_request(
+    request: MediaMTXAuthRequest,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> dict[str, Any]:
     """Authenticate a MediaMTX publish or relay read request.
 
     This endpoint is intended for MediaMTX ``authMethod: http`` and must be
@@ -348,6 +361,11 @@ def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
     MediaMTX reports both plain RTMP and TLS-wrapped RTMPS as protocol ``rtmp``;
     TLS policy is enforced by the MediaMTX listener configuration.
     """
+    require_assigned_node(authorization, session_id=request.user)
+    return _authorize_mediamtx_request(request)
+
+
+def _authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
     if request.action not in {"publish", "read"}:
         raise HTTPException(status_code=403, detail="unsupported media action")
     if request.action == "read" and request.path != RELAY_PATH:
@@ -361,6 +379,8 @@ def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
     protocol = request.protocol.lower()
     if protocol not in {"rtmp", "srt"}:
         raise HTTPException(status_code=403, detail="unsupported ingest protocol")
+    if expected_scope == "RELAY_CLIENT" and protocol != "rtmp":
+        raise HTTPException(status_code=403, detail="unsupported relay protocol")
 
     guard = default_ingest_auth_guard()
     decision = guard.check(source_ip=request.ip, username=request.user)
@@ -375,6 +395,8 @@ def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
 
     session = default_store().get(request.user)
     if session is None or str(session.get("status", "")) not in ACCEPTING_INGEST_STATES:
+        _reject_invalid_ingest_credential(request, guard)
+    if expected_scope == "RELAY_CLIENT" and session.get("egress_mode") != "RELAY_ONLY":
         _reject_invalid_ingest_credential(request, guard)
 
     record = default_ingest_store().verify(
@@ -399,4 +421,4 @@ def authorize_mediamtx_request(request: MediaMTXAuthRequest) -> dict[str, Any]:
 
 def authorize_mediamtx_publish(request: MediaMTXAuthRequest) -> dict[str, Any]:
     """Backward-compatible alias for existing Control Plane callers."""
-    return authorize_mediamtx_request(request)
+    return _authorize_mediamtx_request(request)

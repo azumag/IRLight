@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,9 +51,13 @@ class NodeSessionRecoveryTickTest(unittest.TestCase):
                             "ingest_ever_online": True,
                             "events": [],
                             "next_event_seq": 1,
+                            "access_token_sha256": hashlib.sha256(
+                                b"node-access-token"
+                            ).hexdigest(),
                         }
                     },
                     "next_node_seq": 2,
+                    "tokens": {},
                 },
             )
             store = MagicMock()
@@ -73,6 +78,7 @@ class NodeSessionRecoveryTickTest(unittest.TestCase):
                         egress_connected=True,
                         ingest=IngestObservationRequest(**current),
                     ),
+                    authorization="Bearer node-access-token",
                 )
 
             store.apply_ingest_observation.assert_called_once()

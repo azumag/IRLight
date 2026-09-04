@@ -14,5 +14,10 @@ IRL配信向けリレーサーバー。実装はIssueとPull Requestで段階的
 検証手順は `docs/cleanup-proof.md`、`docs/node-bootstrap-proof.md`、
 `docs/session-lifecycle-proof.md` を参照。
 
+認証・秘密境界は `docs/ingest-authentication.md`、
+`docs/node-local-ingest-auth-cache.md`、`docs/egress-reconnect.md` を参照。
+内部Node APIは、Nodeごとの一回限りbootstrap後に返すheartbeat Bearerと、
+list/stop専用の管理Bearerを分離する。
+
 Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 `docs/ingest-device-compatibility.md` と Issue #39 を参照。

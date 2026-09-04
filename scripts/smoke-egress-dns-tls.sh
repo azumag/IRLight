@@ -49,7 +49,7 @@ services:
       - mediamtx
       - continuity
     environment:
-      EGRESS_INPUT_URI: rtsp://mediamtx:8554/output/relay
+      EGRESS_INPUT_URI_FILE: /run/irlight/relay-secrets/media_relay_uri
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
       EGRESS_ALLOW_PRIVATE_TARGETS: "0"
@@ -62,6 +62,7 @@ services:
       EGRESS_MAX_RETRY_SECONDS: "0"
     volumes:
       - irlight-state:/state
+      - irlight-relay-secrets:/run/irlight/relay-secrets:ro
       - $dns_secret:/run/irlight/secrets/egress_url:ro
 
   egress-tls:
@@ -74,7 +75,7 @@ services:
       - continuity
       - egress-tls-target
     environment:
-      EGRESS_INPUT_URI: rtsp://mediamtx:8554/output/relay
+      EGRESS_INPUT_URI_FILE: /run/irlight/relay-secrets/media_relay_uri
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
       # The TLS target is intentionally on the isolated Compose network. The
@@ -89,6 +90,7 @@ services:
       EGRESS_MAX_RETRY_SECONDS: "0"
     volumes:
       - irlight-state:/state
+      - irlight-relay-secrets:/run/irlight/relay-secrets:ro
       - $tls_secret:/run/irlight/secrets/egress_url:ro
 EOF
 
@@ -141,7 +143,9 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-tls-target
+# Continuity consumes Agent-generated authenticated local-media URIs, so start
+# the complete PoC dependency chain before introducing the two test gateways.
+"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent egress-tls-target
 
 # Runtime DNS lookup fails before GStreamer is created. It is retryable and
 # therefore must surface as RECONNECTING/DNS_FAILED rather than an opaque error.

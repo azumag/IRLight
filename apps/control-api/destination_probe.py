@@ -30,7 +30,14 @@ from urllib.parse import parse_qsl, unquote_plus, urlsplit, urlunsplit
 RTMP_HANDSHAKE_BYTES = 1536
 RTMP_VERSION = 3
 SENSITIVE_SRT_QUERY_KEYS = {"passphrase"}
-SRT_CONNECTED_MARKER = b"SRT target connected"
+# Different srt-live-transmit releases use different wording for the same
+# successful SRTS_CONNECTED state. Keep the legacy IRLight marker while also
+# accepting the messages emitted by current upstream packages.
+SRT_CONNECTED_MARKERS = (
+    b"SRT target connected",
+    b"Target connected (caller)",
+    b"Target connected (listener)",
+)
 
 
 class DestinationProbeError(RuntimeError):
@@ -302,7 +309,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
 
             if line is None:
                 raise DestinationProbeError("destination did not complete the SRT handshake")
-            if SRT_CONNECTED_MARKER in line:
+            if any(marker in line for marker in SRT_CONNECTED_MARKERS):
                 connected_at = time.monotonic()
                 break
     except FileNotFoundError as exc:

@@ -4,6 +4,8 @@ import os
 import sys
 import unittest
 import uuid
+import json
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -12,9 +14,11 @@ from provider.conoha import (  # noqa: E402
     SessionMetadata,
     is_safe_session_id,
     is_safe_user_id,
+    parse_timestamp,
     request_id_for,
 )
 from provider.fake_provider import FakeProvider  # noqa: E402
+from provider.provider_client import ConohaClient, ConohaConfig  # noqa: E402
 
 
 class SessionMetadataTest(unittest.TestCase):
@@ -74,6 +78,131 @@ class SessionMetadataTest(unittest.TestCase):
             request_id_for("volume", session_id), request_id_for("server", session_id)
         )
         self.assertEqual(request_id_for("volume", session_id)[:8], "irlight-")
+
+    def test_utc_timestamp_parse_does_not_depend_on_host_timezone(self) -> None:
+        self.assertEqual(parse_timestamp("2001-09-09T01:46:40Z"), 1_000_000_000)
+
+
+class _Response:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
+class ConohaClientAuthenticationTest(unittest.TestCase):
+    @staticmethod
+    def _config() -> ConohaConfig:
+        return ConohaConfig(
+            identity_endpoint="https://identity.example/v2.0",
+            compute_endpoint="https://compute.example/v2/tenant",
+            volume_endpoint="https://volume.example/v2/tenant",
+            username="user",
+            password="password",
+            tenant_name="tenant",
+        )
+
+    def test_identity_request_does_not_recursively_require_a_token(self) -> None:
+        config = ConohaConfig(
+            identity_endpoint="https://identity.example/v2.0",
+            compute_endpoint="https://compute.example/v2",
+            volume_endpoint="https://volume.example/v2",
+            username="user",
+            password="password",
+            tenant_name="tenant",
+        )
+        client = ConohaClient(config)
+        requests = []
+
+        def fake_urlopen(request, *, timeout):
+            requests.append(request)
+            if request.full_url.endswith("/tokens"):
+                self.assertIsNone(request.get_header("X-auth-token"))
+                return _Response(
+                    {
+                        "access": {
+                            "token": {
+                                "id": "token-1",
+                                "expires": "2099-01-01T00:00:00Z",
+                            }
+                        }
+                    }
+                )
+            self.assertEqual(request.get_header("X-auth-token"), "token-1")
+            return _Response({"volumes": []})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(client.list_volumes(), [])
+
+        self.assertEqual([request.method for request in requests], ["POST", "GET"])
+
+    def test_server_inventory_uses_detail_and_follows_every_page(self) -> None:
+        client = ConohaClient(self._config())
+        pages = [
+            {
+                "servers": [
+                    {
+                        "id": "server-1",
+                        "name": "one",
+                        "status": "ACTIVE",
+                        "metadata": {"irlight-managed": "true"},
+                        "addresses": {"public": [{"version": 4, "addr": "198.51.100.1"}]},
+                    }
+                ],
+                "servers_links": [
+                    {
+                        "rel": "next",
+                        "href": "https://compute.example/v2/tenant/servers/detail?marker=server-1",
+                    }
+                ],
+            },
+            {
+                "servers": [
+                    {
+                        "id": "server-2",
+                        "name": "two",
+                        "status": "SHUTOFF",
+                        "metadata": {"irlight-session-id": "session-2"},
+                    }
+                ],
+                "servers_links": [],
+            },
+        ]
+        with patch.object(client, "_request", side_effect=pages) as request:
+            servers = client.list_servers()
+
+        self.assertEqual([server.server_id for server in servers], ["server-1", "server-2"])
+        self.assertEqual(servers[0].public_ipv4, "198.51.100.1")
+        self.assertEqual(servers[1].tags["irlight-session-id"], "session-2")
+        self.assertEqual(
+            [call.args[1] for call in request.call_args_list],
+            [
+                "https://compute.example/v2/tenant/servers/detail",
+                "https://compute.example/v2/tenant/servers/detail?marker=server-1",
+            ],
+        )
+
+    def test_inventory_refuses_cross_origin_pagination(self) -> None:
+        client = ConohaClient(self._config())
+        with patch.object(
+            client,
+            "_request",
+            return_value={
+                "servers": [],
+                "servers_links": [
+                    {"rel": "next", "href": "https://attacker.example/steal"}
+                ],
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cross-origin"):
+                client.list_servers()
 
 
 class FakeProviderLifecycleTest(unittest.TestCase):

@@ -7,12 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # for FPS/GOP/timestamp health. Neither MediaMTX API nor RTSP are published by
 # the production public overlay.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
+    docker-cli \
+    docker-compose \
     ca-certificates \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/irlight
 COPY agent.py node_entrypoint.py ingest_auth_proxy.py relay_client.py supervisor.py ingest_policy.py ingest_quality.py egress_status.py ./
+COPY docker-compose.control.yml ./
 
 CMD ["python3", "-u", "/opt/irlight/node_entrypoint.py"]

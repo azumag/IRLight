@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -14,7 +15,12 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from fake_provider import FakeProvider  # noqa: E402
 from reaper import Reaper, ReaperConfig  # noqa: E402
-from session_store import InvalidTransition, SessionStore  # noqa: E402
+from session_store import (  # noqa: E402
+    InvalidTransition,
+    OrphanCleanupInProgress,
+    ProvisioningInProgress,
+    SessionStore,
+)
 from session_workflow import ProvisioningWorkflow, WorkflowConfig  # noqa: E402
 
 
@@ -39,6 +45,54 @@ class FailingDeleteProvider(FakeProvider):
         if self.fail_volume:
             raise RuntimeError("volume delete failed (injected)")
         super().delete_volume(volume_id)
+
+
+class BlockingCreateProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_started = threading.Event()
+        self.release_create = threading.Event()
+        self.volume_create_count = 0
+        self.server_create_count = 0
+
+    def create_volume(self, name, size_gb, metadata):
+        self.volume_create_count += 1
+        self.create_started.set()
+        if not self.release_create.wait(timeout=5):
+            raise RuntimeError("timed out waiting to resume provider create")
+        return super().create_volume(name, size_gb, metadata)
+
+    def create_server(self, name, **kwargs):
+        self.server_create_count += 1
+        return super().create_server(name, **kwargs)
+
+
+class ListHookProvider(FakeProvider):
+    """Run one state mutation between the orphan snapshot and its recheck."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_next_list = None
+
+    def list_managed_resources(self):
+        callback = self.on_next_list
+        self.on_next_list = None
+        if callback is not None:
+            callback()
+        return super().list_managed_resources()
+
+
+class DeleteHookProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_delete_server = None
+
+    def delete_server(self, server_id: str) -> None:
+        callback = self.on_delete_server
+        self.on_delete_server = None
+        if callback is not None:
+            callback()
+        super().delete_server(server_id)
 
 
 class WorkflowPrepareTest(unittest.TestCase):
@@ -119,6 +173,70 @@ class WorkflowPrepareTest(unittest.TestCase):
         self.assertFalse(session["cleanup_pending"])
         self.assertEqual(provider.list_managed_resources(), [])
 
+    def test_stop_during_blocked_provider_create_cleans_late_resources(self) -> None:
+        provider = BlockingCreateProvider()
+        workflow = ProvisioningWorkflow(self.store, provider, WorkflowConfig())
+        results: list[dict[str, object]] = []
+        failures: list[BaseException] = []
+
+        def prepare() -> None:
+            try:
+                results.append(
+                    workflow.prepare(
+                        self.session_id,
+                        user_id="deadbeef",
+                        environment="dev",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        thread = threading.Thread(target=prepare)
+        thread.start()
+        self.assertTrue(provider.create_started.wait(timeout=2))
+
+        stopping = workflow.stop(self.session_id)
+        self.assertEqual(stopping["status"], "STOPPING")
+        provider.release_create.set()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(results[0]["status"], "FINISHED")
+        self.assertEqual(provider.list_managed_resources(), [])
+
+    def test_concurrent_prepare_has_one_provider_owner(self) -> None:
+        provider = BlockingCreateProvider()
+        workflow = ProvisioningWorkflow(self.store, provider, WorkflowConfig())
+        first_result: list[dict[str, object]] = []
+
+        thread = threading.Thread(
+            target=lambda: first_result.append(
+                workflow.prepare(
+                    self.session_id,
+                    user_id="deadbeef",
+                    environment="dev",
+                )
+            )
+        )
+        thread.start()
+        self.assertTrue(provider.create_started.wait(timeout=2))
+
+        with self.assertRaises(ProvisioningInProgress):
+            workflow.prepare(
+                self.session_id,
+                user_id="deadbeef",
+                environment="dev",
+            )
+
+        provider.release_create.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(first_result[0]["status"], "READY_WAIT_INGEST")
+        self.assertEqual(provider.volume_create_count, 1)
+        self.assertEqual(provider.server_create_count, 1)
+        self.assertEqual(len(provider.list_managed_resources()), 2)
+
 
 class SessionStateMachineTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -164,6 +282,7 @@ class ReaperTest(unittest.TestCase):
             provisioning_timeout_seconds=10,
             no_ingest_timeout_seconds=20,
             hold_timeout_seconds=15,
+            orphan_grace_seconds=0,
         )
         self.reaper = Reaper(self.store, self.provider, self.config)
 
@@ -190,6 +309,9 @@ class ReaperTest(unittest.TestCase):
     def test_reaper_cleans_orphans_for_unknown_session(self) -> None:
         from provider.conoha import SessionMetadata
 
+        # An existing valid state file is the authority needed before a
+        # provider-wide orphan sweep may delete anything.
+        self.store.create(user_id="cafebabe", environment="dev")
         orphan_id = str(uuid.uuid4())
         tags = SessionMetadata(
             session_id=orphan_id, user_id="deadbeef", environment="dev"
@@ -205,6 +327,166 @@ class ReaperTest(unittest.TestCase):
 
         result = self.reaper.run()
         self.assertEqual(result["orphan_cleanup"], 2)
+        self.assertEqual(self.provider.list_managed_resources(), [])
+
+    def test_reaper_skips_orphans_when_session_state_is_uninitialized(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        empty_store = make_store()
+        orphan_id = str(uuid.uuid4())
+        tags = SessionMetadata(
+            session_id=orphan_id, user_id="deadbeef", environment="dev"
+        ).as_tags()
+        self.provider.create_volume("orphan-boot", 20, tags)
+
+        result = Reaper(empty_store, self.provider, self.config).run()
+
+        self.assertEqual(result["orphan_cleanup"], 0)
+        self.assertEqual(len(self.provider.list_managed_resources()), 1)
+
+    def test_reaper_preserves_new_orphan_during_grace_period(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        self.store.create(user_id="cafebabe", environment="dev")
+        orphan_id = str(uuid.uuid4())
+        tags = SessionMetadata(
+            session_id=orphan_id,
+            user_id="deadbeef",
+            environment="dev",
+            created_at=900,
+        ).as_tags()
+        self.provider.create_volume("new-orphan-boot", 20, tags)
+
+        reaper = Reaper(
+            self.store,
+            self.provider,
+            ReaperConfig(orphan_grace_seconds=300),
+            now=1_000,
+        )
+        result = reaper.run()
+
+        self.assertEqual(result["orphan_cleanup"], 0)
+        self.assertEqual(len(self.provider.list_managed_resources()), 1)
+
+    def test_reaper_rechecks_session_ownership_before_orphan_delete(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        provider = ListHookProvider()
+        self.store.create(user_id="cafebabe", environment="dev")
+        orphan_id = str(uuid.uuid4())
+        tags = SessionMetadata(
+            session_id=orphan_id,
+            user_id="deadbeef",
+            environment="dev",
+            created_at=0,
+        ).as_tags()
+        provider.create_volume("racing-boot", 20, tags)
+        def claim_resource() -> None:
+            self.store.create(
+                session_id=orphan_id,
+                user_id="deadbeef",
+                environment="dev",
+            )
+            self.store.transition(orphan_id, "PROVISIONING")
+
+        provider.on_next_list = claim_resource
+
+        result = Reaper(self.store, provider, self.config, now=1_000).run()
+
+        self.assertEqual(result["orphan_cleanup"], 0)
+        self.assertEqual(len(provider.list_managed_resources()), 1)
+
+    def test_reaper_aborts_orphan_delete_if_authority_disappears(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        provider = ListHookProvider()
+        self.store.create(user_id="cafebabe", environment="dev")
+        orphan_id = str(uuid.uuid4())
+        tags = SessionMetadata(
+            session_id=orphan_id,
+            user_id="deadbeef",
+            environment="dev",
+            created_at=0,
+        ).as_tags()
+        provider.create_volume("orphan-boot", 20, tags)
+        provider.on_next_list = self.store.path.unlink
+
+        result = Reaper(self.store, provider, self.config, now=1_000).run()
+
+        self.assertEqual(result["orphan_cleanup"], 0)
+        self.assertEqual(len(provider.list_managed_resources()), 1)
+
+    def test_orphan_cleanup_lease_blocks_claim_during_provider_delete(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        provider = DeleteHookProvider()
+        self.store.create(user_id="authority-anchor", environment="dev")
+        orphan_id = str(uuid.uuid4())
+        tags = SessionMetadata(
+            session_id=orphan_id,
+            user_id="deadbeef",
+            environment="dev",
+            created_at=0,
+        ).as_tags()
+        volume = provider.create_volume("orphan-boot", 20, tags)
+        provider.create_server(
+            "orphan-node",
+            image_ref="ubuntu-24.04",
+            flavor_ref="g2",
+            volume_id=volume.volume_id,
+            metadata=tags,
+        )
+        claim_failures: list[BaseException] = []
+
+        def claim_while_delete_is_active() -> None:
+            try:
+                self.store.create(
+                    session_id=orphan_id,
+                    user_id="deadbeef",
+                    environment="dev",
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                claim_failures.append(exc)
+
+        provider.on_delete_server = claim_while_delete_is_active
+        result = Reaper(self.store, provider, self.config, now=1_000).run()
+
+        self.assertEqual(result["orphan_cleanup"], 2)
+        self.assertEqual(len(claim_failures), 1)
+        self.assertIsInstance(claim_failures[0], OrphanCleanupInProgress)
+        self.assertEqual(provider.list_managed_resources(), [])
+
+    def test_absolute_deadline_stops_live_session_and_cleans_resources(self) -> None:
+        from provider.conoha import SessionMetadata
+
+        session = self.store.create(user_id="deadbeef", environment="dev")
+        session_id = str(session["session_id"])
+        self.store.transition(session_id, "PROVISIONING")
+        self.store.transition(session_id, "BOOTSTRAPPING")
+        self.store.transition(session_id, "READY_WAIT_INGEST")
+        self.store.transition(
+            session_id,
+            "LIVE",
+            absolute_deadline_at=999,
+        )
+        tags = SessionMetadata(
+            session_id=session_id,
+            user_id="deadbeef",
+            environment="dev",
+        ).as_tags()
+        volume = self.provider.create_volume("boot", 20, tags)
+        self.provider.create_server(
+            "node",
+            image_ref="ubuntu-24.04",
+            flavor_ref="g2",
+            volume_id=volume.volume_id,
+            metadata=tags,
+        )
+
+        result = Reaper(self.store, self.provider, self.config, now=1_000).run()
+
+        self.assertEqual(result["deadline_stops"], 1)
+        self.assertEqual(self.store.get(session_id)["status"], "FINISHED")
         self.assertEqual(self.provider.list_managed_resources(), [])
 
     def test_reaper_finishes_failed_cleanup_sessions(self) -> None:

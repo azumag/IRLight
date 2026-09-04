@@ -34,7 +34,10 @@ fi
   exit 2
 }
 
-tmp_script="$(mktemp)"
+# Keep the generated matrix beside the source scripts. The matrix scripts now
+# source scripts/lib/node-admin.sh relative to BASH_SOURCE, so placing the
+# generated copy in /tmp would incorrectly resolve /tmp/lib/node-admin.sh.
+tmp_script="$(mktemp scripts/.netem-latency-levels.XXXXXX.sh)"
 log_file="$(mktemp)"
 cleanup() {
   rm -f "$tmp_script" "$log_file"

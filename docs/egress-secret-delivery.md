@@ -131,7 +131,7 @@ Node bootstrap時、Control Planeは `provider_server_id` からユーザーSess
 5. bootstrap responseの `egress_url` に一度だけ含める
 6. Node Agentが即座にsecret fileへ書く
 
-配送されたURLは `NODE_SECRET_DIR/egress_url` に作成時点からmode `0600` で保存します。productionではこのdirectoryはtmpfs volumeです。Continuityは外部secretを読まず、常に内部 `rtmp://mediamtx:1935/output/relay` へ出力します。専用Egress Gatewayだけがsecret volumeをread-only mountして外部Destinationへpublishします。Node停止時はNode Agentがmedia stack停止後にsecret fileを削除します。
+配送されたURLは `NODE_EGRESS_SECRET_DIR/egress_url` にatomicかつmode `0600` で保存します。productionでは、Continuity内部URI、Egress内部URI、外部Destinationを別々のtmpfs volumeに分けます。Continuityは`continuity-secrets`だけ、専用Egress Gatewayは`relay-secrets`と`egress-secrets`だけをread-onlyでmountします。Node停止時はNode Agentがmedia stack停止後に各secret fileを削除します。
 
 ## 永続化しない場所
 

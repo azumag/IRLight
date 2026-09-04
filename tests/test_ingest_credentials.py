@@ -13,7 +13,13 @@ from fastapi import HTTPException
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
-from ingest_api import MediaMTXAuthRequest, authorize_mediamtx_publish  # noqa: E402
+from ingest_api import (  # noqa: E402
+    IssueIngestCredentialRequest,
+    MediaMTXAuthRequest,
+    authorize_mediamtx_publish,
+    issue_ingest_credential,
+    revoke_ingest_credential,
+)
 from ingest_auth_guard import IngestAuthGuard  # noqa: E402
 from ingest_store import IngestCredentialStore  # noqa: E402
 
@@ -208,6 +214,65 @@ class MediaMTXAuthTest(unittest.TestCase):
             with self.assertRaises(HTTPException) as failure:
                 authorize_mediamtx_publish(request)
             self.assertEqual(failure.exception.status_code, 403)
+
+
+class RelayCredentialApiTest(unittest.TestCase):
+    def test_direct_push_session_cannot_issue_relay_credential(self) -> None:
+        session_id = "11111111-1111-4111-8111-111111111111"
+        session_store = _SessionStore(
+            {
+                "session_id": session_id,
+                "user_id": "user-1",
+                "status": "READY_WAIT_INGEST",
+                "egress_mode": "DIRECT_PUSH",
+            }
+        )
+        with patch("ingest_api.default_store", return_value=session_store):
+            with self.assertRaises(HTTPException) as failure:
+                issue_ingest_credential(
+                    session_id,
+                    IssueIngestCredentialRequest(
+                        scope="RELAY_CLIENT", protocols=["rtmp"]
+                    ),
+                    {"id": "user-1"},
+                )
+        self.assertEqual(failure.exception.status_code, 409)
+
+    def test_relay_credential_can_be_revoked_by_its_id(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            session_id = "11111111-1111-4111-8111-111111111111"
+            credential_store = IngestCredentialStore(state_dir)
+            record, secret = credential_store.issue(
+                session_id=session_id,
+                user_id="user-1",
+                scope="RELAY_CLIENT",
+                protocols=["rtmp"],
+            )
+            session_store = _SessionStore(
+                {
+                    "session_id": session_id,
+                    "user_id": "user-1",
+                    "status": "READY_WAIT_INGEST",
+                    "egress_mode": "RELAY_ONLY",
+                }
+            )
+            with patch("ingest_api.default_store", return_value=session_store), patch(
+                "ingest_api.default_ingest_store", return_value=credential_store
+            ):
+                revoked = revoke_ingest_credential(
+                    session_id,
+                    str(record["id"]),
+                    {"id": "user-1"},
+                )
+            self.assertIsNotNone(revoked["revoked_at"])
+            self.assertIsNone(
+                credential_store.verify(
+                    username=session_id,
+                    secret=secret,
+                    protocol="rtmp",
+                    scope="RELAY_CLIENT",
+                )
+            )
 
 
 if __name__ == "__main__":

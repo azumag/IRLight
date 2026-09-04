@@ -18,12 +18,14 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 
 @dataclass(frozen=True)
 class IngestQualityConfig:
     input_url: str = "rtsp://mediamtx:8554/live/input"
+    input_url_file: Path | None = None
     sample_seconds: float = 4.0
     min_video_fps: float = 20.0
     preferred_min_fps: float = 24.0
@@ -53,10 +55,16 @@ class IngestQualityConfig:
         sample_seconds = env_float("NODE_INGEST_SAMPLE_SECONDS", 4.0, 1.0)
         preferred_min = env_float("NODE_INGEST_PREFERRED_MIN_FPS", 24.0, 1.0)
         preferred_max = env_float("NODE_INGEST_PREFERRED_MAX_FPS", 35.0, preferred_min)
+        input_url = os.getenv(
+            "NODE_INGEST_SAMPLE_URL", "rtsp://mediamtx:8554/live/input"
+        )
+        input_url_file_raw = os.getenv("NODE_INGEST_SAMPLE_URL_FILE", "").strip()
         return cls(
-            input_url=os.getenv(
-                "NODE_INGEST_SAMPLE_URL", "rtsp://mediamtx:8554/live/input"
-            ),
+            input_url=input_url,
+            # Node-local authenticated URIs are created only after bootstrap.
+            # Keep the path here and resolve it at sample time so constructing
+            # the agent cannot race the bootstrap lifecycle.
+            input_url_file=Path(input_url_file_raw) if input_url_file_raw else None,
             sample_seconds=min(sample_seconds, 10.0),
             min_video_fps=env_float("NODE_INGEST_MIN_FPS", 20.0, 1.0),
             preferred_min_fps=preferred_min,
@@ -78,6 +86,18 @@ class IngestQualityConfig:
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _ffconcat_input(url: str, media_type: str) -> str:
+    """Pass a protected URL over stdin instead of exposing it in argv."""
+    if not url or "\n" in url or "\r" in url:
+        raise RuntimeError("ingest sample URL is invalid")
+    escaped = url.replace("\\", "\\\\").replace("'", "\\'")
+    return (
+        f"ffconcat version 1.0\nfile '{escaped}'\n"
+        "option rtsp_transport tcp\n"
+        f"option allowed_media_types {media_type}\n"
+    )
+
+
 class IngestQualitySampler:
     def __init__(
         self,
@@ -95,6 +115,17 @@ class IngestQualitySampler:
             self._last_source_id = source_id
             self._low_bitrate_samples = 0
 
+    def _input_url(self) -> str:
+        if self.config.input_url_file is None:
+            return self.config.input_url
+        try:
+            value = self.config.input_url_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError("ingest sample URL secret is unavailable") from exc
+        if not value:
+            raise RuntimeError("ingest sample URL secret is empty")
+        return value
+
     def sample(self) -> dict[str, Any]:
         # Probe tracks independently. With a single ffprobe process, one stalled
         # track can keep the process alive until our wall-clock timeout and some
@@ -102,9 +133,29 @@ class IngestQualitySampler:
         # pipe before they are terminated. Independent probes make one-sided media
         # loss observable without relying on partial stdout buffering behavior.
         started = time.monotonic()
+        try:
+            input_url = self._input_url()
+        except RuntimeError as exc:
+            return {
+                "sample_elapsed_seconds": round(time.monotonic() - started, 3),
+                "video_frames": 0,
+                "audio_frames": 0,
+                "video_fps": None,
+                "video_timestamp_span_seconds": None,
+                "audio_timestamp_span_seconds": None,
+                "keyframes": 0,
+                "max_gop_seconds": None,
+                "reasons": ["MEDIA_SAMPLE_FAILED"],
+                "warnings": [],
+                "error": str(exc),
+            }
         with ThreadPoolExecutor(max_workers=2) as executor:
-            video_future = executor.submit(self._sample_track, "video", "v:0")
-            audio_future = executor.submit(self._sample_track, "audio", "a:0")
+            video_future = executor.submit(
+                self._sample_track, "video", "v:0", input_url
+            )
+            audio_future = executor.submit(
+                self._sample_track, "audio", "a:0", input_url
+            )
             video = video_future.result()
             audio = audio_future.result()
         elapsed = time.monotonic() - started
@@ -154,7 +205,9 @@ class IngestQualitySampler:
             sample_elapsed_seconds=elapsed,
         )
 
-    def _sample_track(self, media_type: str, selector: str) -> dict[str, Any]:
+    def _sample_track(
+        self, media_type: str, selector: str, input_url: str
+    ) -> dict[str, Any]:
         # Restrict the RTSP demuxer itself to the requested media type. Merely
         # selecting ffprobe output still subscribes to every RTSP track, allowing
         # a stalled sibling track to block an otherwise healthy probe.
@@ -162,10 +215,6 @@ class IngestQualitySampler:
             self.config.ffprobe_path,
             "-v",
             "error",
-            "-rtsp_transport",
-            "tcp",
-            "-allowed_media_types",
-            media_type,
             "-read_intervals",
             f"%+{self.config.sample_seconds:g}",
             "-select_streams",
@@ -175,11 +224,18 @@ class IngestQualitySampler:
             "frame=media_type,key_frame,best_effort_timestamp_time,pkt_dts_time",
             "-of",
             "compact=p=0:nk=0",
-            self.config.input_url,
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-protocol_whitelist",
+            "file,pipe,rtsp,tcp,udp",
+            "pipe:0",
         ]
         try:
             result = self._runner(
                 command,
+                input=_ffconcat_input(input_url, media_type),
                 capture_output=True,
                 text=True,
                 timeout=self.config.sample_seconds + self.config.timeout_margin_seconds,
@@ -196,7 +252,10 @@ class IngestQualitySampler:
         payload = _parse_frame_output(result.stdout or "")
         frames = _frames_for_media_type(payload, media_type)
         if result.returncode != 0:
-            detail = (result.stderr or "ffprobe failed").strip().replace("\n", " ")[:160]
+            detail = (result.stderr or "ffprobe failed").replace(
+                input_url, "<redacted-input>"
+            )
+            detail = detail.strip().replace("\n", " ")[:160]
             return {
                 "frames": frames,
                 "timed_out": False,

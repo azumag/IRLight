@@ -194,11 +194,11 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
 
         result = self._reaper(now=1_000.0).run()
         self.assertEqual(result["heartbeat_failures"], 0)
-        # The existing STOPPING cleanup path is intentionally separate from
-        # heartbeat detection; this sweep must not relabel it NODE_SHUTDOWN.
+        # STOPPING cleanup is retried by the same sweep, but heartbeat
+        # detection must not relabel it NODE_SHUTDOWN.
         session = self.store.get(session_id)
         assert session is not None
-        self.assertEqual(session["status"], "STOPPING")
+        self.assertEqual(session["status"], "FINISHED")
         self.assertIsNone(session.get("failure_reason_code"))
 
 

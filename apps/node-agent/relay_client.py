@@ -53,7 +53,10 @@ class RelayClientObserver:
             ) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
             raise RuntimeError(f"MediaMTX API HTTP {exc.code}: {body[:160]}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"MediaMTX API unavailable: {exc.reason}") from exc

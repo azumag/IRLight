@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import multiprocessing
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ os.environ["STATE_DIR"] = _TMP
 from catalog_store import (  # noqa: E402
     CATALOG_PATH,
     CatalogNotFound,
+    CatalogStateError,
     CatalogVerifyFailed,
     create_asset,
     create_destination,
@@ -32,12 +34,22 @@ from catalog_store import (  # noqa: E402
     verify_destination,
 )
 from destination_probe import DestinationProbeError  # noqa: E402
+from state_safety import initialization_marker  # noqa: E402
+
+
+def _create_assets_in_child(prefix: str, count: int) -> None:
+    for index in range(count):
+        create_asset(
+            user_id="parallel-user",
+            source_object_key=f"{prefix}/{index}.png",
+        )
 
 
 class CatalogStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         if CATALOG_PATH.exists():
             CATALOG_PATH.unlink()
+        initialization_marker(CATALOG_PATH).unlink(missing_ok=True)
         ensure_catalog()
 
     def _create_destination(self, user_id: str = "deadbeef") -> dict[str, object]:
@@ -54,6 +66,12 @@ class CatalogStoreTest(unittest.TestCase):
         fetched = get_destination(str(item["id"]), "deadbeef")
         self.assertEqual(fetched["display_name"], "Twitch")
         self.assertEqual(fetched["verification_status"], "UNVERIFIED")
+
+    def test_initialized_catalog_deletion_fails_closed(self) -> None:
+        self._create_destination()
+        CATALOG_PATH.unlink()
+        with self.assertRaises(CatalogStateError):
+            self._create_destination(user_id="other")
 
     def test_list_only_returns_owned(self) -> None:
         self._create_destination(user_id="alice")
@@ -152,6 +170,25 @@ class CatalogStoreTest(unittest.TestCase):
         self.assertEqual(len(list_assets("deadbeef")), 1)
         delete_asset(str(asset["id"]), "deadbeef")
         self.assertEqual(len(list_assets("deadbeef")), 0)
+
+    def test_processes_do_not_clobber_catalog_updates(self) -> None:
+        context = multiprocessing.get_context("fork")
+        processes = [
+            context.Process(target=_create_assets_in_child, args=(f"worker-{index}", 10))
+            for index in range(2)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=10)
+            self.assertEqual(process.exitcode, 0)
+
+        self.assertEqual(len(list_assets("parallel-user")), 20)
+
+    def test_corrupt_catalog_fails_closed(self) -> None:
+        CATALOG_PATH.write_text("[]", encoding="utf-8")
+        with self.assertRaises(CatalogStateError):
+            list_assets("deadbeef")
 
 
 if __name__ == "__main__":

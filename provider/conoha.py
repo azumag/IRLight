@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+import calendar
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
@@ -48,6 +49,11 @@ class SessionMetadata:
 def format_timestamp(epoch: float) -> str:
     """ISO-8601 UTC without sub-second noise, matching provider tag style."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def parse_timestamp(value: str) -> float:
+    """Parse an IRLight UTC provider timestamp without using local timezone."""
+    return float(calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")))
 
 
 def is_safe_session_id(value: str) -> bool:
@@ -128,6 +134,6 @@ def managed_since(tags: Mapping[str, str]) -> float | None:
     if not raw:
         return None
     try:
-        return time.mktime(time.strptime(raw, "%Y-%m-%dT%H:%M:%SZ"))
+        return parse_timestamp(raw)
     except (ValueError, TypeError):
         return None

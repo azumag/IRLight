@@ -2,7 +2,9 @@
 
 IRLight の production Media Node では、MediaMTX の HTTP authentication を Control Planeへ直接送らず、Node Agent container内の local auth proxy (`http://node-agent:8090/auth`) へ送ります。
 
-通常時、proxyはすべての認証要求をControl Planeの `/internal/ingest/auth` へ転送します。Control Planeが明示的に許可したcredentialだけを短時間のpositive cacheへ記録します。cacheはControl Planeとの通信障害または5xx時に限ってfallbackに使います。
+ユーザーcredentialの要求はControl Planeの `/internal/ingest/auth` へ転送します。Control Planeが明示的に許可したpublisher credentialだけを短時間のpositive cacheへ記録し、通信障害または5xx時に限ってfallbackに使います。
+
+例外として、Node Agentが起動時に生成する`irlight-internal` credentialはControl Planeへ送らず、RTMP publish `output/relay`、RTSP read `live/input`、RTSP read `output/relay`の3組だけをlocal allowlistで処理します。このcredentialはpositive cacheへも入りません。
 
 ## 目的
 
@@ -35,6 +37,8 @@ cache keyは以下だけをcanonicalizeしてSHA-256 digestにします。
 publisherのIPやMediaMTX connection IDはkeyに含めません。モバイル回線切替などでIPが変わった再接続でも、同じcredentialなら障害中fallbackできるためです。
 
 一方でraw password / token / usernameはcache entryとして保存しません。cacheはNode Agent processのメモリ内だけに存在し、ファイルやtmpfsにも永続化しません。Node Agent再起動時にはcacheは空になります。
+
+内部media secretもNode Agentのメモリだけに保持します。read `live/input`、publish `output/relay`、read `output/relay`はそれぞれ別secretです。Continuity用、relay用、外部Destination用のtmpfs volumeを分離し、必要なconsumerにだけ0600 URI fileをread-onlyでmountします。quality samplerは認証URIをargv/envへ載せずstdin manifestでffprobeへ渡し、停止時または起動失敗時に全fileを削除します。
 
 ## stale allow window
 
@@ -90,6 +94,10 @@ IRLIGHT_INGEST_AUTH_CACHE_MAX_AGE_SECONDS=300
   - explicit 401 / 429でcache eviction
   - local TTL / entry count上限
   - cache内部にraw username / passwordを保持しないこと
+- `tests/test_internal_media_auth.py`
+  - internal credentialが3つの正確なprotocol/action/pathだけを許可
+  - URI fileが0600で、例外終了時にも削除されること
+  - production MediaMTX configがrelay read/publishを認証除外しないこと
 - `scripts/smoke-ingest-auth-cache.sh`
   - 実MediaMTX経由で認証済みRTMP publisherを接続してcache prime
   - Control Plane containerを停止

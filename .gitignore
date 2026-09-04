@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
 .state/
+/secrets/
+*.key
+*.pem
 .DS_Store
 provider/.credentials

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import uuid
 import unittest
 from pathlib import Path
@@ -17,7 +18,7 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 import node_internal  # noqa: E402
 import session_api  # noqa: E402
 from provider.fake_provider import FakeProvider  # noqa: E402
-from session_store import SessionStore  # noqa: E402
+from session_store import InvalidTransition, SessionStore  # noqa: E402
 from destination_secret_store import (  # noqa: E402
     DestinationSecretError,
     DestinationSecretNotFound,
@@ -43,6 +44,9 @@ class _EmptySessionStore:
     def get(self, session_id: str) -> None:
         return None
 
+    def get_prepare_replay(self, session_id: str, **_kwargs) -> None:
+        return None
+
 
 DESTINATION = {
     "id": "dest-1",
@@ -57,6 +61,91 @@ DESTINATION = {
 
 
 class PrepareDestinationTest(unittest.TestCase):
+    def test_prepare_binding_is_atomic_across_mismatched_concurrent_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            session_id = str(uuid.uuid4())
+            barrier = threading.Barrier(2)
+            successes: list[tuple[str, dict[str, object]]] = []
+            failures: list[BaseException] = []
+
+            def run(key: str, destination_id: str | None, egress_mode: str) -> None:
+                barrier.wait()
+                try:
+                    session, replay = store.begin_prepare(
+                        session_id,
+                        user_id="user-1",
+                        environment="prod",
+                        entitlement_id="ent-1",
+                        max_concurrent_sessions=1,
+                        destination_id=destination_id,
+                        egress_mode=egress_mode,
+                        idempotency_key=key,
+                    )
+                    self.assertFalse(replay)
+                    successes.append((key, session))
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    failures.append(exc)
+
+            threads = [
+                threading.Thread(target=run, args=("direct-key", "dest-1", "DIRECT_PUSH")),
+                threading.Thread(target=run, args=("relay-key", None, "RELAY_ONLY")),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=3)
+
+            self.assertEqual(len(successes), 1)
+            self.assertEqual(len(failures), 1)
+            self.assertIsInstance(failures[0], InvalidTransition)
+            persisted = store.get(session_id)
+            assert persisted is not None
+            winner_key, winner = successes[0]
+            self.assertEqual(persisted["idempotency_key"], winner_key)
+            self.assertEqual(persisted["prepare_request"], winner["prepare_request"])
+            self.assertTrue(persisted["entitlement_reserved"])
+
+    def test_same_idempotency_key_cannot_change_prepare_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            session_id = str(uuid.uuid4())
+            first, replay = store.begin_prepare(
+                session_id,
+                user_id="user-1",
+                environment="prod",
+                entitlement_id="ent-1",
+                max_concurrent_sessions=1,
+                destination_id="dest-1",
+                egress_mode="DIRECT_PUSH",
+                idempotency_key="same-key",
+            )
+            self.assertFalse(replay)
+            replayed, replay = store.begin_prepare(
+                session_id,
+                user_id="user-1",
+                environment="prod",
+                entitlement_id="ent-1",
+                max_concurrent_sessions=1,
+                destination_id="dest-1",
+                egress_mode="DIRECT_PUSH",
+                idempotency_key="same-key",
+            )
+            self.assertTrue(replay)
+            self.assertEqual(replayed["prepare_request"], first["prepare_request"])
+
+            with self.assertRaisesRegex(InvalidTransition, "destination cannot be changed"):
+                store.begin_prepare(
+                    session_id,
+                    user_id="user-1",
+                    environment="prod",
+                    entitlement_id="ent-1",
+                    max_concurrent_sessions=1,
+                    destination_id="dest-2",
+                    egress_mode="DIRECT_PUSH",
+                    idempotency_key="same-key",
+                )
+
     def test_verified_enabled_destination_with_secret_is_accepted(self) -> None:
         with patch("session_api.store_get_destination", return_value=dict(DESTINATION)), patch(
             "session_api.default_destination_secret_store", return_value=_SecretStore()
@@ -196,11 +285,16 @@ class PrepareDestinationTest(unittest.TestCase):
                         _csrf=None,
                     )
 
-        self.assertEqual(failure.exception.status_code, 409)
-        self.assertEqual(failure.exception.detail, "egress mode cannot be changed")
-        self.assertIsNone(store.get(session_id).get("destination_id"))
-        self.assertEqual(len(provider.list_volumes()), volume_count)
-        self.assertEqual(len(provider.list_servers()), server_count)
+                self.assertEqual(failure.exception.status_code, 409)
+                self.assertEqual(
+                    failure.exception.detail, "egress mode cannot be changed"
+                )
+                persisted = store.get(session_id)
+                self.assertIsNotNone(persisted)
+                assert persisted is not None
+                self.assertIsNone(persisted.get("destination_id"))
+                self.assertEqual(len(provider.list_volumes()), volume_count)
+                self.assertEqual(len(provider.list_servers()), server_count)
 
 
 class BootstrapEgressResolutionTest(unittest.TestCase):
@@ -246,14 +340,18 @@ class BootstrapEgressResolutionTest(unittest.TestCase):
                     "NODE_BOOTSTRAP_TOKENS": "test-token",
                     "NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT": "0",
                     "NODE_EGRESS_URL": "rtmp://internal/output/relay",
+                    "NODE_EGRESS_VERIFIED_PEER_IP": "198.51.100.10",
                 },
-            ):
+            ), patch("node_internal.default_store") as store_factory:
+                store_factory.return_value.find_by_provider_server_id.return_value = []
                 node_internal.ensure_state()
                 response = node_internal.bootstrap(
                     node_internal.BootstrapRequest(
                         provider_server_id="unassigned-server",
                         boot_id="boot-1",
                         agent_version="test",
+                        bootstrap_request_id="bootstrap-direct-request-1",
+                        node_access_token="node-direct-access-token-0123456789abcdef",
                     ),
                     authorization="Bearer test-token",
                 )

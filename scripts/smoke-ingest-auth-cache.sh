@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
-compose=(docker compose -f docker-compose.poc.yml)
+tmp_dir="$(mktemp -d)"
+override="$tmp_dir/node-assignment.override.yml"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 cookie_jar="/tmp/irlight-cache-smoke-cookies.txt"
 publisher_pid=""
@@ -9,9 +11,19 @@ email="cache-smoke-$(date +%s)-$RANDOM@example.invalid"
 password="SmokePassword123!"
 csrf=""
 session_id=""
+provider_server_id=""
 ingest_username=""
 ingest_secret=""
 credential_id=""
+compose=(docker compose -f docker-compose.poc.yml -f "$override")
+
+cat >"$override" <<'EOF'
+services:
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: ingest-auth-cache-smoke-boot
+EOF
 
 cleanup() {
   status=$?
@@ -31,6 +43,7 @@ cleanup() {
   fi
   rm -f "$cookie_jar"
   "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
   exit "$status"
 }
 trap cleanup EXIT
@@ -58,13 +71,21 @@ login() {
 wait_node_registered() {
   local deadline=$((SECONDS + 45))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+    payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+d=json.load(sys.stdin)
+raise SystemExit(0 if any(
+    n.get("session_assigned") is True and n.get("session_id") == session_id
+    for n in d.get("nodes", {}).values()
+) else 1)
+' "$session_id" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "node-agent did not register" >&2
+  echo "node-agent did not register for cache smoke Session" >&2
   return 1
 }
 
@@ -143,9 +164,11 @@ except urllib.error.HTTPError as exc:
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build
+# Start only the Control Plane (plus its media dependencies) first. The Node
+# must bootstrap after Session prepare so node-bound ingest auth can authorize
+# this Session instead of receiving an unassigned synthetic binding.
+"${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
-wait_node_registered
 
 curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
   -H 'Content-Type: application/json' \
@@ -153,12 +176,13 @@ curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
 login
 
 session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
+prepared="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/sessions/$session_id/prepare" \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $csrf" \
   -H "Idempotency-Key: cache-smoke-$session_id" \
-  --data '{"environment":"dev"}' >/dev/null
+  --data '{"environment":"dev"}')"
+provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
 
 credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/sessions/$session_id/ingest-credentials" \
@@ -168,6 +192,10 @@ credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
 ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 credential_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$credential")"
+
+export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
+"${compose[@]}" up -d --build node-agent
+wait_node_registered
 
 # Prime the node-local cache through the real MediaMTX external-auth call.
 start_publisher 7

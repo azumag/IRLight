@@ -1,0 +1,13 @@
+name: irlight-node
+
+# Media-only control model used from inside Node Agent. Deployment creates the
+# real containers with docker-compose.node.yml and its selected overlays. This
+# file intentionally contains no node-agent service and is used only by
+# `docker compose start/stop/ps`, never `up` or `down`.
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+  continuity:
+    image: ${NODE_CONTINUITY_IMAGE:-ghcr.io/azumag/irlight-continuity:phase-b-spike}
+  egress-gateway:
+    image: ${NODE_EGRESS_GATEWAY_IMAGE:-ghcr.io/azumag/irlight-egress-gateway:phase-b-spike}

@@ -122,6 +122,8 @@ class RelayClientHeartbeatTest(unittest.TestCase):
                 provider_server_id="relay-provider",
                 boot_id="boot-relay",
                 agent_version="test",
+                bootstrap_request_id="bootstrap-relay-request-1",
+                node_access_token="node-relay-access-token-0123456789abcdef",
             ),
             authorization="Bearer relay-state-token",
         )
@@ -139,6 +141,7 @@ class RelayClientHeartbeatTest(unittest.TestCase):
                         observed_at=200.0,
                     ),
                 ),
+                authorization=f"Bearer {bootstrap['node_access_token']}",
             )
 
         heartbeat(True, 1)

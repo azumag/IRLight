@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
+from state_safety import mark_initialized, was_initialized
 
 
 class DestinationSecretError(RuntimeError):
@@ -71,6 +74,7 @@ class DestinationSecretStore:
     ) -> None:
         self.state_dir = Path(state_dir or os.getenv("STATE_DIR", "/state"))
         self.path = self.state_dir / "destination_secrets.json"
+        self.lock_path = self.state_dir / ".destination-secrets.lock"
         key = master_key if master_key is not None else _read_master_key()
         if isinstance(key, str):
             key = key.encode("ascii")
@@ -82,7 +86,28 @@ class DestinationSecretStore:
             ) from exc
         self.lock = threading.Lock()
         self._records: dict[str, dict[str, Any]] = {}
-        self._load()
+        with self._state_lock(exclusive=False):
+            pass
+
+    @contextmanager
+    def _state_lock(self, *, exclusive: bool):
+        with self.lock:
+            try:
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                with self.lock_path.open("a+", encoding="utf-8") as handle:
+                    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(handle.fileno(), operation)
+                    try:
+                        self._load()
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except DestinationSecretError:
+                raise
+            except OSError as exc:
+                raise DestinationSecretError(
+                    "destination secret state cannot be locked"
+                ) from exc
 
     @staticmethod
     def _key(user_id: str, secret_ref: str) -> str:
@@ -94,6 +119,10 @@ class DestinationSecretStore:
             with self.path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
         except FileNotFoundError:
+            if was_initialized(self.path):
+                raise DestinationSecretError(
+                    "destination secret state disappeared after initialization"
+                )
             self._records = {}
             return
         except json.JSONDecodeError as exc:
@@ -137,6 +166,7 @@ class DestinationSecretStore:
                 )
             validated[record_key] = record
         self._records = validated
+        mark_initialized(self.path)
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -151,11 +181,17 @@ class DestinationSecretStore:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
             try:
                 self.path.chmod(0o600)
             except OSError:
                 pass
+            directory_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             try:
                 os.unlink(temporary)
@@ -175,7 +211,7 @@ class DestinationSecretStore:
         current = time.time() if now is None else now
         record_key = self._key(user_id, secret_ref)
         ciphertext = self.fernet.encrypt(value.encode("utf-8")).decode("ascii")
-        with self.lock:
+        with self._state_lock(exclusive=True):
             existing = self._records.get(record_key)
             created_at = (
                 float(existing.get("created_at", current))
@@ -200,7 +236,7 @@ class DestinationSecretStore:
 
     def resolve(self, *, user_id: str, secret_ref: str) -> str:
         record_key = self._key(user_id, secret_ref)
-        with self.lock:
+        with self._state_lock(exclusive=False):
             record = self._records.get(record_key)
             if record is None:
                 raise DestinationSecretNotFound(secret_ref)
@@ -216,12 +252,12 @@ class DestinationSecretStore:
 
     def configured(self, *, user_id: str, secret_ref: str) -> bool:
         record_key = self._key(user_id, secret_ref)
-        with self.lock:
+        with self._state_lock(exclusive=False):
             return record_key in self._records
 
     def delete(self, *, user_id: str, secret_ref: str) -> bool:
         record_key = self._key(user_id, secret_ref)
-        with self.lock:
+        with self._state_lock(exclusive=True):
             removed = self._records.pop(record_key, None) is not None
             if removed:
                 self._persist()

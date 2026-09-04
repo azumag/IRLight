@@ -64,7 +64,7 @@ services:
       - continuity
       - egress-conflict-target
     environment:
-      EGRESS_INPUT_URI: rtsp://mediamtx:8554/output/relay
+      EGRESS_INPUT_URI_FILE: /run/irlight/relay-secrets/media_relay_uri
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
       # The target is intentionally on the isolated Compose network.
@@ -78,6 +78,7 @@ services:
       EGRESS_MAX_RETRY_SECONDS: "0"
     volumes:
       - irlight-state:/state
+      - irlight-relay-secrets:/run/irlight/relay-secrets:ro
       - $secret_file:/run/irlight/secrets/egress_url:ro
 EOF
 
@@ -130,7 +131,10 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build mediamtx continuity egress-conflict-target conflict-holder
+# Continuity and the egress input now consume Agent-generated authenticated
+# local-media URIs, so the Node Agent and Control Plane must be part of the
+# dependency chain for this integration test.
+"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent egress-conflict-target conflict-holder
 
 # Hold the target path with a first publisher in a dedicated service. Keeping
 # it outside the continuity container is important: starting another Compose

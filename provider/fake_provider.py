@@ -23,6 +23,7 @@ from provider.conoha import (
     ProviderVolume,
     managed_since,
     format_timestamp,
+    parse_timestamp,
 )
 
 
@@ -304,6 +305,6 @@ def _parse_delete_after(metadata: dict[str, str]) -> float | None:
     if not raw:
         return None
     try:
-        return time.mktime(time.strptime(raw, "%Y-%m-%dT%H:%M:%SZ"))
+        return parse_timestamp(raw)
     except (ValueError, TypeError):
         return None

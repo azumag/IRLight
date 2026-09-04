@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/session-events.override.yml"
@@ -8,6 +9,7 @@ base_url="${BASE_URL:-http://127.0.0.1:8080}"
 publisher_pid=""
 email="session-events-$(date +%s)-$RANDOM@example.invalid"
 password='SmokePassword123!'
+# shellcheck disable=SC2034 # documented bootstrap token; compose override uses literal for determinism
 bootstrap_token="session-events-node-token"
 
 cat >"$override" <<'YAML'
@@ -111,7 +113,7 @@ wait_assigned_node() {
   local timeout="${1:-45}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    payload="$(curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
     if python3 -c '
 import json,sys
 session_id=sys.argv[1]
@@ -123,7 +125,7 @@ raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_i
     sleep 1
   done
   echo "Node did not bind to user Session" >&2
-  curl -fsS "$base_url/internal/nodes" >&2 || true
+  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
   return 1
 }
 
@@ -140,6 +142,40 @@ start_publisher() {
         audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
   " >/tmp/irlight-session-event-publisher.log 2>&1 &
   publisher_pid=$!
+}
+
+wrong_secret_status() {
+  "${compose[@]}" exec -T \
+    -e AUTH_USER="$ingest_username" \
+    node-agent python3 -c '
+import json, os, urllib.error, urllib.request
+payload = {
+    "user": os.environ["AUTH_USER"],
+    "password": "wrong-secret",
+    "token": "",
+    "ip": "203.0.113.88",
+    "action": "publish",
+    "path": "live/input",
+    "protocol": "rtmp",
+    "id": "session-event-auth-smoke",
+    "query": "",
+    "userAgent": "session-event-smoke",
+}
+request = urllib.request.Request(
+    "http://127.0.0.1:8090/auth",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=5) as response:
+        print(response.status)
+except urllib.error.HTTPError as exc:
+    try:
+        print(exc.code)
+    finally:
+        exc.close()
+'
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -188,11 +224,9 @@ ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["user
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
 # A known Session with a wrong secret must get a formal, secret-free
-# ingest.auth_failed entry before the real publisher connects.
-auth_status="$(curl -sS -o /tmp/irlight-session-auth-failure.json -w '%{http_code}' --max-time 5 \
-  -X POST "$base_url/internal/ingest/auth" \
-  -H 'Content-Type: application/json' \
-  --data "{\"user\":\"$ingest_username\",\"password\":\"wrong-secret\",\"ip\":\"203.0.113.88\",\"action\":\"publish\",\"path\":\"live/input\",\"protocol\":\"rtmp\",\"id\":\"session-event-auth-smoke\"}")"
+# ingest.auth_failed entry. Route it through the Node-local proxy so the
+# Control Plane also receives the assigned Node bearer token.
+auth_status="$(wrong_secret_status)"
 if [[ "$auth_status" != "401" ]]; then
   echo "wrong credential expected HTTP 401, got $auth_status" >&2
   exit 1
