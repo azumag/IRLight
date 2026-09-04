@@ -181,6 +181,7 @@ class DestinationSecretStore:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
             try:
                 self.path.chmod(0o600)
@@ -191,7 +192,6 @@ class DestinationSecretStore:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
