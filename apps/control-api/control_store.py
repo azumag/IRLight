@@ -130,13 +130,16 @@ class ControlStore:
                 json.dump(validated, handle, ensure_ascii=False, sort_keys=True)
                 handle.flush()
                 os.fsync(handle.fileno())
+            # Arm the durable fuse before publishing the first authoritative
+            # state. A crash after this point may fail closed, but can never
+            # make a previously attempted authority look uninitialized.
+            mark_initialized(self.path)
             os.replace(temporary, self.path)
             directory_fd = os.open(self.state_dir, os.O_RDONLY)
             try:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            mark_initialized(self.path)
         finally:
             try:
                 os.unlink(temporary)
