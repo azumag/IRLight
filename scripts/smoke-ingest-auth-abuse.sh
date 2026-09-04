@@ -2,7 +2,20 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
-compose=(docker compose -f docker-compose.poc.yml)
+tmp_dir="$(mktemp -d)"
+override="$tmp_dir/auth-abuse.override.yml"
+cat >"$override" <<'YAML'
+services:
+  control-ui:
+    environment:
+      NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT: "1"
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: auth-abuse-smoke-boot
+YAML
+
+compose=(docker compose -f docker-compose.poc.yml -f "$override")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 source_ip="203.0.113.50"
 wrong_secret="abuse-secret-must-never-persist"
@@ -30,6 +43,7 @@ cleanup() {
   fi
   rm -f "$cookie_jar"
   "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
   exit "$status"
 }
 trap cleanup EXIT
@@ -45,16 +59,21 @@ wait_http() {
   done
 }
 
-wait_node_registered() {
+wait_assigned_node() {
   local deadline=$((SECONDS + 45))
   while (( SECONDS < deadline )); do
     payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+d=json.load(sys.stdin)
+raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_id") == session_id for n in d.get("nodes", {}).values()) else 1)
+' "$session_id" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "node-agent did not register" >&2
+  echo "node-agent did not bind to Session" >&2
   return 1
 }
 
@@ -113,9 +132,11 @@ response_retry_after() {
 }
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build
+# Allocate the Session first, then bootstrap a Node whose bearer is formally
+# bound to that Session. The abuse guard must be tested behind the same node
+# authentication boundary used in production.
+"${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
-wait_node_registered
 
 curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
   -H 'Content-Type: application/json' \
@@ -123,12 +144,16 @@ curl -fsS --max-time 10 -X POST "$base_url/v1/auth/register" \
 login
 
 session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
+prepared="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/sessions/$session_id/prepare" \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $csrf" \
   -H "Idempotency-Key: auth-abuse-$session_id" \
-  --data '{"environment":"dev"}' >/dev/null
+  --data '{"environment":"dev"}')"
+provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
+export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
+"${compose[@]}" up -d --build node-agent
+wait_assigned_node
 
 credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   "$base_url/v1/sessions/$session_id/ingest-credentials" \
