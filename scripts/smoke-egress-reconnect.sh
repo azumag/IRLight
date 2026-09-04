@@ -36,7 +36,7 @@ services:
       - continuity
       - egress-target
     environment:
-      EGRESS_INPUT_URI: rtsp://mediamtx:8554/output/relay
+      EGRESS_INPUT_URI_FILE: /run/irlight/relay-secrets/media_relay_uri
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
       # This target deliberately lives on the isolated Compose RFC1918 network.
@@ -51,6 +51,7 @@ services:
       EGRESS_MAX_RETRY_SECONDS: "0"
     volumes:
       - irlight-state:/state
+      - irlight-relay-secrets:/run/irlight/relay-secrets:ro
       - ${EGRESS_SECRET_FILE}:/run/irlight/secrets/egress_url:ro
 YAML
 
