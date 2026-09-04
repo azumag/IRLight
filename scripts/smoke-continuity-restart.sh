@@ -179,6 +179,7 @@ services:
   control-ui:
     environment:
       NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT: "1"
+      IRLIGHT_LEGACY_AUDIO_API_ENABLED: "1"
   node-agent:
     environment:
       NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
