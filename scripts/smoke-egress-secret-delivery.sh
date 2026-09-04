@@ -92,7 +92,7 @@ wait_secret_file() {
   local timeout="${1:-30}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    if "${compose[@]}" exec -T node-agent test -s /tmp/irlight-node-secrets/egress_url >/dev/null 2>&1; then
+    if "${compose[@]}" exec -T node-agent test -s /run/irlight/egress-secrets/egress_url >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -196,12 +196,12 @@ wait_assigned_node "$session_id" 45
 wait_secret_file 30
 
 expected_url="$(python3 -c 'from urllib.parse import quote; import sys; print("rtmp://mediamtx:1935/output/relay/" + quote(sys.argv[1], safe=""))' "$stream_key")"
-actual_url="$("${compose[@]}" exec -T node-agent cat /tmp/irlight-node-secrets/egress_url | tr -d '\r\n')"
+actual_url="$("${compose[@]}" exec -T node-agent cat /run/irlight/egress-secrets/egress_url | tr -d '\r\n')"
 if [[ "$actual_url" != "$expected_url" ]]; then
   echo "resolved egress URL mismatch" >&2
   exit 1
 fi
-node_secret_mode="$("${compose[@]}" exec -T node-agent stat -c '%a' /tmp/irlight-node-secrets/egress_url)"
+node_secret_mode="$("${compose[@]}" exec -T node-agent stat -c '%a' /run/irlight/egress-secrets/egress_url)"
 if [[ "$node_secret_mode" != "600" ]]; then
   echo "Node egress_url expected mode 600, got $node_secret_mode" >&2
   exit 1
