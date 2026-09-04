@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-egress-publish-conflict-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-conflict.override.yml"
 target_config="$tmp_dir/mediamtx-conflict.yml"
@@ -82,7 +84,7 @@ services:
       - $secret_file:/run/irlight/secrets/egress_url:ro
 EOF
 
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -96,7 +98,7 @@ cleanup() {
     echo "--- target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=160 egress-conflict-target >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -130,7 +132,7 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
   return 1
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 # Continuity and the egress input now consume Agent-generated authenticated
 # local-media URIs, so the Node Agent and Control Plane must be part of the
 # dependency chain for this integration test.
