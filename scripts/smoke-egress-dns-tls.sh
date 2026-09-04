@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-egress-dns-tls-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-dns-tls.override.yml"
 dns_secret="$tmp_dir/dns-egress-url"
@@ -94,7 +96,7 @@ services:
       - $tls_secret:/run/irlight/secrets/egress_url:ro
 EOF
 
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -108,7 +110,7 @@ cleanup() {
     echo "--- TLS target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 egress-tls-target >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -142,7 +144,9 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
   return 1
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# The generated project must never borrow or tear down a developer stack. If a
+# fixed host port is occupied, let `up` fail rather than preempting that owner.
+"${compose[@]}" config >/dev/null
 # Continuity consumes Agent-generated authenticated local-media URIs, so start
 # the complete PoC dependency chain before introducing the two test gateways.
 "${compose[@]}" up -d --build mediamtx continuity control-ui node-agent egress-tls-target
