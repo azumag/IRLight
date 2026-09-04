@@ -28,6 +28,8 @@ ingest_username=""
 ingest_secret=""
 ingest_session_id=""
 ingest_provider_server_id=""
+ingest_csrf=""
+ingest_srt_destination_id=""
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -125,6 +127,53 @@ raise SystemExit(0 if any(
     sleep 1
   done
   echo "Node Agent が準備済み Session に登録されませんでした" >&2
+  return 1
+}
+
+wait_ingest_auth_proxy_ready() {
+  local timeout="${1:-30}"
+  local deadline=$((SECONDS + timeout))
+  local status
+  while (( SECONDS < deadline )); do
+    status="$(
+      printf '%s\n%s\n' "$ingest_username" "$ingest_secret" | \
+        "${compose[@]}" exec -T node-agent python3 -c '
+import json, sys, urllib.error, urllib.request
+user = sys.stdin.readline().rstrip("\n")
+secret = sys.stdin.readline().rstrip("\n")
+payload = {
+    "user": user,
+    "password": secret,
+    "token": "",
+    "ip": "198.51.100.77",
+    "action": "publish",
+    "path": "live/input",
+    "protocol": "rtmp",
+    "id": "docker-smoke-ready",
+    "query": "",
+    "userAgent": "docker-smoke",
+}
+req = urllib.request.Request(
+    "http://127.0.0.1:8090/auth",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=3) as response:
+        print(response.status)
+except urllib.error.HTTPError as exc:
+    print(exc.code)
+except (urllib.error.URLError, TimeoutError, OSError):
+    print("unavailable")
+' 2>/dev/null || true
+    )"
+    if [[ "$status" == "200" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Node ingest auth proxy が対象 Session の credential を認証できませんでした" >&2
   return 1
 }
 
@@ -239,7 +288,7 @@ control_mode() {
 }
 
 setup_control_plane_and_ingest() {
-  local email password login csrf destination destination_id credential srt_url srt_payload auth_status prepared
+  local email password login destination destination_id credential srt_url srt_payload auth_status prepared
   email="smoke-$(date +%s)-$RANDOM@example.invalid"
   password="SmokePassword123!"
   rm -f "$auth_cookie_jar"
@@ -251,22 +300,22 @@ setup_control_plane_and_ingest() {
   login="$(curl -fsS --max-time 10 -c "$auth_cookie_jar" -X POST "$base_url/v1/auth/login" \
     -H 'Content-Type: application/json' \
     --data "{\"email\":\"$email\",\"password\":\"$password\"}")"
-  csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
+  ingest_csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
 
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data '{"type":"rtmp","display_name":"Local RTMP probe","server_url":"rtmp://mediamtx:1935/live/input","secret_ref":"smoke/rtmp"}')"
   destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/destinations/$destination_id/verify" \
-    -H "X-CSRF-Token: $csrf" >/dev/null
+    -H "X-CSRF-Token: $ingest_csrf" >/dev/null
 
   ingest_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
   prepared="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/prepare" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     -H "Idempotency-Key: smoke-prepare-$ingest_session_id" \
     --data '{"environment":"dev"}')"
   ingest_provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
@@ -274,7 +323,7 @@ setup_control_plane_and_ingest() {
   credential="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/ingest-credentials" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data '{"protocols":["rtmp","srt"],"ttl_seconds":3600}')"
   ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
   ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
@@ -292,12 +341,19 @@ setup_control_plane_and_ingest() {
   srt_payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Local SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' "$srt_url")"
   destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
     -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $csrf" \
+    -H "X-CSRF-Token: $ingest_csrf" \
     --data "$srt_payload")"
-  destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+  ingest_srt_destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
+}
+
+verify_srt_destination() {
+  if [[ -z "$ingest_srt_destination_id" || -z "$ingest_csrf" ]]; then
+    echo "SRT destination verification context is not initialized" >&2
+    return 1
+  fi
   curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
-    "$base_url/v1/destinations/$destination_id/verify" \
-    -H "X-CSRF-Token: $csrf" >/dev/null
+    "$base_url/v1/destinations/$ingest_srt_destination_id/verify" \
+    -H "X-CSRF-Token: $ingest_csrf" >/dev/null
 }
 
 wait_status() {
@@ -321,6 +377,13 @@ export ASSIGNED_PROVIDER_SERVER_ID="$ingest_provider_server_id"
 current_stage="node-up"
 "${compose[@]}" up -d --build node-agent
 
+current_stage="node-auth-ready"
+wait_node_registered 45
+wait_ingest_auth_proxy_ready 30
+
+current_stage="authenticated-srt-verify"
+verify_srt_destination
+
 current_stage="initial-holding"
 wait_status \
   --timeout 90 \
@@ -329,7 +392,6 @@ wait_status \
   --audio-desired LIVE \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
-wait_node_registered 45
 
 current_stage="reject-unsupported-resolution"
 start_publisher 15 640 360
