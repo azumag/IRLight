@@ -425,12 +425,17 @@ class NodeAgentTest(unittest.TestCase):
 
         supervisor = BlockingStartSupervisor()
         self.agent.supervisor = supervisor
-        self.control.absolute_deadline = time.time() + 0.2
+        # Do not let scheduler/runner load expire the bootstrap deadline before
+        # the test has actually entered the blocked supervisor start path.
+        self.control.absolute_deadline = time.time() + 30.0
         result: list[int] = []
         thread = threading.Thread(target=lambda: result.append(self.agent.run()), daemon=True)
         thread.start()
-        self.assertTrue(start_entered.wait(timeout=3))
+        self.assertTrue(start_entered.wait(timeout=10))
 
+        # Arm the real watchdog only after start() is known to be blocked. This
+        # keeps the safety assertion while removing the pre-start wall-clock race.
+        self.agent.absolute_deadline = time.time() + 0.05
         deadline = time.monotonic() + 1.0
         while not supervisor.stopped_sessions and time.monotonic() < deadline:
             time.sleep(0.01)
