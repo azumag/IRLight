@@ -8,7 +8,9 @@ override="$tmp_dir/continuity-restart.override.yml"
 auth_cookie_jar="$tmp_dir/cookies.txt"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml")
+RESTART_SESSION_ID=""
+RESTART_PROVIDER_SERVER_ID=""
+compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
 test_compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
@@ -48,12 +50,20 @@ wait_node_registered() {
   local payload=""
   while (( SECONDS < deadline )); do
     payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+value=json.load(sys.stdin)
+raise SystemExit(0 if any(
+    n.get("session_assigned") is True and n.get("session_id") == session_id
+    for n in value.get("nodes", {}).values()
+) else 1)
+' "$RESTART_SESSION_ID" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "Node Agent did not register before restart smoke" >&2
+  echo "Node Agent did not bind to restart Session" >&2
   return 1
 }
 
@@ -131,7 +141,7 @@ raise SystemExit(0 if ok else 1)
 }
 
 register_ingest() {
-  local email password login csrf session_id credential
+  local email password login csrf credential prepared
   email="restart-$(date +%s)-$RANDOM@example.invalid"
   password="RestartSmoke123!"
 
@@ -143,17 +153,18 @@ register_ingest() {
     -H 'Content-Type: application/json' \
     --data "{\"email\":\"$email\",\"password\":\"$password\"}")"
   csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$login")"
-  session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  RESTART_SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 
-  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
-    "$base_url/v1/sessions/$session_id/prepare" \
+  prepared="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+    "$base_url/v1/sessions/$RESTART_SESSION_ID/prepare" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
-    -H "Idempotency-Key: restart-prepare-$session_id" \
-    --data '{"environment":"dev"}' >/dev/null
+    -H "Idempotency-Key: restart-prepare-$RESTART_SESSION_ID" \
+    --data '{"environment":"dev"}')"
+  RESTART_PROVIDER_SERVER_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
 
   credential="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
-    "$base_url/v1/sessions/$session_id/ingest-credentials" \
+    "$base_url/v1/sessions/$RESTART_SESSION_ID/ingest-credentials" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
     --data '{"protocols":["rtmp"],"ttl_seconds":3600}')"
@@ -165,6 +176,13 @@ register_ingest() {
 
 cat >"$override" <<'EOF'
 services:
+  control-ui:
+    environment:
+      NODE_BOOTSTRAP_REQUIRE_SESSION_ASSIGNMENT: "1"
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: continuity-restart-smoke-boot
   restart-publisher:
     build:
       context: ./apps/continuity
@@ -191,10 +209,14 @@ services:
 EOF
 
 "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up -d --build
-wait_http "$base_url/api/status" 60
-wait_node_registered 45
+# Allocate the Session before Node bootstrap so the node-bound ingest
+# authorization path is exercised during the restart test.
+"${compose[@]}" up -d --build control-ui
+wait_http "$base_url/healthz" 60
 register_ingest
+export ASSIGNED_PROVIDER_SERVER_ID="$RESTART_PROVIDER_SERVER_ID"
+"${compose[@]}" up -d --build node-agent
+wait_node_registered 45
 
 "${test_compose[@]}" up -d --build restart-publisher
 wait_runtime LIVE LIVE LIVE LIVE 45
