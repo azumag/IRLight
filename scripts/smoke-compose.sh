@@ -3,10 +3,22 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
 smoke_project="${IRLIGHT_SMOKE_PROJECT:-irlight-poc-smoke-$$-$RANDOM}"
+tmp_dir="$(mktemp -d)"
+smoke_override="$tmp_dir/smoke.override.yml"
+cat >"$smoke_override" <<'EOF'
+services:
+  control-ui:
+    environment:
+      IRLIGHT_LEGACY_AUDIO_API_ENABLED: "1"
+  node-agent:
+    environment:
+      NODE_PROVIDER_SERVER_ID: ${ASSIGNED_PROVIDER_SERVER_ID:-unassigned-provider}
+      NODE_BOOT_ID: docker-smoke-boot
+EOF
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
-  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE")
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE" -f "$smoke_override")
 else
-  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml)
+  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$smoke_override")
 fi
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
@@ -15,6 +27,7 @@ auth_cookie_jar="/tmp/irlight-smoke-cookies.txt"
 ingest_username=""
 ingest_secret=""
 ingest_session_id=""
+ingest_provider_server_id=""
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -54,6 +67,7 @@ show_logs_and_cleanup() {
   fi
   rm -f "$auth_cookie_jar"
   "${compose[@]}" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
   exit "$status"
 }
 trap show_logs_and_cleanup EXIT
@@ -97,12 +111,20 @@ wait_node_registered() {
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     payload="$(node_admin_curl -fsS --max-time 3 "$base_url/internal/nodes" 2>/dev/null || true)"
-    if python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("nodes") else 1)' <<<"$payload" 2>/dev/null; then
+    if python3 -c '
+import json,sys
+session_id=sys.argv[1]
+d=json.load(sys.stdin)
+raise SystemExit(0 if any(
+    n.get("session_assigned") is True and n.get("session_id") == session_id
+    for n in d.get("nodes", {}).values()
+) else 1)
+' "$ingest_session_id" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "Node Agent がControl Planeへ登録されませんでした" >&2
+  echo "Node Agent が準備済み Session に登録されませんでした" >&2
   return 1
 }
 
@@ -137,14 +159,9 @@ wait_node_event() {
 }
 
 assert_runtime_secret_boundaries() {
-  # Continuity needs only its two node-local media URIs. It must not be able to
-  # read the relay or external-destination volumes even when running as root.
   "${compose[@]}" exec -T continuity sh -c \
     'test ! -e /run/irlight/relay-secrets && test ! -e /run/irlight/egress-secrets'
 
-  # Scan the live container PID namespace without printing any credential.
-  # This catches regressions that put a generated URI or its password/query
-  # token back into ffprobe (or another child process) argv.
   "${compose[@]}" exec -T node-agent python3 -c '
 from pathlib import Path
 import time
@@ -222,7 +239,7 @@ control_mode() {
 }
 
 setup_control_plane_and_ingest() {
-  local email password login csrf destination destination_id credential srt_url srt_payload auth_status
+  local email password login csrf destination destination_id credential srt_url srt_payload auth_status prepared
   email="smoke-$(date +%s)-$RANDOM@example.invalid"
   password="SmokePassword123!"
   rm -f "$auth_cookie_jar"
@@ -246,12 +263,13 @@ setup_control_plane_and_ingest() {
     -H "X-CSRF-Token: $csrf" >/dev/null
 
   ingest_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
+  prepared="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/prepare" \
     -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $csrf" \
     -H "Idempotency-Key: smoke-prepare-$ingest_session_id" \
-    --data '{"environment":"dev"}' >/dev/null
+    --data '{"environment":"dev"}')"
+  ingest_provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
 
   credential="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
     "$base_url/v1/sessions/$ingest_session_id/ingest-credentials" \
@@ -286,10 +304,22 @@ wait_status() {
   ./scripts/wait-status.py --base-url "$base_url" "$@"
 }
 
-current_stage="compose-up"
+current_stage="compose-control-up"
 "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
-"${compose[@]}" up -d --build
+"${compose[@]}" up -d --build control-ui
+wait_http "$base_url/healthz" 60
+
+current_stage="authenticated-ingest-setup"
+setup_control_plane_and_ingest
+if [[ -z "$ingest_provider_server_id" ]]; then
+  echo "prepared Session did not return provider_server_id" >&2
+  exit 1
+fi
+export ASSIGNED_PROVIDER_SERVER_ID="$ingest_provider_server_id"
+
+current_stage="node-up"
+"${compose[@]}" up -d --build node-agent
 
 current_stage="initial-holding"
 wait_status \
@@ -300,9 +330,6 @@ wait_status \
   --audio-actual SILENT_FALLBACK
 wait_http "$hls_url" 30
 wait_node_registered 45
-
-current_stage="authenticated-ingest-setup"
-setup_control_plane_and_ingest
 
 current_stage="reject-unsupported-resolution"
 start_publisher 15 640 360
