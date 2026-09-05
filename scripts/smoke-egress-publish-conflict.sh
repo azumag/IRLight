@@ -132,11 +132,34 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
   return 1
 }
 
+wait_for_target_listener() {
+  local timeout="${1:-30}"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "started with listener on :1935"; then
+      return 0
+    fi
+    if ! "${compose[@]}" ps --status running --services | grep -qx egress-conflict-target; then
+      echo "publish-conflict target exited before RTMP listener became ready" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "publish-conflict target RTMP listener did not become ready" >&2
+  return 1
+}
+
 "${compose[@]}" config >/dev/null
+# Start the conflict target first and wait for MediaMTX's RTMP listener. Compose
+# depends_on only orders container startup; it does not make the listener ready,
+# so starting the holder in the same `up` can race and make the publisher exit.
+"${compose[@]}" up -d egress-conflict-target
+wait_for_target_listener 30
+
 # Continuity and the egress input now consume Agent-generated authenticated
 # local-media URIs, so the Node Agent and Control Plane must be part of the
 # dependency chain for this integration test.
-"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent egress-conflict-target conflict-holder
+"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent conflict-holder
 
 # Hold the target path with a first publisher in a dedicated service. Keeping
 # it outside the continuity container is important: starting another Compose

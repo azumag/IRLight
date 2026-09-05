@@ -24,6 +24,8 @@ The isolation pattern is applied to:
 - `scripts/smoke-egress-reconnect.sh`
 - `scripts/smoke-egress-dns-tls.sh`
 - `scripts/smoke-egress-publish-conflict.sh`
+- `scripts/smoke-egress-secret-delivery.sh`
+- `scripts/smoke-egress-stop-terminal.sh`
 - `scripts/smoke-rtmps.sh`
 
 Other `scripts/smoke-*.sh` and soak scripts still need to be audited and migrated under issue #85. Until that migration is complete, do not assume all smoke scripts are safe to run concurrently with a persistent PoC stack.
