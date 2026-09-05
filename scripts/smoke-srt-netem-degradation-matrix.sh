@@ -2,6 +2,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/srt-netem-matrix.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
@@ -48,12 +50,13 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-srt-netem-matrix-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
   if (( netem_applied == 1 )); then
-    bash ./scripts/netem-container.sh clear "$publisher_name" >/dev/null 2>&1 || true
+    bash "$repo_root/scripts/netem-container.sh" clear "$publisher_name" >/dev/null 2>&1 || true
   fi
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
@@ -80,7 +83,7 @@ cleanup() {
     wait "$publisher_pid" 2>/dev/null || true
   fi
   docker rm -f "$publisher_name" >/dev/null 2>&1 || true
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -375,10 +378,10 @@ run_profile() {
   assert_output_relay_online
   baseline_sequence="$(latest_event_sequence)"
 
-  bash ./scripts/netem-container.sh apply "$publisher_name" "${args[@]}"
+  bash "$repo_root/scripts/netem-container.sh" apply "$publisher_name" "${args[@]}"
   netem_applied=1
   stage "profile=$profile applied args=${args[*]}"
-  bash ./scripts/netem-container.sh show "$publisher_name"
+  bash "$repo_root/scripts/netem-container.sh" show "$publisher_name"
 
   deadline=$((SECONDS + profile_seconds))
   while (( SECONDS < deadline )); do
@@ -393,7 +396,7 @@ run_profile() {
   done
 
   hold_summary="$(profile_holding_summary "$baseline_sequence")"
-  bash ./scripts/netem-container.sh clear "$publisher_name"
+  bash "$repo_root/scripts/netem-container.sh" clear "$publisher_name"
   netem_applied=0
   stage "profile=$profile cleared observed_hold=$hold_summary"
 
@@ -409,7 +412,7 @@ run_profile() {
 }
 
 stage "start control plane"
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 stage "control plane ready"
