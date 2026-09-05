@@ -21,6 +21,7 @@ The isolation pattern is applied to:
 
 - `scripts/smoke-ingest-auth-cache.sh`
 - `scripts/smoke-ingest-auth-abuse.sh`
+- `scripts/smoke-ingest-disconnect-recovery.sh`
 - `scripts/smoke-ingest-quality.sh`
 - `scripts/smoke-session-ingest-events.sh`
 - `scripts/smoke-hold-timeout-cleanup.sh`
