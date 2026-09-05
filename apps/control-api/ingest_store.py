@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import math
 import os
 import secrets
 import tempfile
 import threading
 import time
 import uuid
-import fcntl
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,6 +26,56 @@ DEFAULT_TTL_SECONDS = 12 * 3600
 
 class IngestCredentialError(RuntimeError):
     pass
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value} is not allowed")
+
+
+def _require_nonempty_string(
+    record: dict[str, Any], field: str, *, context: str
+) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise IngestCredentialError(f"{context} has invalid {field}")
+    return value
+
+
+def _require_finite_number(
+    record: dict[str, Any], field: str, *, context: str
+) -> float:
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise IngestCredentialError(f"{context} has invalid {field}")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise IngestCredentialError(f"{context} has invalid {field}") from None
+    if not math.isfinite(number):
+        raise IngestCredentialError(f"{context} has invalid {field}")
+    return number
+
+
+def _optional_finite_number(
+    record: dict[str, Any], field: str, *, context: str
+) -> float | None:
+    value = record.get(field)
+    if value is None:
+        return None
+    return _require_finite_number(record, field, context=context)
+
+
+def _runtime_timestamp(value: float | None, *, field: str) -> float:
+    number = time.time() if value is None else value
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        raise ValueError(f"{field} must be a finite number")
+    try:
+        normalized = float(number)
+    except (OverflowError, ValueError):
+        raise ValueError(f"{field} must be a finite number") from None
+    if not math.isfinite(normalized):
+        raise ValueError(f"{field} must be a finite number")
+    return normalized
 
 
 class IngestCredentialStore:
@@ -68,7 +119,10 @@ class IngestCredentialStore:
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(handle)
+                raw = json.load(
+                    handle,
+                    parse_constant=_reject_non_finite_json_constant,
+                )
         except FileNotFoundError:
             if was_initialized(self.path):
                 raise IngestCredentialError(
@@ -76,7 +130,7 @@ class IngestCredentialStore:
                 )
             self._credentials = {}
             return
-        except (json.JSONDecodeError, OSError) as exc:
+        except (ValueError, OSError) as exc:
             raise IngestCredentialError(
                 f"cannot read ingest credential state {self.path}: {exc}"
             ) from exc
@@ -86,27 +140,112 @@ class IngestCredentialStore:
                 f"invalid ingest credential state payload in {self.path}"
             )
         credentials = raw["credentials"]
-        if any(
-            not isinstance(key, str) or not isinstance(value, dict)
-            for key, value in credentials.items()
-        ):
-            raise IngestCredentialError(
-                f"invalid ingest credential record in {self.path}"
-            )
+        self._validate_credentials(credentials)
         self._credentials = dict(credentials)
         mark_initialized(self.path)
+
+    @staticmethod
+    def _validate_credentials(credentials: dict[Any, Any]) -> None:
+        for credential_id, record in credentials.items():
+            if (
+                not isinstance(credential_id, str)
+                or not credential_id
+                or not isinstance(record, dict)
+            ):
+                raise IngestCredentialError("invalid ingest credential record")
+
+            stored_id = _require_nonempty_string(
+                record, "id", context="ingest credential record"
+            )
+            session_id = _require_nonempty_string(
+                record, "session_id", context="ingest credential record"
+            )
+            _require_nonempty_string(
+                record, "user_id", context="ingest credential record"
+            )
+            username = _require_nonempty_string(
+                record, "username", context="ingest credential record"
+            )
+            digest = _require_nonempty_string(
+                record, "secret_sha256", context="ingest credential record"
+            )
+
+            if stored_id != credential_id:
+                raise IngestCredentialError(
+                    "ingest credential record id does not match its key"
+                )
+            if username != session_id:
+                raise IngestCredentialError(
+                    "ingest credential record username does not match session_id"
+                )
+            if len(digest) != 64:
+                raise IngestCredentialError(
+                    "ingest credential record has invalid secret_sha256"
+                )
+            try:
+                bytes.fromhex(digest)
+            except ValueError:
+                raise IngestCredentialError(
+                    "ingest credential record has invalid secret_sha256"
+                ) from None
+
+            # Records created before relay credentials were introduced did not
+            # persist a scope. Keep that one explicit compatibility path while
+            # rejecting unknown persisted scopes.
+            scope = record.get("scope", "INGEST")
+            if not isinstance(scope, str) or scope not in CREDENTIAL_SCOPES:
+                raise IngestCredentialError("ingest credential record has invalid scope")
+
+            protocols = record.get("protocols")
+            if (
+                not isinstance(protocols, list)
+                or not protocols
+                or any(
+                    not isinstance(protocol, str)
+                    or protocol not in SUPPORTED_PROTOCOLS
+                    for protocol in protocols
+                )
+            ):
+                raise IngestCredentialError(
+                    "ingest credential record has invalid protocols"
+                )
+
+            created_at = _require_finite_number(
+                record, "created_at", context="ingest credential record"
+            )
+            expires_at = _require_finite_number(
+                record, "expires_at", context="ingest credential record"
+            )
+            if expires_at <= created_at:
+                raise IngestCredentialError(
+                    "ingest credential record has invalid expires_at"
+                )
+            _optional_finite_number(
+                record, "revoked_at", context="ingest credential record"
+            )
+            _optional_finite_number(
+                record,
+                "last_authenticated_at",
+                context="ingest credential record",
+            )
 
     def _persist(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {"credentials": self._credentials},
-                    handle,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
+                try:
+                    json.dump(
+                        {"credentials": self._credentials},
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise IngestCredentialError(
+                        "ingest credential state cannot be serialized"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             mark_initialized(self.path)
@@ -143,12 +282,13 @@ class IngestCredentialStore:
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         now: float | None = None,
     ) -> tuple[dict[str, Any], str]:
-        if ttl_seconds <= 0:
+        ttl = _runtime_timestamp(ttl_seconds, field="ttl_seconds")
+        if ttl <= 0:
             raise ValueError("ttl_seconds must be positive")
         if scope not in CREDENTIAL_SCOPES:
             raise ValueError(f"scope must be one of {sorted(CREDENTIAL_SCOPES)}")
         normalized = self._normalize_protocols(protocols)
-        issued_at = time.time() if now is None else now
+        issued_at = _runtime_timestamp(now, field="now")
         secret = secrets.token_urlsafe(32)
         credential_id = str(uuid.uuid4())
         record = {
@@ -160,7 +300,7 @@ class IngestCredentialStore:
             "secret_sha256": self._digest(secret),
             "protocols": normalized,
             "created_at": issued_at,
-            "expires_at": issued_at + ttl_seconds,
+            "expires_at": issued_at + ttl,
             "revoked_at": None,
             "last_authenticated_at": None,
         }
@@ -189,7 +329,7 @@ class IngestCredentialStore:
         now: float | None = None,
         scope: str = "INGEST",
     ) -> dict[str, Any] | None:
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now, field="now")
         protocol = protocol.lower()
         if (
             protocol not in SUPPORTED_PROTOCOLS
@@ -208,15 +348,12 @@ class IngestCredentialStore:
                     continue
                 if record.get("revoked_at") is not None:
                     continue
-                try:
-                    expires_at = float(record.get("expires_at", 0))
-                except (TypeError, ValueError):
-                    continue
+                expires_at = float(record["expires_at"])
                 if expires_at <= current:
                     continue
-                if protocol not in record.get("protocols", []):
+                if protocol not in record["protocols"]:
                     continue
-                stored = str(record.get("secret_sha256", ""))
+                stored = record["secret_sha256"]
                 if not secrets.compare_digest(stored, candidate):
                     continue
                 record["last_authenticated_at"] = current
@@ -235,7 +372,7 @@ class IngestCredentialStore:
             return self.public_record(record)
 
     def revoke_session(self, session_id: str, *, now: float | None = None) -> int:
-        revoked_at = time.time() if now is None else now
+        revoked_at = _runtime_timestamp(now, field="now")
         changed = 0
         with self._state_lock(exclusive=True):
             for record in self._credentials.values():
@@ -253,7 +390,7 @@ class IngestCredentialStore:
         now: float | None = None,
         scope: str = "INGEST",
     ) -> dict[str, Any] | None:
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now, field="now")
         with self._state_lock(exclusive=False):
             for record in reversed(list(self._credentials.values())):
                 if (
@@ -262,10 +399,7 @@ class IngestCredentialStore:
                     or record.get("revoked_at") is not None
                 ):
                     continue
-                try:
-                    if float(record.get("expires_at", 0)) <= current:
-                        continue
-                except (TypeError, ValueError):
+                if float(record["expires_at"]) <= current:
                     continue
                 return self.public_record(record)
         return None
