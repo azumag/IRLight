@@ -58,8 +58,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"${sentinel_compose[@]}" up -d
+# Mark cleanup active before startup so a partially-created sentinel project is
+# still reclaimed if image pull/create/start fails halfway through Compose.
 sentinel_started=1
+"${sentinel_compose[@]}" up -d
 
 sentinel_container_id="$("${sentinel_compose[@]}" ps -q sentinel)"
 if [[ -z "$sentinel_container_id" ]]; then
