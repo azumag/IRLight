@@ -9,7 +9,10 @@ set -uo pipefail
 # Keep running after an individual failure so one flaky/failed smoke does not
 # hide the results of the remaining scenarios. Each smoke owns its own cleanup.
 smokes=(
-  scripts/smoke-compose.sh
+  # The wrapper runs smoke-compose.sh while an unrelated sentinel project is
+  # alive, then overlaps a second run to prove a fixed-port collision cannot
+  # reclaim or tear down the first run or the sentinel project.
+  scripts/ci-smoke-compose-isolation-runtime.sh
   scripts/smoke-ingest-quality.sh
   scripts/smoke-continuity-restart.sh
   scripts/smoke-rtmps.sh
