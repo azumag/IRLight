@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -23,6 +24,11 @@ class SmokeIsolationInventoryTest(unittest.TestCase):
         compose_smokes = self.compose_smokes()
         self.assertIn("smoke-compose.sh", compose_smokes)
 
+        generated_project = re.compile(
+            r'^smoke_project="[^"\n]*\$\$-\$RANDOM"$',
+            re.MULTILINE,
+        )
+
         for name, source in compose_smokes.items():
             if name in KNOWN_LEGACY_COMPOSE_SMOKES:
                 continue
@@ -30,12 +36,11 @@ class SmokeIsolationInventoryTest(unittest.TestCase):
             with self.subTest(script=name):
                 self.assertIn("docker compose -p ", source)
                 self.assertNotIn("IRLIGHT_SMOKE_PROJECT", source)
-
-                trap_index = source.find("trap ")
-                up_index = source.find('"${compose[@]}" up', trap_index + 1)
-                if trap_index >= 0 and up_index >= 0:
-                    startup = source[trap_index:up_index]
-                    self.assertNotIn('"${compose[@]}" down', startup)
+                self.assertRegex(
+                    source,
+                    generated_project,
+                    msg=f"{name} must generate a run-scoped Compose project",
+                )
 
     def test_legacy_exception_is_specific_and_still_requires_migration(self) -> None:
         self.assertEqual(KNOWN_LEGACY_COMPOSE_SMOKES, {"smoke-compose.sh"})
