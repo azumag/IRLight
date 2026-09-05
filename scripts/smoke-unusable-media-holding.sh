@@ -2,9 +2,13 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/unusable-media.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
+invalid_publisher_log="$tmp_dir/invalid-publisher.log"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 publisher_pid=""
 invalid_pid=""
@@ -29,7 +33,8 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-unusable-media-holding-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -42,14 +47,18 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail=140 control-ui >&2 || true
     echo "--- mediamtx logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
+    echo "--- publisher log ---" >&2
+    cat "$publisher_log" >&2 2>/dev/null || true
+    echo "--- invalid publisher log ---" >&2
+    cat "$invalid_publisher_log" >&2 2>/dev/null || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   for pid in "$publisher_pid" "$invalid_pid"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -205,7 +214,7 @@ start_controllable_publisher() {
   "${compose[@]}" exec -T \
     -e IRLIGHT_PUBLISH_USER="$ingest_username" \
     -e IRLIGHT_PUBLISH_PASS="$ingest_secret" \
-    continuity python3 - <<'PY' >/tmp/irlight-unusable-media-publisher.log 2>&1 &
+    continuity python3 - <<'PY' >"$publisher_log" 2>&1 &
 from __future__ import annotations
 
 import os
@@ -273,11 +282,11 @@ start_invalid_resolution_publisher() {
           video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
         audiotestsrc is-live=true wave=sine freq=880 ! audioconvert ! audioresample ! \
           audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
-    ' >/tmp/irlight-format-change-publisher.log 2>&1 &
+    ' >"$invalid_publisher_log" 2>&1 &
   invalid_pid=$!
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 
