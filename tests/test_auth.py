@@ -25,6 +25,7 @@ from auth_store import (  # noqa: E402
     InvalidCredentials,
     USERS_PATH,
     _hash_password,
+    _verify_password,
     atomic_write_json,
     authenticate_user,
     create_session,
