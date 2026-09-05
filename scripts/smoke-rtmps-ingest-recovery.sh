@@ -2,6 +2,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/rtmps-ingest.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
@@ -64,7 +66,8 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 EOF_YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-rtmps-ingest-recovery-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -85,7 +88,7 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail=180 >&2 || true
   fi
   rm -f "$cookie_jar"
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -277,7 +280,7 @@ command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg is required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 2; }
 
 stage "start control plane"
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 wait_rtmps_listener 45
