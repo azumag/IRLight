@@ -2,7 +2,9 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+umask 077
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-continuity-restart-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/continuity-restart.override.yml"
 auth_cookie_jar="$tmp_dir/cookies.txt"
@@ -10,8 +12,8 @@ base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 RESTART_SESSION_ID=""
 RESTART_PROVIDER_SERVER_ID=""
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
-test_compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
+test_compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -25,7 +27,7 @@ cleanup() {
     echo "--- status ---" >&2
     curl -fsS --max-time 3 "$base_url/api/status" >&2 || true
   fi
-  "${test_compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -209,7 +211,10 @@ services:
             audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
 EOF
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# Validate this run-scoped Compose model without touching any pre-existing
+# project. Fixed host-port collisions are expected to fail the subsequent up
+# rather than being resolved by stopping another stack.
+"${compose[@]}" config >/dev/null
 # Allocate the Session before Node bootstrap so the node-bound ingest
 # authorization path is exercised during the restart test.
 "${compose[@]}" up -d --build control-ui
