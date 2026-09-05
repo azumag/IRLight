@@ -46,7 +46,7 @@ services:
       - /bin/sh
       - -c
       - |
-        exec timeout --signal=INT --kill-after=5s 120s gst-launch-1.0 -q -e \
+        exec timeout --signal=INT --kill-after=5s 300s gst-launch-1.0 -q -e \
           flvmux name=mux streamable=true ! \
             rtmp2sink location='rtmp://egress-conflict-target:1935/$path_name' \
           videotestsrc is-live=true pattern=black ! \
@@ -150,6 +150,13 @@ wait_for_target_listener() {
 }
 
 "${compose[@]}" config >/dev/null
+
+# Build every local image before the finite-lived holder publisher starts. A
+# cold GitHub Actions runner can spend minutes building egress-conflict; doing
+# that after the holder starts can let its timeout expire before the second
+# publisher connects, turning the intended conflict into a normal publish.
+"${compose[@]}" build continuity control-ui node-agent conflict-holder egress-conflict
+
 # Start the conflict target first and wait for MediaMTX's RTMP listener. Compose
 # depends_on only orders container startup; it does not make the listener ready,
 # so starting the holder in the same `up` can race and make the publisher exit.
@@ -158,8 +165,9 @@ wait_for_target_listener 30
 
 # Continuity and the egress input now consume Agent-generated authenticated
 # local-media URIs, so the Node Agent and Control Plane must be part of the
-# dependency chain for this integration test.
-"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent conflict-holder
+# dependency chain for this integration test. Images are already built above so
+# no unbounded build work consumes the holder's finite lifetime.
+"${compose[@]}" up -d mediamtx continuity control-ui node-agent conflict-holder
 
 # Hold the target path with a first publisher in a dedicated service. Keeping
 # it outside the continuity container is important: starting another Compose
