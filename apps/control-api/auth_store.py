@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import tempfile
@@ -72,12 +73,25 @@ def _state_lock(*, exclusive: bool):
             raise AuthStateError("authentication state cannot be locked") from exc
 
 
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value} is not allowed")
+
+
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            try:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise AuthStateError("authentication state cannot be serialized") from exc
             handle.flush()
             os.fsync(handle.fileno())
         # Initialization is a durable write-intent fuse. It must be armed
@@ -100,14 +114,14 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = json.load(handle, parse_constant=_reject_non_finite_json_constant)
     except FileNotFoundError:
         if was_initialized(path):
             raise AuthStateError(
                 f"authentication state {path} disappeared after initialization"
             )
         return default
-    except (json.JSONDecodeError, OSError) as exc:
+    except (ValueError, OSError) as exc:
         raise AuthStateError(f"authentication state {path} cannot be read") from exc
     if not isinstance(value, dict):
         raise AuthStateError(f"authentication state {path} has invalid structure")
@@ -120,6 +134,43 @@ def _default_users() -> dict[str, Any]:
 
 def _default_sessions() -> dict[str, Any]:
     return {"sessions": {}}
+
+
+def _require_nonempty_string(record: dict[str, Any], field: str, *, context: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise AuthStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _require_finite_number(record: dict[str, Any], field: str, *, context: str) -> float:
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AuthStateError(f"{context} has invalid {field}")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise AuthStateError(f"{context} has invalid {field}") from None
+    if not math.isfinite(number):
+        raise AuthStateError(f"{context} has invalid {field}")
+    return number
+
+
+def _validate_password_hash(value: str) -> None:
+    try:
+        algorithm, iterations_raw, salt_hex, digest_hex = value.split("$")
+        iterations = int(iterations_raw)
+        salt = bytes.fromhex(salt_hex)
+        digest = bytes.fromhex(digest_hex)
+    except (TypeError, ValueError):
+        raise AuthStateError("user state has invalid password_hash") from None
+    if (
+        algorithm != "pbkdf2_sha256"
+        or iterations <= 0
+        or not salt
+        or not digest
+    ):
+        raise AuthStateError("user state has invalid password_hash")
 
 
 def ensure_auth_state() -> None:
@@ -148,10 +199,36 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
     email_index = value.get("email_index")
     if not isinstance(users, dict) or not isinstance(email_index, dict):
         raise AuthStateError("user state has invalid structure")
-    if any(not isinstance(key, str) or not isinstance(item, dict) for key, item in users.items()):
-        raise AuthStateError("user state has an invalid record")
-    if any(not isinstance(email, str) or not isinstance(user_id, str) for email, user_id in email_index.items()):
-        raise AuthStateError("user email index has an invalid record")
+
+    for user_id, item in users.items():
+        if not isinstance(user_id, str) or not user_id or not isinstance(item, dict):
+            raise AuthStateError("user state has an invalid record")
+        stored_id = _require_nonempty_string(item, "id", context="user state record")
+        email = _require_nonempty_string(item, "email", context="user state record")
+        password_hash = _require_nonempty_string(
+            item, "password_hash", context="user state record"
+        )
+        _require_nonempty_string(item, "role", context="user state record")
+        _require_nonempty_string(item, "status", context="user state record")
+        _require_finite_number(item, "created_at", context="user state record")
+        _require_finite_number(item, "updated_at", context="user state record")
+        display_name = item.get("display_name")
+        if display_name is not None and not isinstance(display_name, str):
+            raise AuthStateError("user state record has invalid display_name")
+        if stored_id != user_id:
+            raise AuthStateError("user state record id does not match its key")
+        if _normalize_email(email) != email or "@" not in email:
+            raise AuthStateError("user state record has invalid email")
+        _validate_password_hash(password_hash)
+        if email_index.get(email) != user_id:
+            raise AuthStateError("user email index is inconsistent")
+
+    for email, user_id in email_index.items():
+        if not isinstance(email, str) or not isinstance(user_id, str):
+            raise AuthStateError("user email index has an invalid record")
+        user = users.get(user_id)
+        if not isinstance(user, dict) or user.get("email") != email:
+            raise AuthStateError("user email index is inconsistent")
     return value
 
 
@@ -159,8 +236,21 @@ def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
     sessions = value.get("sessions")
     if not isinstance(sessions, dict):
         raise AuthStateError("authentication session state has invalid structure")
-    if any(not isinstance(key, str) or not isinstance(item, dict) for key, item in sessions.items()):
-        raise AuthStateError("authentication session state has an invalid record")
+    for token_hash, item in sessions.items():
+        if not isinstance(token_hash, str) or not token_hash or not isinstance(item, dict):
+            raise AuthStateError("authentication session state has an invalid record")
+        _require_nonempty_string(
+            item, "user_id", context="authentication session record"
+        )
+        _require_nonempty_string(
+            item, "csrf_token", context="authentication session record"
+        )
+        _require_finite_number(
+            item, "created_at", context="authentication session record"
+        )
+        _require_finite_number(
+            item, "expires_at", context="authentication session record"
+        )
     return value
 
 
@@ -297,13 +387,9 @@ def get_session_user(token: str) -> dict[str, Any] | None:
         record = dict(stored) if isinstance(stored, dict) else None
         if record is None:
             return None
-        try:
-            expired = float(record.get("expires_at", 0)) < time.time()
-        except (TypeError, ValueError):
+        if record["expires_at"] <= time.time():
             return None
-        if expired:
-            return None
-    user = get_user(str(record.get("user_id")))
+    user = get_user(record["user_id"])
     if user is None or user.get("status") != "active":
         return None
     return {"user": user, "csrf_token": record["csrf_token"]}
