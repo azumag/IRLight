@@ -29,6 +29,7 @@ The isolation pattern is applied to:
 - `scripts/smoke-short-media-stall.sh`
 - `scripts/smoke-unusable-media-holding.sh`
 - `scripts/smoke-rtmp-netem-blackhole.sh`
+- `scripts/smoke-rtmp-netem-degradation-matrix.sh`
 - `scripts/smoke-srt-ingest-recovery.sh`
 - `scripts/smoke-rtmps-ingest-recovery.sh`
 - `scripts/smoke-egress-reconnect.sh`
