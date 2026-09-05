@@ -60,7 +60,9 @@ class IngestAuthorityValidationTest(unittest.TestCase):
     def test_oversized_integer_timestamp_is_a_controlled_state_error(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             record = _record()
-            record["expires_at"] = 10**10000
+            # Large enough to overflow float(), but below Python's JSON integer
+            # string conversion safety limit so the fixture reaches the store.
+            record["expires_at"] = 10**1000
             _write_state(state_dir, record)
             with self.assertRaises(IngestCredentialError):
                 IngestCredentialStore(state_dir)
