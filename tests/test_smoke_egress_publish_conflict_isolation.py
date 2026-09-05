@@ -52,7 +52,7 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
         )
         self.assertLess(target_up, listener_wait)
         self.assertLess(listener_wait, holder_up)
-        self.assertIn('grep -Fq "listener opened on :1935"', self.source)
+        self.assertIn('grep -Fq "started with listener on :1935"', self.source)
 
 
 if __name__ == "__main__":
