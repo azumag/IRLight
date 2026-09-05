@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from auth_store import (
     AuthError,
+    AuthStateError,
     EmailAlreadyRegistered,
     InvalidCredentials,
     authenticate_user,
@@ -36,6 +37,7 @@ from auth_store import (
 SESSION_COOKIE = "irlight_session"
 CSRF_COOKIE = "irlight_csrf"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
+AUTH_STATE_UNAVAILABLE_CODE = "AUTH_STATE_UNAVAILABLE"
 
 # A simple, dependency-free "looks like an email" check; real deliverability
 # is out of scope here and would need an external service.
@@ -54,6 +56,14 @@ class LoginRequest(BaseModel):
 
 
 router = APIRouter(prefix="/v1/auth")
+
+
+def _auth_state_unavailable() -> HTTPException:
+    """Return a stable public error without exposing authority internals."""
+    return HTTPException(
+        status_code=503,
+        detail={"code": AUTH_STATE_UNAVAILABLE_CODE},
+    )
 
 
 def _cookies_secure() -> bool:
@@ -89,7 +99,10 @@ def require_user(
 ) -> dict[str, Any]:
     if not session_token:
         raise HTTPException(status_code=401, detail="not authenticated")
-    session = get_session_user(session_token)
+    try:
+        session = get_session_user(session_token)
+    except AuthStateError as exc:
+        raise _auth_state_unavailable() from exc
     if session is None:
         raise HTTPException(status_code=401, detail="session expired or invalid")
     return session["user"]
@@ -102,7 +115,10 @@ def require_csrf(
 ) -> None:
     if not session_token:
         raise HTTPException(status_code=401, detail="not authenticated")
-    session = get_session_user(session_token)
+    try:
+        session = get_session_user(session_token)
+    except AuthStateError as exc:
+        raise _auth_state_unavailable() from exc
     if session is None:
         raise HTTPException(status_code=401, detail="session expired or invalid")
     if (
@@ -122,6 +138,8 @@ def register(request: RegisterRequest) -> dict[str, Any]:
             password=request.password,
             display_name=request.display_name,
         )
+    except AuthStateError as exc:
+        raise _auth_state_unavailable() from exc
     except EmailAlreadyRegistered as exc:
         raise HTTPException(status_code=409, detail="email already registered") from exc
     except AuthError as exc:
@@ -133,9 +151,11 @@ def register(request: RegisterRequest) -> dict[str, Any]:
 def login(request: LoginRequest, response: Response) -> dict[str, Any]:
     try:
         user = authenticate_user(email=request.email, password=request.password)
+        session = create_session(str(user["id"]), ttl_seconds=SESSION_TTL_SECONDS)
+    except AuthStateError as exc:
+        raise _auth_state_unavailable() from exc
     except InvalidCredentials as exc:
         raise HTTPException(status_code=401, detail="invalid email or password") from exc
-    session = create_session(str(user["id"]), ttl_seconds=SESSION_TTL_SECONDS)
     _set_session_cookies(response, session["token"], session["csrf_token"])
     return {"user": user, "csrf_token": session["csrf_token"]}
 
@@ -147,7 +167,10 @@ def logout(
     _csrf: Annotated[None, Depends(require_csrf)] = None,
 ) -> dict[str, Any]:
     if session_token:
-        revoke_session(session_token)
+        try:
+            revoke_session(session_token)
+        except AuthStateError as exc:
+            raise _auth_state_unavailable() from exc
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.delete_cookie(CSRF_COOKIE, path="/")
     return {"logged_out": True}
