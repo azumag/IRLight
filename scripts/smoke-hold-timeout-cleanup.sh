@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/hold-timeout-cleanup.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+smoke_project="irlight-hold-timeout-smoke-$$-$RANDOM"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 email="hold-timeout-$(date +%s)-$RANDOM@example.invalid"
 password='SmokePassword123!'
@@ -18,7 +21,7 @@ services:
       COOKIE_INSECURE: "1"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -32,7 +35,7 @@ cleanup() {
     echo "--- fake provider state ---" >&2
     "${compose[@]}" exec -T continuity sh -c 'cat /state/fake-provider.json 2>/dev/null || true' >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -70,7 +73,10 @@ read_session_state() {
     "$session_id"
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+# Validate the disposable configuration without touching any running project.
+# If a fixed host port is already occupied, the following `up` must fail rather
+# than stopping whichever stack owns that port.
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 
