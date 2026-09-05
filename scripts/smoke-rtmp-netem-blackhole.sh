@@ -2,9 +2,12 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/rtmp-netem.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 fault_seconds="${NETEM_FAULT_SECONDS:-10}"
 publisher_name="irlight-netem-publisher-$RANDOM-$RANDOM"
@@ -45,18 +48,19 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-rtmp-netem-blackhole-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
   if (( netem_applied == 1 )); then
-    bash ./scripts/netem-container.sh clear "$publisher_name" >/dev/null 2>&1 || true
+    bash "$repo_root/scripts/netem-container.sh" clear "$publisher_name" >/dev/null 2>&1 || true
   fi
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
     echo "--- publisher log ---" >&2
-    cat /tmp/irlight-rtmp-netem-publisher.log >&2 2>/dev/null || true
+    cat "$publisher_log" >&2 2>/dev/null || true
     echo "--- continuity status ---" >&2
     "${compose[@]}" exec -T continuity sh -c 'cat /state/status.json 2>/dev/null || true' >&2 || true
     echo "--- node-agent logs ---" >&2
@@ -73,8 +77,7 @@ cleanup() {
     wait "$publisher_pid" 2>/dev/null || true
   fi
   docker rm -f "$publisher_name" >/dev/null 2>&1 || true
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -f "$cookie_jar" /tmp/irlight-rtmp-netem-publisher.log
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -271,7 +274,7 @@ start_publisher() {
   docker exec -i \
     -e IRLIGHT_PUBLISH_USER="$ingest_username" \
     -e IRLIGHT_PUBLISH_PASS="$ingest_secret" \
-    "$publisher_name" python3 - <<'PY' >/tmp/irlight-rtmp-netem-publisher.log 2>&1 &
+    "$publisher_name" python3 - <<'PY' >"$publisher_log" 2>&1 &
 from __future__ import annotations
 
 import os
@@ -363,7 +366,7 @@ print(
 }
 
 stage "start control plane"
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 stage "control plane ready"
@@ -415,7 +418,7 @@ stage "initial LIVE and relay online"
 
 baseline_sequence="$(latest_event_sequence)"
 fault_started_at="$(date +%s)"
-bash ./scripts/netem-container.sh apply "$publisher_name" --loss 100
+bash "$repo_root/scripts/netem-container.sh" apply "$publisher_name" --loss 100
 netem_applied=1
 stage "100% publisher egress packet loss applied"
 
@@ -439,7 +442,7 @@ if ! kill -0 "$publisher_pid" 2>/dev/null; then
   exit 1
 fi
 
-bash ./scripts/netem-container.sh clear "$publisher_name"
+bash "$repo_root/scripts/netem-container.sh" clear "$publisher_name"
 netem_applied=0
 stage "publisher network restored"
 wait_session_status LIVE 90
