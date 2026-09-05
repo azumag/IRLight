@@ -19,6 +19,7 @@ The disposable project may remove its own volumes during cleanup. This permissio
 
 The isolation pattern is applied to:
 
+- `scripts/smoke-compose.sh`
 - `scripts/smoke-ingest-auth-cache.sh`
 - `scripts/smoke-ingest-auth-abuse.sh`
 - `scripts/smoke-ingest-disconnect-recovery.sh`
@@ -41,7 +42,9 @@ The isolation pattern is applied to:
 - `scripts/smoke-rtmps.sh`
 - `scripts/soak-compose.sh`
 
-Other `scripts/smoke-*.sh` still need to be audited and migrated under issue #85. Until that migration is complete, do not assume all smoke scripts are safe to run concurrently with a persistent PoC stack.
+`tests/test_smoke_isolation_inventory.py` inventories every `scripts/smoke-*.sh` that invokes Docker Compose and requires the run-scoped project contract. The central `smoke-compose.sh` harness also has regression assertions for private host-side temporary files and for the absence of the legacy pre-test cleanup path.
+
+Non-Compose smoke scripts still need the usual audit for their own temporary files and external side effects, but they do not share the Compose project/volume deletion risk covered by this contract.
 
 ## Parallel execution
 
