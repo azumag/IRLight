@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-ingest-quality-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/ingest-quality.override.yml"
 cat >"$override" <<'YAML'
@@ -15,9 +18,10 @@ services:
       NODE_BOOT_ID: ingest-quality-smoke-boot
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
-cookie_jar="/tmp/irlight-quality-cookies.txt"
+cookie_jar="$tmp_dir/quality-cookies.txt"
+publisher_log="$tmp_dir/quality-publisher.log"
 publisher_pid=""
 ingest_username=""
 ingest_secret=""
@@ -37,9 +41,12 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
     echo "--- control logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 control-ui >&2 || true
+    if [[ -f "$publisher_log" ]]; then
+      echo "--- publisher log ---" >&2
+      tail -120 "$publisher_log" >&2 || true
+    fi
   fi
-  rm -f "$cookie_jar"
-  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -172,11 +179,10 @@ start_publisher() {
         video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
       audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample ! \
         audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
-  " >/tmp/irlight-quality-publisher.log 2>&1 &
+  " >"$publisher_log" 2>&1 &
   publisher_pid=$!
 }
 
-"${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
 # User ingest authorization is node-bound after hardening. Prepare the fake
 # provider Session first, then bootstrap a Node with its assigned server id.
