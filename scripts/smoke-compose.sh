@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
+umask 077
 
-smoke_project="${IRLIGHT_SMOKE_PROJECT:-irlight-poc-smoke-$$-$RANDOM}"
-tmp_dir="$(mktemp -d)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+source "$script_dir/lib/node-admin.sh"
+
+smoke_project="irlight-poc-smoke-$$-$RANDOM"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-smoke-compose.XXXXXX")"
 smoke_override="$tmp_dir/smoke.override.yml"
 cat >"$smoke_override" <<'EOF'
 services:
@@ -16,14 +20,16 @@ services:
       NODE_BOOT_ID: docker-smoke-boot
 EOF
 if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
-  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$COMPOSE_OVERRIDE" -f "$smoke_override")
+  compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$COMPOSE_OVERRIDE" -f "$smoke_override")
 else
-  compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$smoke_override")
+  compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$smoke_override")
 fi
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 publisher_pid=""
-auth_cookie_jar="/tmp/irlight-smoke-cookies.txt"
+auth_cookie_jar="$tmp_dir/auth-cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
+auth_reject_body="$tmp_dir/auth-reject.json"
 ingest_username=""
 ingest_secret=""
 ingest_session_id=""
@@ -48,7 +54,7 @@ compact_diagnostics() {
   control="$("${compose[@]}" logs --no-color --tail=50 control-ui 2>&1 | tail -c 3000 || true)"
   mediamtx="$("${compose[@]}" logs --no-color --tail=50 mediamtx 2>&1 | tail -c 3000 || true)"
   node_agent="$("${compose[@]}" logs --no-color --tail=50 node-agent 2>&1 | tail -c 3000 || true)"
-  publisher="$(tail -c 2000 /tmp/irlight-publisher.log 2>/dev/null || true)"
+  publisher="$(tail -c 2000 "$publisher_log" 2>/dev/null || true)"
   printf 'stage=%s\nstatus=%s\nps=%s\ncontinuity=%s\ncontrol=%s\nmediamtx=%s\nnode_agent=%s\npublisher=%s' \
     "$current_stage" "$status" "$ps" "$continuity" "$control" "$mediamtx" "$node_agent" "$publisher"
 }
@@ -67,7 +73,6 @@ show_logs_and_cleanup() {
     kill "$publisher_pid" 2>/dev/null || true
     wait "$publisher_pid" 2>/dev/null || true
   fi
-  rm -f "$auth_cookie_jar"
   "${compose[@]}" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
@@ -91,7 +96,7 @@ start_publisher() {
         video/x-h264,profile=main ! h264parse config-interval=-1 ! queue ! mux. \
       audiotestsrc is-live=true wave=sine freq=440 ! audioconvert ! audioresample ! \
         audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux.
-  " >/tmp/irlight-publisher.log 2>&1 &
+  " >"$publisher_log" 2>&1 &
   publisher_pid=$!
 }
 
@@ -328,7 +333,7 @@ setup_control_plane_and_ingest() {
   ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
   ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 
-  auth_status="$(curl -sS -o /tmp/irlight-auth-reject.json -w '%{http_code}' --max-time 5 \
+  auth_status="$(curl -sS -o "$auth_reject_body" -w '%{http_code}' --max-time 5 \
     -X POST "$base_url/internal/ingest/auth" \
     -H 'Content-Type: application/json' \
     --data "{\"user\":\"$ingest_username\",\"password\":\"wrong\",\"action\":\"publish\",\"path\":\"live/input\",\"protocol\":\"rtmp\"}")"
@@ -357,11 +362,10 @@ verify_srt_destination() {
 }
 
 wait_status() {
-  ./scripts/wait-status.py --base-url "$base_url" "$@"
+  "$repo_root/scripts/wait-status.py" --base-url "$base_url" "$@"
 }
 
 current_stage="compose-control-up"
-"${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
