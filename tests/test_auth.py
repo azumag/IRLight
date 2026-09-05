@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +25,7 @@ from auth_store import (  # noqa: E402
     InvalidCredentials,
     USERS_PATH,
     _hash_password,
-    _verify_password,
+    atomic_write_json,
     authenticate_user,
     create_session,
     ensure_auth_state,
@@ -91,6 +93,35 @@ class AuthStoreTest(unittest.TestCase):
         with self.assertRaises(AuthStateError):
             self._register(email="bob@example.com")
 
+    def test_user_record_missing_required_field_fails_closed(self) -> None:
+        user = self._register()
+        state = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        state["users"][str(user["id"])].pop("password_hash")
+        USERS_PATH.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaises(AuthStateError):
+            get_user(str(user["id"]))
+
+    def test_user_email_index_mismatch_fails_closed(self) -> None:
+        user = self._register()
+        state = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        state["email_index"]["alice@example.com"] = "other-user"
+        USERS_PATH.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaises(AuthStateError):
+            get_user(str(user["id"]))
+
+    def test_user_timestamp_rejects_bool_and_non_finite_value(self) -> None:
+        user = self._register()
+        original = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        for bad_value in (True, None, "123", float("inf")):
+            with self.subTest(bad_value=bad_value):
+                state = json.loads(json.dumps(original))
+                state["users"][str(user["id"])]["updated_at"] = bad_value
+                USERS_PATH.write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaises(AuthStateError):
+                    get_user(str(user["id"]))
+
     def test_register_rejects_invalid_email(self) -> None:
         with self.assertRaises(AuthError):
             self._register(email="not-an-email")
@@ -136,6 +167,69 @@ class AuthStoreTest(unittest.TestCase):
         user = self._register()
         session = create_session(str(user["id"]), ttl_seconds=-1)
         self.assertIsNone(get_session_user(session["token"]))
+
+    def test_session_expiring_exactly_now_is_expired(self) -> None:
+        user = self._register()
+        with patch("auth_store.time.time", return_value=1_000.0):
+            session = create_session(str(user["id"]), ttl_seconds=0)
+            self.assertIsNone(get_session_user(session["token"]))
+
+    def test_auth_session_json_rejects_non_finite_constants(self) -> None:
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                AUTH_SESSIONS_PATH.write_text(
+                    '{"sessions":{"token-hash":{"user_id":"user-a",'
+                    '"csrf_token":"csrf","created_at":1.0,'
+                    f'"expires_at":{constant}}}}}',
+                    encoding="utf-8",
+                )
+                with self.assertRaises(AuthStateError):
+                    get_session_user("unused-token")
+
+    def test_auth_session_record_rejects_invalid_expiry_types(self) -> None:
+        for bad_value in (True, None, "123"):
+            with self.subTest(bad_value=bad_value):
+                AUTH_SESSIONS_PATH.write_text(
+                    json.dumps(
+                        {
+                            "sessions": {
+                                "token-hash": {
+                                    "user_id": "user-a",
+                                    "csrf_token": "csrf",
+                                    "created_at": 1.0,
+                                    "expires_at": bad_value,
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(AuthStateError):
+                    get_session_user("unused-token")
+
+    def test_auth_session_missing_csrf_token_fails_closed(self) -> None:
+        AUTH_SESSIONS_PATH.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "token-hash": {
+                            "user_id": "user-a",
+                            "created_at": 1.0,
+                            "expires_at": 2.0,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(AuthStateError):
+            get_session_user("unused-token")
+
+    def test_atomic_write_rejects_non_finite_json_without_replacing_state(self) -> None:
+        before = USERS_PATH.read_text(encoding="utf-8")
+        with self.assertRaises(AuthStateError):
+            atomic_write_json(USERS_PATH, {"value": float("nan")})
+        self.assertEqual(USERS_PATH.read_text(encoding="utf-8"), before)
 
     def test_revoked_session_resolves_to_none(self) -> None:
         user = self._register()
