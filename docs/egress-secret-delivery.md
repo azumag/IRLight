@@ -192,3 +192,5 @@ bootstrap responseにはNodeへ配送するためcredentialed URLが含まれる
 6. 実fake provider server IDでNodeをbootstrap
 7. Node secret fileが期待URL・mode0600であることを確認
 8. catalog/session/node/secret JSONにraw key・credentialed URLがないことを確認
+
+このsmokeは実行ごとに固有のCompose projectを使用し、開始前に既存PoCを `down` しません。終了時も自分が生成したprojectだけを `down --volumes --remove-orphans` で破棄します。cookie jarとCompose overrideは `umask 077` を設定した一時ディレクトリ配下に置き、並行実行や既存PoCの永続volumeへの干渉を避けます。

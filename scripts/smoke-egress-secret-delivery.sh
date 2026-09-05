@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-egress-secret-delivery-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-secret.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
@@ -28,7 +31,7 @@ services:
       NODE_HEARTBEAT_INTERVAL: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -40,7 +43,7 @@ cleanup() {
     echo "--- node-agent logs ---" >&2
     "${compose[@]}" logs --no-color --tail=140 node-agent >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -101,7 +104,7 @@ wait_secret_file() {
   return 1
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 # Keep Node Agent stopped until a user Session has allocated its provider server.
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
