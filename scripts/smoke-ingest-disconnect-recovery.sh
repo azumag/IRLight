@@ -2,9 +2,12 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/disconnect-recovery.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 disconnect_seconds="${DISCONNECT_SECONDS:-10}"
 recovery_stable_seconds="${RECOVERY_STABLE_SECONDS:-3}"
@@ -37,7 +40,8 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-ingest-disconnect-recovery-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -50,12 +54,14 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail=160 control-ui >&2 || true
     echo "--- mediamtx logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
+    echo "--- publisher log ---" >&2
+    cat "$publisher_log" >&2 2>/dev/null || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   if [[ -n "$publisher_pid" ]]; then
     kill "$publisher_pid" 2>/dev/null || true
     wait "$publisher_pid" 2>/dev/null || true
   fi
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -200,7 +206,7 @@ start_publisher() {
   "${compose[@]}" exec -T \
     -e IRLIGHT_PUBLISH_USER="$ingest_username" \
     -e IRLIGHT_PUBLISH_PASS="$ingest_secret" \
-    continuity python3 - <<'PY' >/tmp/irlight-disconnect-recovery-publisher.log 2>&1 &
+    continuity python3 - <<'PY' >"$publisher_log" 2>&1 &
 from __future__ import annotations
 
 import os
@@ -284,7 +290,7 @@ print(f"recovery stability candidate gap: {delta:.3f}s")
 ' "$recovery_stable_seconds" "$candidate_since" "$candidate_source_id" <<<"$events_payload"
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build control-ui
 wait_http "$base_url/healthz" 60
 
