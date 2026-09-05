@@ -18,10 +18,13 @@ from destination_secret_store import (
     default_destination_secret_store,
 )
 from egress_destination import EgressDestinationError, build_egress_url
-from entitlement_store import default_entitlement_store
+from entitlement_store import EntitlementStateError, default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
 from session_store import EntitlementExceeded
 from session_workflow import ProvisioningWorkflow
+
+
+ENTITLEMENT_STATE_UNAVAILABLE_CODE = "ENTITLEMENT_STATE_UNAVAILABLE"
 
 
 class PrepareRequest(BaseModel):
@@ -147,7 +150,13 @@ def prepare_session(
         destination = _validated_destination(
             request.destination_id, user_id, request.egress_mode
         )
-        entitlement = default_entitlement_store().get(user_id)
+        try:
+            entitlement = default_entitlement_store().get(user_id)
+        except EntitlementStateError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": ENTITLEMENT_STATE_UNAVAILABLE_CODE},
+            ) from exc
         try:
             prepared, replay = store.begin_prepare(
                 session_id,
