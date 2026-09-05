@@ -57,6 +57,14 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                         with self.assertRaises(IngestCredentialError):
                             IngestCredentialStore(state_dir)
 
+    def test_oversized_integer_timestamp_is_a_controlled_state_error(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            record = _record()
+            record["expires_at"] = 10**10000
+            _write_state(state_dir, record)
+            with self.assertRaises(IngestCredentialError):
+                IngestCredentialStore(state_dir)
+
     def test_timestamp_type_confusion_and_missing_required_fields_fail_closed(self) -> None:
         for field in ("created_at", "expires_at"):
             for value in (True, None, "100"):
@@ -88,12 +96,15 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                         IngestCredentialStore(state_dir)
 
     def test_identity_scope_protocol_and_digest_invariants_are_validated(self) -> None:
+        valid_digest = str(_record()["secret_sha256"])
+        whitespace_digest = valid_digest[:62] + " \n"
         mutations = {
             "id/key mismatch": ("id", "credential-2"),
             "username/session mismatch": ("username", "other-session"),
             "unknown scope": ("scope", "UNKNOWN"),
             "unsupported protocol": ("protocols", ["rtsp"]),
             "invalid digest": ("secret_sha256", "not-a-sha256"),
+            "digest with whitespace": ("secret_sha256", whitespace_digest),
             "non-positive lifetime": ("expires_at", 100.0),
         }
         for name, (field, value) in mutations.items():
@@ -140,12 +151,14 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                 Path(state_dir, ".ingest_credentials.json.initialized").exists()
             )
 
-    def test_issue_rejects_non_finite_time_inputs_before_persisting(self) -> None:
+    def test_issue_rejects_non_finite_or_oversized_time_inputs_before_persisting(self) -> None:
         for field, kwargs in (
             ("ttl_seconds", {"ttl_seconds": math.nan}),
             ("ttl_seconds", {"ttl_seconds": math.inf}),
+            ("ttl_seconds", {"ttl_seconds": 10**10000}),
             ("now", {"now": math.nan}),
             ("now", {"now": math.inf}),
+            ("now", {"now": 10**10000}),
         ):
             with self.subTest(field=field, kwargs=kwargs):
                 with tempfile.TemporaryDirectory() as state_dir:
