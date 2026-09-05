@@ -136,7 +136,7 @@ wait_for_target_listener() {
   local timeout="${1:-30}"
   local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "listener opened on :1935"; then
+    if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "started with listener on :1935"; then
       return 0
     fi
     if ! "${compose[@]}" ps --status running --services | grep -qx egress-conflict-target; then
