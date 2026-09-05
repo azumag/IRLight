@@ -42,6 +42,18 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
         self.assertIn('secret_file="$tmp_dir/egress_url"', self.source)
         self.assertIn('chmod 600 "$secret_file"', self.source)
 
+    def test_conflict_target_is_ready_before_holder_starts(self) -> None:
+        target_up = self.source.index(
+            '"${compose[@]}" up -d egress-conflict-target'
+        )
+        listener_wait = self.source.index("wait_for_target_listener 30", target_up)
+        holder_up = self.source.index(
+            '"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent conflict-holder'
+        )
+        self.assertLess(target_up, listener_wait)
+        self.assertLess(listener_wait, holder_up)
+        self.assertIn('grep -Fq "listener opened on :1935"', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
