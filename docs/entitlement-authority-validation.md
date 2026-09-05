@@ -22,6 +22,14 @@ Invalid persisted authority raises `EntitlementStateError`. Read failures do not
 
 Preserve `entitlements.json` and its `.initialized` marker when recovering from corruption. Do not delete the state volume or marker to force a fresh empty authority; the explicit recovery procedure is tracked in #90.
 
+## API failure contract
+
+Session prepare treats entitlement-authority failures as service-availability failures. If `default_entitlement_store()` cannot initialize or `EntitlementStore.get()` raises `EntitlementStateError`, `POST /v1/sessions/{session_id}/prepare` returns HTTP 503 with the stable public detail `{"code":"ENTITLEMENT_STATE_UNAVAILABLE"}`.
+
+The public response deliberately omits the authority path and underlying exception text. The failure is raised before `begin_prepare` reserves capacity and before a provider is selected, so malformed or unreadable entitlement state cannot trigger provisioning or a billable-node allocation attempt.
+
+Committed prepare replays remain replayable without rereading entitlement authority, preserving the existing idempotency boundary for already-committed responses.
+
 ## Scope
 
-This is the entitlement record-validation slice of #87. It deliberately does not invent a maximum supported `max_concurrent_sessions` value or change plan semantics; choosing an explicit upper bound is a separate policy decision. Mapping `EntitlementStateError` to a stable public API failure and the remaining Session/node-authority validation are also tracked separately under #87.
+This is the entitlement record-validation and API fail-closed slice of #87. It deliberately does not invent a maximum supported `max_concurrent_sessions` value or change plan semantics; choosing an explicit upper bound is a separate policy decision. Remaining Session/node-authority validation and regression coverage preventing corrupt Session state from affecting capacity or paid-node provisioning are tracked separately under #87.
