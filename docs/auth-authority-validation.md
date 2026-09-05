@@ -12,6 +12,12 @@ Authentication-session records require a non-empty user ID and CSRF token plus f
 
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
 
+## API failure contract
+
+Authentication authority failures are service-availability failures, not bad credentials or invalid user input. `/v1/auth` endpoints and the shared `require_user` / `require_csrf` dependencies translate `AuthStateError` into HTTP 503 with the stable public detail `{"code":"AUTH_STATE_UNAVAILABLE"}`.
+
+The public response deliberately does not include the authority path or the underlying exception text. In particular, a corrupt `users.json` must not be exposed as a registration 422 simply because `AuthStateError` inherits from `AuthError`, and a session-store write failure during login/logout must not escape as an uncontrolled 500.
+
 ## Recovery safety
 
 Do not work around an authority error by deleting an `.initialized` marker, replacing a damaged file with `{}`, or deleting the state volume. Those actions can turn a detectable corruption or partial restore into silent authority loss. Preserve the state files and their initialization markers together and follow the explicit recovery procedure tracked in #90.
