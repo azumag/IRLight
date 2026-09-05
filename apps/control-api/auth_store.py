@@ -147,7 +147,10 @@ def _require_finite_number(record: dict[str, Any], field: str, *, context: str) 
     value = record.get(field)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise AuthStateError(f"{context} has invalid {field}")
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise AuthStateError(f"{context} has invalid {field}") from None
     if not math.isfinite(number):
         raise AuthStateError(f"{context} has invalid {field}")
     return number
