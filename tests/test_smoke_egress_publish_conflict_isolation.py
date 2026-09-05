@@ -30,7 +30,8 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
 
     def test_script_does_not_preemptively_stop_existing_stack(self) -> None:
         before_up = self.source.split(
-            '"${compose[@]}" up -d --build mediamtx', 1
+            '"${compose[@]}" up -d mediamtx continuity control-ui node-agent conflict-holder',
+            1,
         )[0]
         after_trap = before_up.split("trap cleanup EXIT", 1)[1]
         self.assertNotIn('"${compose[@]}" down', after_trap)
@@ -48,11 +49,34 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
         )
         listener_wait = self.source.index("wait_for_target_listener 30", target_up)
         holder_up = self.source.index(
-            '"${compose[@]}" up -d --build mediamtx continuity control-ui node-agent conflict-holder'
+            '"${compose[@]}" up -d mediamtx continuity control-ui node-agent conflict-holder'
         )
         self.assertLess(target_up, listener_wait)
         self.assertLess(listener_wait, holder_up)
         self.assertIn('grep -Fq "started with listener on :1935"', self.source)
+
+    def test_local_images_are_built_before_holder_lifetime_starts(self) -> None:
+        build = self.source.index(
+            '"${compose[@]}" build continuity control-ui node-agent conflict-holder egress-conflict'
+        )
+        target_up = self.source.index(
+            '"${compose[@]}" up -d egress-conflict-target', build
+        )
+        holder_up = self.source.index(
+            '"${compose[@]}" up -d mediamtx continuity control-ui node-agent conflict-holder',
+            target_up,
+        )
+        egress_up = self.source.index(
+            '"${compose[@]}" up -d egress-conflict', holder_up
+        )
+        self.assertLess(build, target_up)
+        self.assertLess(target_up, holder_up)
+        self.assertLess(holder_up, egress_up)
+        self.assertNotIn("--build", self.source[holder_up:egress_up])
+        self.assertIn(
+            "exec timeout --signal=INT --kill-after=5s 300s gst-launch-1.0",
+            self.source,
+        )
 
 
 if __name__ == "__main__":

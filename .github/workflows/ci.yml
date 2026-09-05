@@ -62,132 +62,124 @@ jobs:
             -r /opt/irlight/docker-compose.control.yml
           docker compose -f apps/node-agent/docker-compose.control.yml config >/dev/null
 
-  docker-smoke:
+  docker-smoke-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Keep the Docker-heavy scenarios on one runner so Compose/BuildKit layers
+    # are reused instead of downloading the same Ubuntu/GStreamer dependency
+    # set independently on more than a dozen runners.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build and exercise the vertical slice
-        run: ./scripts/smoke-compose.sh
+      - name: Warm shared local images
+        run: docker compose -f docker-compose.poc.yml build continuity control-ui node-agent
+      - name: Exercise Docker integration smoke suite
+        run: bash ./scripts/ci-docker-smoke-suite.sh
+
+  # Compatibility gates retain the previous check names for repositories that
+  # may require them in branch protection. The actual scenarios run once in the
+  # shared suite above; each gate mirrors that suite result without rebuilding.
+  docker-smoke:
+    needs: docker-smoke-suite
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   continuity-restart-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise Continuity process restart and desired/actual reconcile
-        run: bash ./scripts/smoke-continuity-restart.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   rtmps-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise certificate-validated RTMPS handshake
-        run: bash ./scripts/smoke-rtmps.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   ingest-quality-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise FPS degradation without kicking publisher
-        run: bash ./scripts/smoke-ingest-quality.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   unusable-media-holding-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise one-sided media loss and format-change HOLDING
-        run: bash ./scripts/smoke-unusable-media-holding.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   ingest-auth-abuse-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise ingest auth failure lockout
-        run: bash ./scripts/smoke-ingest-auth-abuse.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   ingest-auth-cache-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise node-local auth fallback and revoke eviction
-        run: bash ./scripts/smoke-ingest-auth-cache.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   session-ingest-events-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise user Session assignment and ingest events
-        run: bash ./scripts/smoke-session-ingest-events.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   egress-secret-delivery-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise encrypted Destination secret delivery
-        run: bash ./scripts/smoke-egress-secret-delivery.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   egress-reconnect-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise isolated egress outage and recovery
-        run: bash ./scripts/smoke-egress-reconnect.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   egress-stop-terminal-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise egress stop/reconnect race and terminal guard failure
-        run: bash ./scripts/smoke-egress-stop-terminal.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   egress-dns-tls-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise egress DNS and RTMPS certificate failures
-        run: bash ./scripts/smoke-egress-dns-tls.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
 
   egress-publish-conflict-smoke:
+    needs: docker-smoke-suite
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise terminal egress publish conflict
-        run: bash ./scripts/smoke-egress-publish-conflict.sh
+      - run: test "${{ needs.docker-smoke-suite.result }}" = success
