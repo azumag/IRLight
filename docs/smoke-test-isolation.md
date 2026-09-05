@@ -25,6 +25,7 @@ The isolation pattern is applied to:
 - `scripts/smoke-session-ingest-events.sh`
 - `scripts/smoke-hold-timeout-cleanup.sh`
 - `scripts/smoke-continuity-restart.sh`
+- `scripts/smoke-short-media-stall.sh`
 - `scripts/smoke-srt-ingest-recovery.sh`
 - `scripts/smoke-rtmps-ingest-recovery.sh`
 - `scripts/smoke-egress-reconnect.sh`
