@@ -64,7 +64,10 @@ jobs:
 
   docker-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cold continuity builds install ~200 MB of Ubuntu/GStreamer packages.
+    # Keep the workflow budget above transient mirror slowness; the smoke
+    # scripts retain their own bounded readiness/process timeouts.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +77,7 @@ jobs:
 
   continuity-restart-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +87,7 @@ jobs:
 
   rtmps-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,7 +97,7 @@ jobs:
 
   ingest-quality-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,7 +107,7 @@ jobs:
 
   unusable-media-holding-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,7 +117,7 @@ jobs:
 
   ingest-auth-abuse-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,7 +127,7 @@ jobs:
 
   ingest-auth-cache-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -134,7 +137,7 @@ jobs:
 
   session-ingest-events-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -144,7 +147,7 @@ jobs:
 
   egress-secret-delivery-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,7 +157,7 @@ jobs:
 
   egress-reconnect-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -164,7 +167,7 @@ jobs:
 
   egress-stop-terminal-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,7 +177,7 @@ jobs:
 
   egress-dns-tls-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -184,7 +187,7 @@ jobs:
 
   egress-publish-conflict-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
