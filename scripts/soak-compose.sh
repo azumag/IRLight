@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 soak_seconds="${SOAK_SECONDS:-600}"
 interval_seconds="${SOAK_INTERVAL_SECONDS:-30}"
 if [[ ! "$soak_seconds" =~ ^[1-9][0-9]*$ ]]; then
@@ -13,8 +14,11 @@ if [[ ! "$interval_seconds" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-soak_project="${IRLIGHT_SOAK_PROJECT:-irlight-poc-soak-$$-$RANDOM}"
-compose=(docker compose -p "$soak_project" -f docker-compose.poc.yml)
+# A soak run owns a disposable Compose project. Do not allow callers to point
+# cleanup at an existing developer/operator project through COMPOSE_PROJECT_NAME
+# or an IRLight-specific project override.
+soak_project="irlight-poc-soak-$$-$RANDOM"
+compose=(docker compose -p "$soak_project" -f "$repo_root/docker-compose.poc.yml")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 
@@ -52,6 +56,9 @@ wait_node() {
   return 1
 }
 
+# Validate the generated project without tearing down anything that may already
+# be running on the fixed PoC ports. `up` will fail cleanly on a port collision.
+"${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build
 wait_http "$base_url/api/status"
 wait_http "$hls_url"
