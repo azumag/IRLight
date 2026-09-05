@@ -49,3 +49,15 @@ Non-Compose smoke scripts still need the usual audit for their own temporary fil
 ## Parallel execution
 
 A unique Compose project name prevents project/volume/name collisions, but it does not by itself make tests with fixed published host ports parallel-safe. Tests that expose fixed ports must either allocate test-specific ports or fail cleanly on collision without changing unrelated containers.
+
+## CI runtime proof
+
+`scripts/ci-smoke-compose-isolation-runtime.sh` wraps the central `smoke-compose.sh` scenario inside the shared Docker CI suite. It turns the isolation contract into an actual Docker runtime regression rather than relying only on source inspection:
+
+1. Start an unrelated, uniquely named sentinel Compose project with its own named volume and marker data.
+2. Start the real central smoke while the sentinel remains running.
+3. After the first smoke exposes `/healthz`, start a second `smoke-compose.sh` concurrently. Because the PoC publishes fixed host ports, this second run must fail promptly with a bind/port-allocation collision instead of stopping or reusing the first run.
+4. Confirm the first smoke remains healthy after the failed overlapping run and completes successfully.
+5. Confirm the sentinel keeps the same container ID and volume name, remains running, and retains its marker contents throughout the smoke.
+
+The sentinel itself is disposable and is removed by the wrapper after the assertions. Its project name is generated for that CI process, so this proof does not target a developer or operator project. The overlapping run also uses the normal per-run project generation in `smoke-compose.sh`; its cleanup therefore has no authority over the first run or the sentinel.
