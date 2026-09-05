@@ -2,9 +2,12 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/node-admin.sh"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+umask 077
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/short-media-stall.override.yml"
 cookie_jar="$tmp_dir/cookies.txt"
+publisher_log="$tmp_dir/publisher.log"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 stall_seconds="${MEDIA_STALL_SECONDS:-10}"
 publisher_pid=""
@@ -43,7 +46,8 @@ services:
       NODE_INGEST_SAMPLE_TIMEOUT_MARGIN_SECONDS: "2"
 YAML
 
-compose=(docker compose -f docker-compose.poc.yml -f "$override")
+smoke_project="irlight-short-media-stall-smoke-$$-$RANDOM"
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -60,6 +64,8 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail=160 control-ui >&2 || true
     echo "--- mediamtx logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
+    echo "--- publisher log ---" >&2
+    cat "$publisher_log" >&2 2>/dev/null || true
   fi
   "${compose[@]}" exec -T continuity sh -c \
     'rm -f /tmp/irlight-short-stall-video /tmp/irlight-short-stall-audio /tmp/irlight-stop-short-stall-publisher' \
@@ -68,7 +74,7 @@ cleanup() {
     kill "$publisher_pid" 2>/dev/null || true
     wait "$publisher_pid" 2>/dev/null || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -247,7 +253,7 @@ start_publisher() {
   "${compose[@]}" exec -T \
     -e IRLIGHT_PUBLISH_USER="$ingest_username" \
     -e IRLIGHT_PUBLISH_PASS="$ingest_secret" \
-    continuity python3 - <<'PY' >/tmp/irlight-short-media-stall-publisher.log 2>&1 &
+    continuity python3 - <<'PY' >"$publisher_log" 2>&1 &
 from __future__ import annotations
 
 import os
@@ -329,7 +335,7 @@ print(
 }
 
 stage "start control plane"
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 if ! "${compose[@]}" up -d --build control-ui >"$tmp_dir/control-ui-build.log" 2>&1; then
   cat "$tmp_dir/control-ui-build.log" >&2
   exit 1
