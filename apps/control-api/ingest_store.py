@@ -32,6 +32,22 @@ def _reject_non_finite_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number {value} is not allowed")
 
 
+def _finite_argument(value: Any, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a finite number")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError(f"{field} must be a finite number") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be a finite number")
+    return number
+
+
+def _runtime_timestamp(value: float | None, *, field: str) -> float:
+    return _finite_argument(time.time() if value is None else value, field=field)
+
+
 def _require_nonempty_string(
     record: dict[str, Any], field: str, *, context: str
 ) -> str:
@@ -44,38 +60,18 @@ def _require_nonempty_string(
 def _require_finite_number(
     record: dict[str, Any], field: str, *, context: str
 ) -> float:
-    value = record.get(field)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise IngestCredentialError(f"{context} has invalid {field}")
     try:
-        number = float(value)
-    except (OverflowError, ValueError):
+        return _finite_argument(record.get(field), field=field)
+    except ValueError:
         raise IngestCredentialError(f"{context} has invalid {field}") from None
-    if not math.isfinite(number):
-        raise IngestCredentialError(f"{context} has invalid {field}")
-    return number
 
 
 def _optional_finite_number(
     record: dict[str, Any], field: str, *, context: str
 ) -> float | None:
-    value = record.get(field)
-    if value is None:
+    if record.get(field) is None:
         return None
     return _require_finite_number(record, field, context=context)
-
-
-def _runtime_timestamp(value: float | None, *, field: str) -> float:
-    number = time.time() if value is None else value
-    if isinstance(number, bool) or not isinstance(number, (int, float)):
-        raise ValueError(f"{field} must be a finite number")
-    try:
-        normalized = float(number)
-    except (OverflowError, ValueError):
-        raise ValueError(f"{field} must be a finite number") from None
-    if not math.isfinite(normalized):
-        raise ValueError(f"{field} must be a finite number")
-    return normalized
 
 
 class IngestCredentialStore:
@@ -230,6 +226,7 @@ class IngestCredentialStore:
             )
 
     def _persist(self) -> None:
+        self._validate_credentials(self._credentials)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
@@ -282,7 +279,7 @@ class IngestCredentialStore:
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         now: float | None = None,
     ) -> tuple[dict[str, Any], str]:
-        ttl = _runtime_timestamp(ttl_seconds, field="ttl_seconds")
+        ttl = _finite_argument(ttl_seconds, field="ttl_seconds")
         if ttl <= 0:
             raise ValueError("ttl_seconds must be positive")
         if scope not in CREDENTIAL_SCOPES:
@@ -348,8 +345,7 @@ class IngestCredentialStore:
                     continue
                 if record.get("revoked_at") is not None:
                     continue
-                expires_at = float(record["expires_at"])
-                if expires_at <= current:
+                if float(record["expires_at"]) <= current:
                     continue
                 if protocol not in record["protocols"]:
                     continue
