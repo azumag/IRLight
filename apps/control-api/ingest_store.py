@@ -174,16 +174,12 @@ class IngestCredentialStore:
                 raise IngestCredentialError(
                     "ingest credential record username does not match session_id"
                 )
-            if len(digest) != 64:
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdefABCDEF" for character in digest
+            ):
                 raise IngestCredentialError(
                     "ingest credential record has invalid secret_sha256"
                 )
-            try:
-                bytes.fromhex(digest)
-            except ValueError:
-                raise IngestCredentialError(
-                    "ingest credential record has invalid secret_sha256"
-                ) from None
 
             # Records created before relay credentials were introduced did not
             # persist a scope. Keep that one explicit compatibility path while
