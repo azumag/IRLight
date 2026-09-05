@@ -62,135 +62,17 @@ jobs:
             -r /opt/irlight/docker-compose.control.yml
           docker compose -f apps/node-agent/docker-compose.control.yml config >/dev/null
 
-  docker-smoke:
+  docker-smoke-suite:
     runs-on: ubuntu-latest
-    # Cold continuity builds install ~200 MB of Ubuntu/GStreamer packages.
-    # Keep the workflow budget above transient mirror slowness; the smoke
-    # scripts retain their own bounded readiness/process timeouts.
-    timeout-minutes: 25
+    # Keep the Docker-heavy scenarios on one runner so Compose/BuildKit layers
+    # are reused instead of downloading the same Ubuntu/GStreamer dependency
+    # set independently on more than a dozen runners.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build and exercise the vertical slice
-        run: ./scripts/smoke-compose.sh
-
-  continuity-restart-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise Continuity process restart and desired/actual reconcile
-        run: bash ./scripts/smoke-continuity-restart.sh
-
-  rtmps-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise certificate-validated RTMPS handshake
-        run: bash ./scripts/smoke-rtmps.sh
-
-  ingest-quality-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise FPS degradation without kicking publisher
-        run: bash ./scripts/smoke-ingest-quality.sh
-
-  unusable-media-holding-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise one-sided media loss and format-change HOLDING
-        run: bash ./scripts/smoke-unusable-media-holding.sh
-
-  ingest-auth-abuse-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise ingest auth failure lockout
-        run: bash ./scripts/smoke-ingest-auth-abuse.sh
-
-  ingest-auth-cache-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise node-local auth fallback and revoke eviction
-        run: bash ./scripts/smoke-ingest-auth-cache.sh
-
-  session-ingest-events-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise user Session assignment and ingest events
-        run: bash ./scripts/smoke-session-ingest-events.sh
-
-  egress-secret-delivery-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise encrypted Destination secret delivery
-        run: bash ./scripts/smoke-egress-secret-delivery.sh
-
-  egress-reconnect-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise isolated egress outage and recovery
-        run: bash ./scripts/smoke-egress-reconnect.sh
-
-  egress-stop-terminal-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise egress stop/reconnect race and terminal guard failure
-        run: bash ./scripts/smoke-egress-stop-terminal.sh
-
-  egress-dns-tls-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise egress DNS and RTMPS certificate failures
-        run: bash ./scripts/smoke-egress-dns-tls.sh
-
-  egress-publish-conflict-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise terminal egress publish conflict
-        run: bash ./scripts/smoke-egress-publish-conflict.sh
+      - name: Warm shared local images
+        run: docker compose -f docker-compose.poc.yml build continuity control-ui node-agent
+      - name: Exercise Docker integration smoke suite
+        run: bash ./scripts/ci-docker-smoke-suite.sh
