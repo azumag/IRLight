@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+smoke_project="irlight-egress-stop-terminal-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-stop-terminal.override.yml"
 secret_file="$tmp_dir/egress_url"
@@ -49,7 +51,7 @@ services:
       - ${EGRESS_SECRET_FILE}:/run/irlight/secrets/egress_url:ro
 YAML
 
-compose=(docker compose -f "$repo_root/docker-compose.poc.yml" -f "$override")
+compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
 cleanup() {
   status=$?
@@ -63,7 +65,7 @@ cleanup() {
     echo "--- target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 egress-target >&2 || true
   fi
-  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -114,7 +116,7 @@ assert value.get("reason_code") == expected_reason, value
 ' "$payload" "$expected_status" "$expected_reason"
 }
 
-"${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+"${compose[@]}" config >/dev/null
 # Start Node Agent and Control Plane as well: Continuity consumes authenticated
 # local-media URIs from the Agent-owned tmpfs secret volume.
 "${compose[@]}" up -d --build
