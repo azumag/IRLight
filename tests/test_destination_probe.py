@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,39 @@ class _FakeProcess:
     def kill(self) -> None:
         self.killed = True
         self._returncode = -9
+
+
+class _HangingResolverProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.killed = False
+        self.communicate_timeouts: list[float] = []
+        self.stdin_payloads: list[bytes | None] = []
+
+    def communicate(
+        self, input: bytes | None = None, timeout: float | None = None
+    ) -> tuple[bytes, bytes]:
+        self.stdin_payloads.append(input)
+        self.communicate_timeouts.append(float(timeout or 0.0))
+        if not self.killed:
+            raise subprocess.TimeoutExpired("resolver", timeout)
+        self.returncode = -9
+        return b"", b""
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class _ResolverResultProcess:
+    def __init__(self, stdout: bytes) -> None:
+        self.stdout = stdout
+        self.returncode = 0
+
+    def communicate(
+        self, input: bytes | None = None, timeout: float | None = None
+    ) -> tuple[bytes, bytes]:
+        del input, timeout
+        return self.stdout, b""
 
 
 class _BudgetSocket:
@@ -135,6 +169,60 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertEqual(result["protocol"], "rtmp")
         self.assertEqual(result["peer_ip"], "127.0.0.1")
         self.assertEqual(result["peer_port"], port)
+
+    @patch("destination_probe.socket.socket")
+    @patch("destination_probe.ResolverPopen")
+    def test_rtmp_dns_lookup_is_killed_at_shared_deadline(
+        self, resolver_popen, socket_factory
+    ) -> None:
+        process = _HangingResolverProcess()
+        resolver_popen.return_value = process
+
+        with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+            probe_destination(
+                "rtmp://probe.invalid:1935/live",
+                ProbeConfig(timeout_seconds=1.0),
+            )
+
+        self.assertTrue(process.killed)
+        self.assertGreater(process.communicate_timeouts[0], 0.0)
+        self.assertLessEqual(process.communicate_timeouts[0], 1.0)
+        self.assertIn(b'"host":"probe.invalid"', process.stdin_payloads[0] or b"")
+        command = resolver_popen.call_args.args[0]
+        self.assertNotIn("probe.invalid", command)
+        socket_factory.assert_not_called()
+
+    @patch("destination_probe.socket.socket")
+    def test_hung_dns_child_is_hard_bounded(self, socket_factory) -> None:
+        import destination_probe
+
+        started = time.monotonic()
+        with patch(
+            "destination_probe._DNS_RESOLVER_PROGRAM",
+            "import time; time.sleep(60)",
+        ):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination(
+                    "rtmp://probe.invalid:1935/live",
+                    ProbeConfig(timeout_seconds=0.15),
+                )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0)
+        socket_factory.assert_not_called()
+        self.assertEqual(destination_probe.DNS_RESOLVER_CLEANUP_SECONDS, 0.5)
+
+    @patch("destination_probe.ResolverPopen")
+    def test_dns_answer_overflow_fails_closed(self, resolver_popen) -> None:
+        resolver_popen.return_value = _ResolverResultProcess(
+            b'{"status":"overflow"}'
+        )
+
+        with self.assertRaisesRegex(DestinationProbeError, "safety limit"):
+            probe_destination(
+                "rtmp://probe.invalid:1935/live",
+                ProbeConfig(timeout_seconds=1.0),
+            )
 
     @patch("destination_probe._resolve")
     @patch("destination_probe.socket.socket")
