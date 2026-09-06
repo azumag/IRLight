@@ -38,7 +38,9 @@ IRLIGHT_VERIFY_TIMEOUT_SECONDS=5
 
 この値は RTMP/RTMPS の各 socket 操作ごとにリセットされる timeout ではなく、probe 開始時に作る単一の単調時計 deadline として扱う。DNS 解決から戻った時点で消費済み時間を差し引き、複数 A/AAAA 候補の connect、TLS handshake、RTMP send/recv は同じ残り予算を共有する。slow-drip peer が短い recv を繰り返しても deadline を延長しない。SRT も DNS 解決後の残り予算を `srt-live-transmit` の `conntimeo` と接続イベント待ちに引き継ぐ。
 
-ただし Python の同期 `socket.getaddrinfo()` 自体は呼び出し途中で安全にキャンセルできないため、**DNS resolver が返らないケースの hard wall-clock 上限はまだ未実装**。現在の deadline は resolver が戻った後に超過を検出して外向き接続を開始しないところまでを保証する。DNS を含む完全な総時間上限と probe admission control は Issue #91 の後続実装で扱う。
+DNS 解決も同じ deadline に含める。`socket.getaddrinfo()` は短命な isolated Python 子 process で実行し、hostname は argv ではなく stdin で渡す。resolver が deadline までに返らない場合は子 process を kill して probe を timeout とするため、libc resolver が停止した場合でも Control API worker 自体を同期 DNS に閉じ込めない。resolver 応答は最大 64 address・64 KiB に制限し、上限超過や不正な応答は fail-closed にする。kill 後の回収には handshake deadline とは別に最大 0.5 秒の cleanup 猶予を使い、接続成功判定の追加時間にはしない。
+
+この hard deadline は 1 probe 内の時間上限を保証するもので、同時 probe 数やユーザー単位の頻度を制限する admission control は含まない。大量の並行 verify による process/socket 枯渇対策は Issue #91 の別 slice として扱う。
 
 SRT 子 process の終了回収には handshake deadline とは別に最大 1 秒単位の cleanup 猶予を使う。cleanup 猶予を handshake 成功判定の追加時間として利用しない。
 

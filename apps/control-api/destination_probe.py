@@ -14,15 +14,19 @@ with ``IRLIGHT_VERIFY_ALLOW_PRIVATE_TARGETS=1``.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import queue
 import secrets
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from subprocess import Popen as ResolverPopen
+from subprocess import TimeoutExpired as ResolverTimeoutExpired
 from typing import Any
 from urllib.parse import parse_qsl, unquote_plus, urlsplit, urlunsplit
 
@@ -48,6 +52,51 @@ SRT_STDERR_EVENT_CONNECTED = "connected"
 SRT_STDERR_EVENT_EOF = "eof"
 SRT_STDERR_EVENT_OVERFLOW = "overflow"
 SRT_STDERR_EVENT_ERROR = "error"
+DNS_RESOLVER_MAX_ADDRESSES = 64
+DNS_RESOLVER_MAX_OUTPUT_BYTES = 64 * 1024
+DNS_RESOLVER_CLEANUP_SECONDS = 0.5
+DNS_HOST_MAX_BYTES = 1024
+
+
+_DNS_RESOLVER_PROGRAM = f"""
+import json
+import socket
+import sys
+
+MAX_ADDRESSES = {DNS_RESOLVER_MAX_ADDRESSES}
+MAX_OUTPUT_BYTES = {DNS_RESOLVER_MAX_OUTPUT_BYTES}
+
+
+def emit(payload):
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if len(raw) > MAX_OUTPUT_BYTES:
+        raw = b'{{"status":"overflow"}}'
+    sys.stdout.buffer.write(raw)
+
+
+try:
+    request = json.load(sys.stdin)
+    addresses = socket.getaddrinfo(
+        request["host"],
+        int(request["port"]),
+        type=int(request["socktype"]),
+    )
+except socket.gaierror:
+    emit({{"status": "gaierror"}})
+except Exception:
+    emit({{"status": "error"}})
+else:
+    if len(addresses) > MAX_ADDRESSES:
+        emit({{"status": "overflow"}})
+    else:
+        emit({{
+            "status": "ok",
+            "addresses": [
+                [int(family), int(socktype), int(proto), canonname, list(sockaddr)]
+                for family, socktype, proto, canonname, sockaddr in addresses
+            ],
+        }})
+"""
 
 
 class DestinationProbeError(RuntimeError):
@@ -113,11 +162,77 @@ def _resolve(
     *,
     socktype: int,
     allow_private_targets: bool,
+    deadline: float,
+    timeout_message: str,
 ) -> list[tuple[int, int, int, str, tuple[Any, ...]]]:
+    if len(host.encode("utf-8")) > DNS_HOST_MAX_BYTES:
+        raise DestinationProbeError("destination hostname is too long")
+
+    request = json.dumps(
+        {"host": host, "port": port, "socktype": int(socktype)},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    process: ResolverPopen[bytes] | None = None
     try:
-        addresses = socket.getaddrinfo(host, port, type=socktype)
-    except socket.gaierror as exc:
+        process = ResolverPopen(
+            [sys.executable, "-I", "-c", _DNS_RESOLVER_PROGRAM],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            stdout, _stderr = process.communicate(
+                input=request,
+                timeout=_remaining_budget(deadline, timeout_message),
+            )
+        except ResolverTimeoutExpired as exc:
+            process.kill()
+            try:
+                process.communicate(timeout=DNS_RESOLVER_CLEANUP_SECONDS)
+            except ResolverTimeoutExpired:
+                pass
+            raise DestinationProbeError(timeout_message) from exc
+    except OSError as exc:
+        raise DestinationProbeError("destination resolver is unavailable") from exc
+
+    if process.returncode != 0 or not stdout:
+        raise DestinationProbeError("destination hostname could not be resolved")
+    if len(stdout) > DNS_RESOLVER_MAX_OUTPUT_BYTES:
+        raise DestinationProbeError("destination resolution exceeded safety limit")
+    try:
+        payload = json.loads(stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DestinationProbeError("destination hostname could not be resolved") from exc
+    if not isinstance(payload, dict):
+        raise DestinationProbeError("destination hostname could not be resolved")
+    status = payload.get("status")
+    if status == "gaierror":
+        raise DestinationProbeError("destination hostname could not be resolved")
+    if status == "overflow":
+        raise DestinationProbeError("destination resolution exceeded safety limit")
+    if status != "ok" or not isinstance(payload.get("addresses"), list):
+        raise DestinationProbeError("destination hostname could not be resolved")
+
+    addresses: list[tuple[int, int, int, str, tuple[Any, ...]]] = []
+    for raw_entry in payload["addresses"]:
+        if not isinstance(raw_entry, list) or len(raw_entry) != 5:
+            raise DestinationProbeError("destination hostname could not be resolved")
+        family, resolved_socktype, proto, canonname, sockaddr = raw_entry
+        if (
+            isinstance(family, bool)
+            or not isinstance(family, int)
+            or isinstance(resolved_socktype, bool)
+            or not isinstance(resolved_socktype, int)
+            or isinstance(proto, bool)
+            or not isinstance(proto, int)
+            or not isinstance(canonname, str)
+            or not isinstance(sockaddr, list)
+        ):
+            raise DestinationProbeError("destination hostname could not be resolved")
+        addresses.append(
+            (family, resolved_socktype, proto, canonname, tuple(sockaddr))
+        )
     if not addresses:
         raise DestinationProbeError("destination hostname could not be resolved")
 
@@ -179,6 +294,8 @@ def _probe_rtmp(
         port,
         socktype=socket.SOCK_STREAM,
         allow_private_targets=config.allow_private_targets,
+        deadline=deadline,
+        timeout_message="RTMP destination probe timed out",
     )
     _remaining_budget(deadline, "RTMP destination probe timed out")
     last_error: Exception | None = None
@@ -315,6 +432,8 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         port,
         socktype=socket.SOCK_DGRAM,
         allow_private_targets=config.allow_private_targets,
+        deadline=deadline,
+        timeout_message="SRT destination handshake timed out",
     )
     remaining = _remaining_budget(deadline, "SRT destination handshake timed out")
     # Resolve once, validate all answers, then hand the CLI a literal IP so a
