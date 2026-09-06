@@ -16,6 +16,17 @@ USER_EVENT_MAX_REQUEST_BYTES = 64 * 1024
 USER_EVENT_MAX_DEPTH = 8
 USER_EVENT_MAX_ELEMENTS = 128
 USER_EVENT_REQUEST_TOO_LARGE_CODE = "USER_EVENT_REQUEST_TOO_LARGE"
+USER_EVENT_TYPE_RESERVED_CODE = "USER_EVENT_TYPE_RESERVED"
+# Internal producers currently use these dotted namespaces. User-authored
+# events may keep custom names for compatibility, but must not impersonate
+# lifecycle/ingest/egress/media-control facts that trusted producers emit.
+USER_EVENT_RESERVED_TYPE_PREFIXES = (
+    "session.",
+    "ingest.",
+    "egress.",
+    "relay.",
+    "media_control.",
+)
 
 
 class UserEventBodyLimitMiddleware:
@@ -149,8 +160,26 @@ async def _send_request_too_large(send: Any) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+class UserEventTypeError(ValueError):
+    """Raised when a user event tries to use a trusted internal namespace."""
+
+
 class UserEventPayloadError(ValueError):
     """Raised when a user-authored event payload exceeds the safe persistence budget."""
+
+
+def validate_user_event_type(event_type: str) -> None:
+    """Reject user-authored event types that can be mistaken for trusted facts.
+
+    Keep custom user event names compatible for now, while reserving every
+    namespace currently emitted by Control Plane/Node trusted producers. The
+    comparison is whitespace-trimmed and case-insensitive so cosmetic variants
+    cannot bypass downstream consumers that normalize names.
+    """
+
+    normalized = event_type.strip().lower()
+    if any(normalized.startswith(prefix) for prefix in USER_EVENT_RESERVED_TYPE_PREFIXES):
+        raise UserEventTypeError("event type uses a reserved internal namespace")
 
 
 def validate_user_event_payload(payload: dict[str, Any]) -> None:
