@@ -23,7 +23,7 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
             INDEX,
         )
         self.assertIn(
-            "button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.commandAcked",
+            "button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.actualKnown || !state.commandAcked",
             INDEX,
         )
         self.assertIn("最新の指示を反映中…", INDEX)
@@ -36,6 +36,15 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("statusAvailable = false", INDEX)
         self.assertIn("状態確認不能", INDEX)
         self.assertIn("状態を再取得しています", INDEX)
+
+    def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
+        self.assertIn(
+            "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
+            INDEX,
+        )
+        self.assertIn("if (runtimeStale || !actualKnown)", INDEX)
+        self.assertIn("state.runtimeStale || !state.actualKnown", INDEX)
+        self.assertIn("実状態を確認できません", INDEX)
 
     def test_status_polling_is_single_flight(self) -> None:
         self.assertIn("if (refreshPromise) return refreshPromise", INDEX)
