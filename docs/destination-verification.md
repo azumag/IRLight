@@ -34,6 +34,12 @@ URL の userinfo (`user:password@host`) と SRT の `passphrase` query は拒否
 IRLIGHT_VERIFY_TIMEOUT_SECONDS=5
 ```
 
+この値は RTMP/RTMPS の各 socket 操作ごとにリセットされる timeout ではなく、probe 開始時に作る単一の単調時計 deadline として扱う。DNS 解決から戻った時点で消費済み時間を差し引き、複数 A/AAAA 候補の connect、TLS handshake、RTMP send/recv は同じ残り予算を共有する。slow-drip peer が短い recv を繰り返しても deadline を延長しない。SRT も DNS 解決後の残り予算を `srt-live-transmit` の `conntimeo` と接続イベント待ちに引き継ぐ。
+
+ただし Python の同期 `socket.getaddrinfo()` 自体は呼び出し途中で安全にキャンセルできないため、**DNS resolver が返らないケースの hard wall-clock 上限はまだ未実装**。現在の deadline は resolver が戻った後に超過を検出して外向き接続を開始しないところまでを保証する。DNS を含む完全な総時間上限、SRT stderr/reader の容量上限、probe admission control は Issue #91 の後続実装で扱う。
+
+SRT 子 process の終了回収には handshake deadline とは別に最大 1 秒単位の cleanup 猶予を使う。cleanup 猶予を handshake 成功判定の追加時間として利用しない。
+
 ## 状態更新
 
 成功時:
