@@ -8,6 +8,8 @@ The authentication store accepts strict JSON only. Non-standard numeric constant
 
 User records require their persisted identity, normalized email, password hash, role, status, and finite creation/update timestamps. The record key must match the persisted user ID, and `email_index` must point back to the same user record. Optional display names must be strings when present.
 
+Password hashes are accepted only in the exact format emitted by the current writer: `pbkdf2_sha256`, the configured 260,000-iteration work factor, a 16-byte salt, and a 32-byte SHA-256 digest. A damaged or restored record cannot supply a larger iteration count and turn login into an unbounded PBKDF2 job. Changing hash parameters requires an explicit migration; authentication does not infer or execute arbitrary persisted work factors.
+
 Authentication-session records require a non-empty user ID and CSRF token plus finite numeric `created_at` and `expires_at` values. Boolean, string, null, and non-finite timestamp values are invalid authority rather than values to coerce. A session is expired when `expires_at <= now`.
 
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
