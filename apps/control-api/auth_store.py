@@ -36,6 +36,8 @@ AUTH_LOCK_PATH = STATE_DIR / ".auth-state.lock"
 AUTH_LOCK = threading.RLock()
 
 PBKDF2_ITERATIONS = 260_000
+PBKDF2_SALT_BYTES = 16
+PBKDF2_DIGEST_BYTES = hashlib.sha256().digest_size
 DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 3600
 
 
@@ -156,21 +158,36 @@ def _require_finite_number(record: dict[str, Any], field: str, *, context: str) 
     return number
 
 
+def _parse_password_hash(value: str) -> tuple[bytes, bytes]:
+    """Parse only the password-hash format emitted by this IRLight build.
+
+    Persisted work factors are part of the authority boundary. Accepting an
+    arbitrary positive iteration count would let damaged/restored state turn a
+    single login into an unbounded PBKDF2 job. Parameter migrations therefore
+    need an explicit state migration instead of being inferred at login time.
+    """
+    if not isinstance(value, str):
+        raise ValueError("password hash must be a string")
+    algorithm, iterations_raw, salt_hex, digest_hex = value.split("$")
+    if algorithm != "pbkdf2_sha256" or iterations_raw != str(PBKDF2_ITERATIONS):
+        raise ValueError("unsupported password hash parameters")
+    if (
+        len(salt_hex) != PBKDF2_SALT_BYTES * 2
+        or len(digest_hex) != PBKDF2_DIGEST_BYTES * 2
+    ):
+        raise ValueError("invalid password hash size")
+    salt = bytes.fromhex(salt_hex)
+    digest = bytes.fromhex(digest_hex)
+    if len(salt) != PBKDF2_SALT_BYTES or len(digest) != PBKDF2_DIGEST_BYTES:
+        raise ValueError("invalid password hash size")
+    return salt, digest
+
+
 def _validate_password_hash(value: str) -> None:
     try:
-        algorithm, iterations_raw, salt_hex, digest_hex = value.split("$")
-        iterations = int(iterations_raw)
-        salt = bytes.fromhex(salt_hex)
-        digest = bytes.fromhex(digest_hex)
+        _parse_password_hash(value)
     except (TypeError, ValueError):
         raise AuthStateError("user state has invalid password_hash") from None
-    if (
-        algorithm != "pbkdf2_sha256"
-        or iterations <= 0
-        or not salt
-        or not digest
-    ):
-        raise AuthStateError("user state has invalid password_hash")
 
 
 def ensure_auth_state() -> None:
@@ -259,23 +276,22 @@ def _normalize_email(email: str) -> str:
 
 
 def _hash_password(password: str, *, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
+    salt = salt or secrets.token_bytes(PBKDF2_SALT_BYTES)
+    if len(salt) != PBKDF2_SALT_BYTES:
+        raise ValueError("password salt has invalid size")
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
     return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
 
 
 def _verify_password(password: str, stored: str) -> bool:
     try:
-        algorithm, iterations, salt_hex, digest_hex = stored.split("$")
-        if algorithm != "pbkdf2_sha256":
-            return False
-        salt = bytes.fromhex(salt_hex)
-        expected = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt, int(iterations)
-        )
-        return hmac.compare_digest(expected.hex(), digest_hex)
-    except (ValueError, AttributeError):
+        salt, expected = _parse_password_hash(stored)
+    except (TypeError, ValueError):
         return False
+    actual = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
+    )
+    return hmac.compare_digest(actual, expected)
 
 
 # A single fixed dummy record keeps unknown-email authentication on the same

@@ -23,6 +23,7 @@ from auth_store import (  # noqa: E402
     AuthStateError,
     EmailAlreadyRegistered,
     InvalidCredentials,
+    PBKDF2_ITERATIONS,
     USERS_PATH,
     _hash_password,
     _verify_password,
@@ -152,6 +153,34 @@ class AuthStoreTest(unittest.TestCase):
         self.assertTrue(_verify_password("correct-horse", first))
         self.assertTrue(_verify_password("correct-horse", second))
         self.assertFalse(_verify_password("wrong", first))
+
+    def test_password_hash_rejects_unbounded_work_factor_before_pbkdf2(self) -> None:
+        user = self._register()
+        state = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        record = state["users"][str(user["id"])]
+        algorithm, _iterations, salt_hex, digest_hex = record["password_hash"].split("$")
+        record["password_hash"] = (
+            f"{algorithm}${PBKDF2_ITERATIONS * 1000}${salt_hex}${digest_hex}"
+        )
+        USERS_PATH.write_text(json.dumps(state), encoding="utf-8")
+
+        with patch("auth_store.hashlib.pbkdf2_hmac") as pbkdf2:
+            with self.assertRaises(AuthStateError):
+                authenticate_user(email="alice@example.com", password="correct-horse")
+        pbkdf2.assert_not_called()
+
+    def test_verify_password_rejects_noncanonical_parameters_without_pbkdf2(self) -> None:
+        valid = _hash_password("correct-horse", salt=b"\x01" * 16)
+        algorithm, _iterations, salt_hex, digest_hex = valid.split("$")
+        unsupported = f"{algorithm}$999999999${salt_hex}${digest_hex}"
+        oversized_salt = (
+            f"{algorithm}${PBKDF2_ITERATIONS}${salt_hex * 2}${digest_hex}"
+        )
+
+        with patch("auth_store.hashlib.pbkdf2_hmac") as pbkdf2:
+            self.assertFalse(_verify_password("correct-horse", unsupported))
+            self.assertFalse(_verify_password("correct-horse", oversized_salt))
+        pbkdf2.assert_not_called()
 
     def test_create_and_resolve_session(self) -> None:
         user = self._register()
