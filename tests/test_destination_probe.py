@@ -46,6 +46,45 @@ class _FakeProcess:
         self._returncode = -9
 
 
+class _BudgetSocket:
+    def __init__(
+        self,
+        clock: list[float],
+        *,
+        recv_step: float = 0.0,
+        connect_step: float = 0.0,
+        connect_error: Exception | None = None,
+    ) -> None:
+        self.clock = clock
+        self.recv_step = recv_step
+        self.connect_step = connect_step
+        self.connect_error = connect_error
+        self.timeouts: list[float] = []
+        self.recv_calls = 0
+        self.closed = False
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeouts.append(timeout)
+
+    def connect(self, sockaddr) -> None:
+        del sockaddr
+        self.clock[0] += self.connect_step
+        if self.connect_error is not None:
+            raise self.connect_error
+
+    def sendall(self, data: bytes) -> None:
+        del data
+
+    def recv(self, size: int) -> bytes:
+        del size
+        self.clock[0] += self.recv_step
+        self.recv_calls += 1
+        return b"\x03" if self.recv_calls == 1 else b"S"
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class DestinationProbeTest(unittest.TestCase):
     def test_rejects_private_target_by_default(self) -> None:
         with self.assertRaisesRegex(DestinationProbeError, "public address"):
@@ -97,6 +136,82 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertEqual(result["peer_ip"], "127.0.0.1")
         self.assertEqual(result["peer_port"], port)
 
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.socket.socket")
+    def test_rtmp_slow_drip_cannot_reset_total_deadline(self, socket_factory, resolve) -> None:
+        clock = [0.0]
+        fake_socket = _BudgetSocket(clock, recv_step=0.4)
+        socket_factory.return_value = fake_socket
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 1935))
+        ]
+
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination(
+                    "rtmp://probe.invalid:1935/live",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertLess(fake_socket.recv_calls, 10)
+        self.assertTrue(fake_socket.closed)
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.socket.socket")
+    def test_rtmp_address_attempts_share_one_deadline(self, socket_factory, resolve) -> None:
+        clock = [0.0]
+        sockets: list[_BudgetSocket] = []
+
+        def make_socket(*args):
+            del args
+            item = _BudgetSocket(
+                clock,
+                connect_step=0.6,
+                connect_error=socket.timeout("simulated timeout"),
+            )
+            sockets.append(item)
+            return item
+
+        socket_factory.side_effect = make_socket
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 1935)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.11", 1935)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.12", 1935)),
+        ]
+
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination(
+                    "rtmp://probe.invalid:1935/live",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(len(sockets), 2)
+        self.assertAlmostEqual(sockets[0].timeouts[0], 1.0)
+        self.assertAlmostEqual(sockets[1].timeouts[0], 0.4)
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.socket.socket")
+    def test_rtmp_resolution_time_consumes_shared_budget(self, socket_factory, resolve) -> None:
+        clock = [0.0]
+
+        def delayed_resolve(*args, **kwargs):
+            del args, kwargs
+            clock[0] = 1.1
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 1935))
+            ]
+
+        resolve.side_effect = delayed_resolve
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination(
+                    "rtmp://probe.invalid:1935/live",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        socket_factory.assert_not_called()
+
     @patch("destination_probe._probe_rtmp")
     def test_rtmps_uses_tls_probe(self, probe_rtmp) -> None:
         probe_rtmp.return_value = {
@@ -136,11 +251,37 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertIn("srt://127.0.0.1:8890?", command[2])
         self.assertIn("streamid=publish:probe", command[2])
         self.assertIn("mode=caller", command[2])
-        self.assertIn("conntimeo=2000", command[2])
+        conntimeo = next(
+            token for token in command[2].split("&") if token.startswith("conntimeo=")
+        )
+        self.assertGreaterEqual(int(conntimeo.split("=", 1)[1]), 1)
+        self.assertLessEqual(int(conntimeo.split("=", 1)[1]), 2000)
         self.assertNotIn("-autoreconnect:no", command)
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(result["protocol"], "srt")
         self.assertTrue(process.terminated)
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_resolution_time_consumes_budget_before_process_spawn(self, popen, resolve) -> None:
+        clock = [0.0]
+
+        def delayed_resolve(*args, **kwargs):
+            del args, kwargs
+            clock[0] = 1.1
+            return [
+                (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890))
+            ]
+
+        resolve.side_effect = delayed_resolve
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "SRT destination handshake timed out"):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        popen.assert_not_called()
 
     @patch("destination_probe.subprocess.Popen")
     def test_srt_fails_when_process_ends_before_connected_event(self, popen) -> None:
