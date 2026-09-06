@@ -10,7 +10,9 @@ Routing-only stream IDs remain supported. For example:
 srt://stream.example.test:8890?streamid=publish:probe&latency=120
 ```
 
-The verifier may pass this non-secret routing information to `srt-live-transmit` while pinning the resolved target IP and forcing caller mode.
+The Destination URL query is deliberately narrow: `streamid`, `latency`, `mode`, and `conntimeo` are the only accepted query names. `mode` must still be `caller` when explicitly supplied, and the verifier replaces `mode` and `conntimeo` with its own controlled values before spawning the child process. Unknown or duplicate query names are rejected rather than forwarded to the SRT implementation.
+
+The verifier may pass accepted non-secret routing information to `srt-live-transmit` while pinning the resolved target IP and forcing caller mode.
 
 ## Credential-bearing forms
 
@@ -21,7 +23,8 @@ The following forms are rejected before catalog persistence and before a verifie
 - IRLight/MediaMTX authenticated stream IDs such as `publish:<path>:<user>:<credential>`
 - structured SRT stream IDs containing credential fields such as `u`, `username`, `password`, `passphrase`, `secret`, or `token`
 - encoded equivalents of the above, including repeated percent encoding
-- duplicate `streamid` parameters whose interpretation could differ between validation and the SRT implementation
+- duplicate query parameters whose interpretation could differ between validation and the SRT implementation
+- query parameters outside the explicit public allowlist
 
 Validation errors never include the credential value.
 
