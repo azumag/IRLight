@@ -38,6 +38,19 @@ class ControlApiImagePackagingTest(unittest.TestCase):
             + ", ".join(missing),
         )
 
+    def test_directory_copy_to_workdir_packages_all_python_sources(self) -> None:
+        packaged = _packaged_python_sources("COPY apps/control-api/ ./\n")
+        self.assertEqual(
+            packaged,
+            {path.name for path in CONTROL_API_DIR.glob("*.py")},
+        )
+
+    def test_directory_copy_to_other_destination_does_not_satisfy_contract(self) -> None:
+        self.assertEqual(
+            _packaged_python_sources("COPY apps/control-api/ /tmp/control-api\n"),
+            set(),
+        )
+
 
 def _runtime_local_import_closure() -> set[str]:
     pending = list(RUNTIME_ENTRYPOINTS)
@@ -74,8 +87,12 @@ def _imported_top_level_modules(tree: ast.AST) -> set[str]:
 
 def _packaged_python_sources(dockerfile: str) -> set[str]:
     # A future switch to copying the whole control-api directory satisfies the
-    # contract without maintaining an explicit filename manifest.
-    if re.search(r"(?m)^COPY\s+apps/control-api/?\s+", dockerfile):
+    # contract only when its contents land in the current /app workdir where the
+    # existing top-level imports resolve.
+    if re.search(
+        r"(?m)^COPY[ \t]+apps/control-api/?[ \t]+(?:\.|\./)[ \t]*$",
+        dockerfile,
+    ):
         return {path.name for path in CONTROL_API_DIR.glob("*.py")}
 
     return set(re.findall(r"apps/control-api/([A-Za-z0-9_]+\.py)\b", dockerfile))
