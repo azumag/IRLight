@@ -56,6 +56,18 @@ class DestinationUrlSafetyTest(unittest.TestCase):
                 "srt://stream.example:8890?streamid=opaque-arbitrary-token"
             )
 
+    def test_rejects_srt_path_as_opaque_channel(self) -> None:
+        with self.assertRaisesRegex(DestinationUrlSafetyError, "path is not supported"):
+            validate_destination_url_secret_safety(
+                "srt://stream.example:8890/AUDIT_DUMMY_SECRET?streamid=publish:probe"
+            )
+
+    def test_rejects_srt_fragment_as_opaque_channel(self) -> None:
+        with self.assertRaisesRegex(DestinationUrlSafetyError, "fragments are not supported"):
+            validate_destination_url_secret_safety(
+                "srt://stream.example:8890?streamid=publish:probe#AUDIT_DUMMY_SECRET"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
