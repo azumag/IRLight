@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 _PROCESS_LOCK = threading.RLock()
@@ -187,7 +187,7 @@ class IngestAuthGuard:
     def _reload(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(handle)
+                raw = load_json_authority(handle)
         except FileNotFoundError:
             if was_initialized(self.path):
                 raise IngestAuthGuardStateError(
@@ -197,7 +197,7 @@ class IngestAuthGuard:
             self._events = []
             self._next_sequence = 1
             return
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
             raise IngestAuthGuardStateError(
                 "ingest authentication guard state cannot be read"
             ) from exc

@@ -18,7 +18,7 @@ from auth_store import _validate_sessions, _validate_users
 from catalog_store import CatalogValidationError, _validate_destination_server_url
 from control_store import _validate_control
 from node_internal import _validate_tokens, validate_node_authority
-from state_safety import initialization_marker
+from state_safety import load_json_authority, initialization_marker
 
 
 class StateReadinessError(RuntimeError):
@@ -73,7 +73,7 @@ def _read_json_authority(path: Path) -> dict[str, Any]:
         fd = -1  # ``handle`` owns the descriptor from this point forward.
         with handle:
             try:
-                value = json.load(handle, parse_constant=_reject_json_constant)
+                value = load_json_authority(handle, parse_constant=_reject_json_constant)
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError) as exc:
                 raise StateReadinessError("required state contains invalid JSON") from exc
     finally:

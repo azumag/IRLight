@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
@@ -116,7 +116,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle, parse_constant=_reject_non_finite_json_constant)
+            value = load_json_authority(handle, parse_constant=_reject_non_finite_json_constant)
     except FileNotFoundError:
         if was_initialized(path):
             raise AuthStateError(

@@ -23,7 +23,7 @@ from destination_url_safety import (
     DestinationUrlSafetyError,
     validate_destination_url_secret_safety,
 )
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
@@ -86,14 +86,14 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = load_json_authority(handle)
     except FileNotFoundError:
         if was_initialized(path):
             raise CatalogStateError(
                 f"catalog state {path} disappeared after initialization"
             )
         return default
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
         raise CatalogStateError(f"catalog state {path} cannot be read") from exc
     if not isinstance(value, dict):
         raise CatalogStateError(f"catalog state {path} has invalid structure")

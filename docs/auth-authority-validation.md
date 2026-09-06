@@ -6,6 +6,8 @@ IRLight treats `users.json` and `auth_sessions.json` as authority, not as a cach
 
 The authentication store accepts strict JSON only. Non-standard numeric constants such as `NaN`, `Infinity`, and `-Infinity` are rejected while reading, and writers use `allow_nan=False` so they cannot publish those values accidentally.
 
+Persisted authority JSON is also decoded with duplicate object-key rejection. Python's default JSON decoder otherwise silently keeps the last duplicate key, which can make the bytes inspected during recovery differ from the object the service validates. IRLight rejects duplicate keys recursively instead of guessing which value was intended. The shared rule is used by the Control Plane's persisted authority readers, not request/response JSON parsing.
+
 User records require their persisted identity, normalized email, password hash, role, status, and finite creation/update timestamps. The record key must match the persisted user ID, and `email_index` must point back to the same user record. Optional display names must be strings when present.
 
 Password hashes are accepted only in the exact format emitted by the current writer: `pbkdf2_sha256`, the configured 260,000-iteration work factor, a 16-byte salt, and a 32-byte SHA-256 digest. A damaged or restored record cannot supply a larger iteration count and turn login into an unbounded PBKDF2 job. Changing hash parameters requires an explicit migration; authentication does not infer or execute arbitrary persisted work factors.

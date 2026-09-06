@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 _PROCESS_LOCK = threading.RLock()
@@ -108,14 +108,14 @@ class ControlStore:
     def _read(self) -> dict[str, object]:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                value = json.load(handle)
+                value = load_json_authority(handle)
         except FileNotFoundError:
             if was_initialized(self.path):
                 raise ControlStateError(
                     "control state disappeared after initialization"
                 )
             raise ControlStateError("control state is not initialized")
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
             raise ControlStateError("control state cannot be read") from exc
         return _validate_control(value)
 

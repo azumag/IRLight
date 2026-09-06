@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 SESSION_STATES = {
@@ -268,7 +268,7 @@ class SessionStore:
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(
+                raw = load_json_authority(
                     handle,
                     parse_constant=_reject_non_finite_json_constant,
                 )

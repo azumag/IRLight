@@ -17,9 +17,44 @@ authoritative write can exist without durable evidence that it ever existed.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import stat
 from pathlib import Path
+from typing import Any, Callable, TextIO
+
+
+def _reject_duplicate_json_object_pairs(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key is not allowed")
+        result[key] = value
+    return result
+
+
+def load_json_authority(
+    handle: TextIO,
+    *,
+    parse_constant: Callable[[str], Any] | None = None,
+) -> Any:
+    """Load persisted authority JSON while rejecting ambiguous object keys.
+
+    Python's default JSON decoder silently keeps the last value for duplicate
+    object keys. Authority files must instead fail closed: duplicate keys can
+    otherwise make the bytes an operator inspects differ from the object the
+    service validates and acts on. The hook applies recursively to every JSON
+    object, including nested records and event payloads.
+    """
+
+    kwargs: dict[str, Any] = {
+        "object_pairs_hook": _reject_duplicate_json_object_pairs,
+    }
+    if parse_constant is not None:
+        kwargs["parse_constant"] = parse_constant
+    return json.load(handle, **kwargs)
 
 
 def initialization_marker(path: Path) -> Path:
