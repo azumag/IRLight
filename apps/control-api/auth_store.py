@@ -246,7 +246,12 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
             raise AuthStateError("user state record has invalid display_name")
         if stored_id != user_id:
             raise AuthStateError("user state record id does not match its key")
-        if _normalize_email(email) != email or "@" not in email:
+        if (
+            _normalize_email(email) != email
+            or "@" not in email
+            or email.startswith("@")
+            or email.endswith("@")
+        ):
             raise AuthStateError("user state record has invalid email")
         _validate_password_hash(password_hash)
         if email_index.get(email) != user_id:
