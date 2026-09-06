@@ -45,7 +45,7 @@
 
   <section class="card">
     <button id="audioButton" disabled>状態を取得しています</button>
-    <p class="small">ミュートしても映像と配信接続は維持し、連続した無音AACを送ります。ボタンはトグル命令ではなく最終状態を指定するため、通信再送で意図せず反転しません。</p>
+    <p class="small">ミュートしても映像と配信接続は維持し、連続した無音AACを送ります。表示は指定状態ではなく実際の音声状態を優先し、最新指示をランタイムが確認するまでは次の操作を受け付けません。</p>
     <p id="error" class="error" role="alert"></p>
   </section>
 
@@ -56,49 +56,116 @@
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+const RUNTIME_STALE_SECONDS = 3;
 let snapshot = null;
 let applying = false;
+let refreshPromise = null;
 
 function textForSession(value) {
   return ({LIVE:'通常映像', HOLDING:'待機中', STABILIZING:'復帰確認中', STARTING:'起動中'})[value] || value || '不明';
 }
+
+function audioState(control, runtime, serverTime) {
+  const desired = control.audio_mode === 'MUTED' ? 'MUTED' : 'LIVE';
+  const actual = runtime.actual_audio_mode || 'UNKNOWN';
+  const controlVersion = Number.isInteger(control.version) ? control.version : null;
+  const runtimeVersion = Number.isInteger(runtime.control_version) ? runtime.control_version : null;
+  const controlCommand = control.command_id ?? null;
+  const runtimeCommand = runtime.command_id ?? null;
+  const commandAcked = controlVersion === runtimeVersion && controlCommand === runtimeCommand;
+  const runtimeAge = Number(serverTime) - Number(runtime.updated_at);
+  const runtimeStale = !Number.isFinite(runtimeAge) || runtimeAge < -1 || runtimeAge > RUNTIME_STALE_SECONDS;
+
+  if (runtimeStale) {
+    return {desired, actual, commandAcked, runtimeStale, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
+  }
+
+  const labels = {
+    LIVE: '音声オン',
+    MUTED: 'ミュート中',
+    SILENT_FALLBACK: '入力音声なし',
+    APPLYING: '適用中',
+    FAILED: '反映失敗',
+  };
+  const actualLabel = labels[actual] || '不明';
+
+  if (!commandAcked) {
+    if (desired === 'MUTED' && actual === 'LIVE') {
+      return {desired, actual, commandAcked, runtimeStale, label:'音声オン（ミュート未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+    }
+    if (desired === 'LIVE' && actual === 'MUTED') {
+      return {desired, actual, commandAcked, runtimeStale, label:'ミュート中（解除未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+    }
+    return {desired, actual, commandAcked, runtimeStale, label:`${actualLabel}（最新指示を確認中）`, dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+  }
+
+  const dot = actual === 'LIVE' ? 'live' : (actual === 'MUTED' ? 'muted' : 'warn');
+  return {desired, actual, commandAcked, runtimeStale, label:actualLabel, dot, actualLabel};
+}
+
 function render(data) {
   snapshot = data;
   const c = data.control || {};
   const r = data.runtime || {};
+  const state = audioState(c, r, data.server_time);
   $('session').lastElementChild.textContent = textForSession(r.session_status);
   $('sessionDot').className = 'dot ' + (r.session_status === 'LIVE' ? 'live' : 'warn');
   $('video').textContent = r.video_source === 'LIVE' ? '通常映像' : '待機画面';
-  const desiredMuted = c.audio_mode === 'MUTED';
-  const actual = r.actual_audio_mode || '不明';
-  $('audio').lastElementChild.textContent = desiredMuted ? 'ミュート中' : (actual === 'LIVE' ? 'オン' : '無音フォールバック');
-  $('audioDot').className = 'dot ' + (desiredMuted ? 'muted' : (actual === 'LIVE' ? 'live' : 'warn'));
+  $('audio').lastElementChild.textContent = state.label;
+  $('audioDot').className = 'dot ' + state.dot;
   $('inputVideo').textContent = r.input_video_recent ? '受信中' : '停止';
   $('inputAudio').textContent = r.input_audio_recent ? '受信中' : '停止／なし';
   $('updated').textContent = r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '—';
-  const actualLabel = ({LIVE:'音声オン', MUTED:'ミュート中', SILENT_FALLBACK:'入力音声なし', STARTING:'起動中'})[actual] || actual || '不明';
-  $('desired').textContent = desiredMuted ? 'ミュート指定' : 'オン指定';
-  $('actual').textContent = actualLabel;
-  $('version').textContent = c.version != null ? String(c.version) : '—';
+  $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
+  $('actual').textContent = state.actualLabel;
+  const controlVersion = Number.isInteger(c.version) ? c.version : '—';
+  const runtimeVersion = Number.isInteger(r.control_version) ? r.control_version : '—';
+  $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
-  button.disabled = applying;
-  button.className = desiredMuted ? 'muted' : 'live';
-  button.textContent = applying ? '適用中…' : (desiredMuted ? '配信音声をオンに戻す' : '配信音声をミュートする');
+  button.disabled = applying || state.runtimeStale || !state.commandAcked;
+  button.className = state.desired === 'MUTED' ? 'muted' : 'live';
+  button.textContent = applying
+    ? '指示を送信中…'
+    : (state.runtimeStale
+      ? '実状態を確認できません'
+      : (!state.commandAcked
+        ? '最新の指示を反映中…'
+        : (state.desired === 'MUTED' ? '配信音声をオンに戻す' : '配信音声をミュートする')));
 }
 
-async function refresh() {
-  try {
-    const response = await fetch('/api/status', {cache:'no-store'});
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    render(await response.json());
-    $('error').textContent = '';
-  } catch (error) {
-    $('error').textContent = `状態取得に失敗: ${error.message}`;
-  }
+function markStatusUnavailable(message) {
+  $('audio').lastElementChild.textContent = '状態確認不能';
+  $('audioDot').className = 'dot warn';
+  $('actual').textContent = '状態確認不能';
+  $('audioButton').disabled = true;
+  $('audioButton').textContent = '状態を再取得しています';
+  $('error').textContent = message;
+}
+
+function refresh() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch('/api/status', {cache:'no-store'});
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      render(await response.json());
+      $('error').textContent = '';
+    } catch (error) {
+      markStatusUnavailable(`状態取得に失敗: ${error.message}`);
+    }
+  })();
+  return refreshPromise.finally(() => {
+    refreshPromise = null;
+  });
+}
+
+async function refreshAfterCurrent() {
+  if (refreshPromise) await refreshPromise;
+  await refresh();
 }
 
 $('audioButton').addEventListener('click', async () => {
-  if (!snapshot || applying) return;
+  if (!snapshot || applying || $('audioButton').disabled) return;
   applying = true;
   render(snapshot);
   const control = snapshot.control || {};
@@ -110,11 +177,11 @@ $('audioButton').addEventListener('click', async () => {
       body: JSON.stringify({mode: target, expected_version: control.version || 0})
     });
     if (response.status === 409) {
-      await refresh();
+      await refreshAfterCurrent();
       throw new Error('別画面で状態が更新されました。最新状態を再取得しました');
     }
     if (!response.ok) throw new Error(`control ${response.status}`);
-    await refresh();
+    await refreshAfterCurrent();
   } catch (error) {
     $('error').textContent = `音声切替に失敗: ${error.message}`;
   } finally {
