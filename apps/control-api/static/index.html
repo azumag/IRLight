@@ -70,6 +70,7 @@ function textForSession(value) {
 function audioState(control, runtime, serverTime) {
   const desired = control.audio_mode === 'MUTED' ? 'MUTED' : 'LIVE';
   const actual = runtime.actual_audio_mode || 'UNKNOWN';
+  const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK';
   const controlVersion = Number.isInteger(control.version) ? control.version : null;
   const runtimeVersion = Number.isInteger(runtime.control_version) ? runtime.control_version : null;
   const controlCommand = control.command_id ?? null;
@@ -78,37 +79,35 @@ function audioState(control, runtime, serverTime) {
   const runtimeAge = Number(serverTime) - Number(runtime.updated_at);
   const runtimeStale = !Number.isFinite(runtimeAge) || runtimeAge < -1 || runtimeAge > RUNTIME_STALE_SECONDS;
 
-  if (runtimeStale) {
-    return {desired, actual, commandAcked, runtimeStale, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
+  if (runtimeStale || !actualKnown) {
+    return {desired, actual, actualKnown, commandAcked, runtimeStale, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
   }
 
   const labels = {
     LIVE: '音声オン',
     MUTED: 'ミュート中',
     SILENT_FALLBACK: '入力音声なし',
-    APPLYING: '適用中',
-    FAILED: '反映失敗',
   };
-  const actualLabel = labels[actual] || '不明';
+  const actualLabel = labels[actual];
 
   if (!commandAcked) {
     if (desired === 'MUTED' && actual === 'LIVE') {
-      return {desired, actual, commandAcked, runtimeStale, label:'音声オン（ミュート未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+      return {desired, actual, actualKnown, commandAcked, runtimeStale, label:'音声オン（ミュート未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
     }
     if (desired === 'LIVE' && actual === 'MUTED') {
-      return {desired, actual, commandAcked, runtimeStale, label:'ミュート中（解除未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+      return {desired, actual, actualKnown, commandAcked, runtimeStale, label:'ミュート中（解除未反映）', dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
     }
     if (desired === 'MUTED') {
       const label = actual === 'SILENT_FALLBACK'
         ? '入力音声なし（ミュート指示未確認）'
         : 'ミュート適用待ち（ACK未確認）';
-      return {desired, actual, commandAcked, runtimeStale, label, dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+      return {desired, actual, actualKnown, commandAcked, runtimeStale, label, dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
     }
-    return {desired, actual, commandAcked, runtimeStale, label:`${actualLabel}（最新指示未確認）`, dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
+    return {desired, actual, actualKnown, commandAcked, runtimeStale, label:`${actualLabel}（最新指示未確認）`, dot:'warn', actualLabel:`${actualLabel}（最新指示未確認）`};
   }
 
   const dot = actual === 'LIVE' ? 'live' : (actual === 'MUTED' ? 'muted' : 'warn');
-  return {desired, actual, commandAcked, runtimeStale, label:actualLabel, dot, actualLabel};
+  return {desired, actual, actualKnown, commandAcked, runtimeStale, label:actualLabel, dot, actualLabel};
 }
 
 function render(data) {
@@ -133,7 +132,7 @@ function render(data) {
   const runtimeVersion = Number.isInteger(r.control_version) ? r.control_version : '—';
   $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
-  button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.commandAcked;
+  button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.actualKnown || !state.commandAcked;
   button.className = state.desired === 'MUTED' ? 'muted' : 'live';
   button.textContent = applying
     ? '指示を送信中…'
@@ -141,7 +140,7 @@ function render(data) {
       ? '音声制御APIは利用できません'
       : (!statusAvailable
         ? '状態を再取得しています'
-        : (state.runtimeStale
+        : (state.runtimeStale || !state.actualKnown
         ? '実状態を確認できません'
         : (!state.commandAcked
           ? '最新の指示を反映中…'
