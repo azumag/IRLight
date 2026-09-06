@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export EGRESS_RTMP_SINK_FACTORY="${EGRESS_RTMP_SINK_FACTORY:-rtmpsink}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke_project="irlight-egress-reconnect-smoke-$$-$RANDOM"
@@ -39,6 +40,7 @@ services:
       - egress-target
     environment:
       EGRESS_INPUT_URI_FILE: /run/irlight/relay-secrets/media_relay_uri
+      EGRESS_RTMP_SINK_FACTORY: "${EGRESS_RTMP_SINK_FACTORY}"
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
       # This target deliberately lives on the isolated Compose RFC1918 network.
