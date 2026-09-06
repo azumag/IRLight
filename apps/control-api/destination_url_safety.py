@@ -43,6 +43,14 @@ def validate_destination_url_secret_safety(url: str) -> None:
     if parsed.scheme.casefold() != "srt":
         return
 
+    # SRT destinations in IRLight route through query streamid only. Keep path
+    # and fragment unavailable as opaque channels that the downstream URI
+    # parser could reinterpret or place into process arguments.
+    if parsed.path not in {"", "/"}:
+        raise DestinationUrlSafetyError("SRT destination path is not supported")
+    if parsed.fragment:
+        raise DestinationUrlSafetyError("SRT destination fragments are not supported")
+
     seen_keys: set[str] = set()
     for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
         key = _decode_repeated(raw_key).strip().casefold()
