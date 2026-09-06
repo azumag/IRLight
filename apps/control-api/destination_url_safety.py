@@ -105,7 +105,7 @@ def _validate_streamid(value: str) -> None:
         or not ROUTING_VALUE_RE.fullmatch(route)
     ):
         raise DestinationUrlSafetyError(
-            "authenticated or unsupported SRT streamid must not be embedded in server_url"
+            "authenticated SRT streamid must not be embedded in server_url"
         )
 
 
@@ -119,7 +119,7 @@ def _validate_structured_streamid(value: str) -> None:
             raise DestinationUrlSafetyError("SRT streamid has invalid public routing syntax")
         if key not in {"m", "r"}:
             raise DestinationUrlSafetyError(
-                "authenticated or unsupported SRT streamid must not be embedded in server_url"
+                "authenticated SRT streamid must not be embedded in server_url"
             )
         fields[key] = field_value
 
