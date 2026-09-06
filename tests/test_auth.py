@@ -226,12 +226,38 @@ class AuthStoreTest(unittest.TestCase):
                 with self.assertRaisesRegex(AuthStateError, "invalid token hash"):
                     get_session_user(session["token"])
 
+    def test_auth_session_csrf_token_must_match_writer_format(self) -> None:
+        user = self._register()
+        session = create_session(str(user["id"]))
+        state = json.loads(AUTH_SESSIONS_PATH.read_text(encoding="utf-8"))
+        token_hash, record = next(iter(state["sessions"].items()))
+        csrf_token = record["csrf_token"]
+        allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        self.assertEqual(len(csrf_token), 32)
+        self.assertTrue(all(char in allowed for char in csrf_token))
+
+        for bad_csrf in (
+            "A" * 31,
+            "A" * 33,
+            "A" * 31 + "=",
+            "A" * 31 + ".",
+            "あ" * 32,
+        ):
+            with self.subTest(bad_csrf=bad_csrf):
+                broken = dict(record)
+                broken["csrf_token"] = bad_csrf
+                AUTH_SESSIONS_PATH.write_text(
+                    json.dumps({"sessions": {token_hash: broken}}), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(AuthStateError, "invalid csrf_token"):
+                    get_session_user(session["token"])
+
     def test_auth_session_json_rejects_non_finite_constants(self) -> None:
         for constant in ("NaN", "Infinity", "-Infinity"):
             with self.subTest(constant=constant):
                 AUTH_SESSIONS_PATH.write_text(
                     '{"sessions":{"0000000000000000000000000000000000000000000000000000000000000000":{"user_id":"user-a",'
-                    '"csrf_token":"csrf","created_at":1.0,'
+                    '"csrf_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","created_at":1.0,'
                     f'"expires_at":{constant}}}}}',
                     encoding="utf-8",
                 )
@@ -247,7 +273,7 @@ class AuthStoreTest(unittest.TestCase):
                             "sessions": {
                                 "0000000000000000000000000000000000000000000000000000000000000000": {
                                     "user_id": "user-a",
-                                    "csrf_token": "csrf",
+                                    "csrf_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                                     "created_at": 1.0,
                                     "expires_at": bad_value,
                                 }

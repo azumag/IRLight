@@ -34,7 +34,7 @@ class AuthSessionGcTest(unittest.TestCase):
     def _record(*, expires_at: float) -> dict[str, object]:
         return {
             "user_id": "user-a",
-            "csrf_token": "csrf",
+            "csrf_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "created_at": 1.0,
             "expires_at": expires_at,
         }
@@ -129,7 +129,7 @@ class AuthSessionGcTest(unittest.TestCase):
                 "sessions": {
                     self._token_hash(1): {
                         "user_id": "user-a",
-                        "csrf_token": "csrf",
+                        "csrf_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                         "created_at": 1.0,
                         "expires_at": "100",
                     }
@@ -154,6 +154,21 @@ class AuthSessionGcTest(unittest.TestCase):
 
             with patch("auth_session_gc.atomic_write_json") as writer:
                 with self.assertRaisesRegex(AuthStateError, "invalid token hash"):
+                    prune_expired_sessions(now=200.0, path=path)
+                writer.assert_not_called()
+
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
+
+    def test_invalid_csrf_token_fails_closed_without_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
+            path = Path(tmp) / "auth_sessions.json"
+            record = self._record(expires_at=10.0)
+            record["csrf_token"] = "not-a-writer-token"
+            original = {"sessions": {self._token_hash(1): record}}
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            with patch("auth_session_gc.atomic_write_json") as writer:
+                with self.assertRaisesRegex(AuthStateError, "invalid csrf_token"):
                     prune_expired_sessions(now=200.0, path=path)
                 writer.assert_not_called()
 

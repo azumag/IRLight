@@ -38,6 +38,12 @@ AUTH_LOCK = threading.RLock()
 PBKDF2_ITERATIONS = 260_000
 PBKDF2_SALT_BYTES = 16
 PBKDF2_DIGEST_BYTES = hashlib.sha256().digest_size
+SESSION_TOKEN_BYTES = 32
+CSRF_TOKEN_BYTES = 24
+CSRF_TOKEN_LENGTH = (CSRF_TOKEN_BYTES * 4 + 2) // 3
+TOKEN_URLSAFE_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 3600
 
 
@@ -249,6 +255,13 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _validate_csrf_token(value: str) -> None:
+    if len(value) != CSRF_TOKEN_LENGTH or any(
+        char not in TOKEN_URLSAFE_CHARS for char in value
+    ):
+        raise AuthStateError("authentication session record has invalid csrf_token")
+
+
 def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
     sessions = value.get("sessions")
     if not isinstance(sessions, dict):
@@ -263,9 +276,10 @@ def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
         _require_nonempty_string(
             item, "user_id", context="authentication session record"
         )
-        _require_nonempty_string(
+        csrf_token = _require_nonempty_string(
             item, "csrf_token", context="authentication session record"
         )
+        _validate_csrf_token(csrf_token)
         _require_finite_number(
             item, "created_at", context="authentication session record"
         )
@@ -381,8 +395,8 @@ def get_user(user_id: str) -> dict[str, Any] | None:
 def create_session(
     user_id: str, *, ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
 ) -> dict[str, Any]:
-    token = secrets.token_urlsafe(32)
-    csrf_token = secrets.token_urlsafe(24)
+    token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+    csrf_token = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
     now = time.time()
     with _state_lock(exclusive=True):
         sessions = _validate_sessions(

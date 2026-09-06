@@ -14,7 +14,7 @@ Password hashes are accepted only in the exact format emitted by the current wri
 
 Authentication session records also require their map key to be the exact lowercase 64-hex-character SHA-256 token digest emitted by the current writer. Arbitrary, truncated, oversized, non-hex, or uppercase keys are treated as damaged authority and rejected instead of being carried forward by GC or later writes.
 
-Authentication-session records require a non-empty user ID and CSRF token plus finite numeric `created_at` and `expires_at` values. Boolean, string, null, and non-finite timestamp values are invalid authority rather than values to coerce. A session is expired when `expires_at <= now`.
+Authentication-session records require a non-empty user ID and a CSRF token in the exact URL-safe 32-character form emitted by `secrets.token_urlsafe(24)`, plus finite numeric `created_at` and `expires_at` values. Truncated, oversized, padded, non-URL-safe, or non-ASCII CSRF tokens are rejected as damaged authority rather than being compared against request cookies or headers. Boolean, string, null, and non-finite timestamp values are invalid authority rather than values to coerce. A session is expired when `expires_at <= now`.
 
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
 
