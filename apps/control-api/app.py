@@ -27,12 +27,14 @@ from ingest_api import user_router as ingest_user_router
 from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
 from session_api import router as session_router
+from state_readiness import StateReadinessError, check_state_readiness
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
 CONTROL_PATH = STATE_DIR / "control.json"
 STATUS_PATH = STATE_DIR / "status.json"
 CONTROL_STORE = ControlStore(STATE_DIR)
+STATE_AUTHORITY_UNAVAILABLE_CODE = "STATE_AUTHORITY_UNAVAILABLE"
 
 
 class AudioCommand(BaseModel):
@@ -125,6 +127,22 @@ def set_audio(
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, str]:
+    node_state_dir = Path(os.getenv("NODE_STATE_DIR", str(STATE_DIR)))
+    try:
+        check_state_readiness(state_dir=STATE_DIR, node_state_dir=node_state_dir)
+    except StateReadinessError as exc:
+        # Keep public diagnostics deliberately coarse. Operators can inspect
+        # the mounted authority offline; clients must not receive paths, state,
+        # credentials, or parser/validation exception details.
+        raise HTTPException(
+            status_code=503,
+            detail={"code": STATE_AUTHORITY_UNAVAILABLE_CODE},
+        ) from exc
+    return {"status": "ready"}
 
 
 STATIC_DIR = Path(__file__).parent / "static"
