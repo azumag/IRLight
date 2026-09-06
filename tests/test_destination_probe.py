@@ -163,6 +163,45 @@ class DestinationProbeTest(unittest.TestCase):
                 ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
             )
 
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_rejects_authenticated_streamid_before_process_spawn(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "authenticated SRT streamid"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid="
+                "publish:live/input:dummy-user:AUDIT_DUMMY_SECRET",
+                ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
+            )
+        popen.assert_not_called()
+
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_rejects_double_encoded_authenticated_streamid(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "authenticated SRT streamid"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid="
+                "publish%253Alive%252Finput%253Adummy-user%253AAUDIT_DUMMY_SECRET",
+                ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
+            )
+        popen.assert_not_called()
+
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_rejects_structured_streamid_credentials(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "authenticated SRT streamid"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid="
+                "%23!%3A%3Ar=live%2Finput%2Cm=publish%2Cu=dummy-user%2Cpassword=AUDIT_DUMMY_SECRET",
+                ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
+            )
+        popen.assert_not_called()
+
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_rejects_duplicate_streamid_parameters(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "duplicate streamid"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid=publish:probe&STREAMID=publish:other",
+                ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
+            )
+        popen.assert_not_called()
+
     def test_srt_requires_caller_mode(self) -> None:
         with self.assertRaisesRegex(DestinationProbeError, "caller mode"):
             probe_destination(
