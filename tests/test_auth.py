@@ -113,6 +113,24 @@ class AuthStoreTest(unittest.TestCase):
         with self.assertRaises(AuthStateError):
             get_user(str(user["id"]))
 
+    def test_user_email_must_match_registration_writer_shape(self) -> None:
+        user = self._register()
+        original = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+
+        for bad_email in ("@example.com", "alice@"):
+            with self.subTest(bad_email=bad_email):
+                state = json.loads(json.dumps(original))
+                user_id = str(user["id"])
+                state["users"][user_id]["email"] = bad_email
+                state["email_index"] = {bad_email: user_id}
+                damaged = json.dumps(state, sort_keys=True)
+                USERS_PATH.write_text(damaged, encoding="utf-8")
+
+                with self.assertRaisesRegex(AuthStateError, "invalid email"):
+                    get_user(user_id)
+
+                self.assertEqual(USERS_PATH.read_text(encoding="utf-8"), damaged)
+
     def test_user_timestamp_rejects_bool_and_non_finite_value(self) -> None:
         user = self._register()
         original = json.loads(USERS_PATH.read_text(encoding="utf-8"))
