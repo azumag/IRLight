@@ -63,12 +63,14 @@ let applying = false;
 let statusAvailable = false;
 let controlUnavailable = false;
 let refreshPromise = null;
+let snapshotReceivedAtMs = null;
+let snapshotRequestAgeSeconds = Number.POSITIVE_INFINITY;
 
 function textForSession(value) {
   return ({LIVE:'通常映像', HOLDING:'待機中', STABILIZING:'復帰確認中', STARTING:'起動中'})[value] || value || '不明';
 }
 
-function audioState(control, runtime, serverTime) {
+function audioState(control, runtime, serverTime, snapshotAgeSeconds = 0) {
   const desired = control.audio_mode === 'MUTED' ? 'MUTED' : 'LIVE';
   const actual = runtime.actual_audio_mode || 'UNKNOWN';
   const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK';
@@ -80,8 +82,8 @@ function audioState(control, runtime, serverTime) {
     ? controlCommand === null && runtimeCommand === null
     : controlVersion !== null && controlVersion > 0 && typeof controlCommand === 'string' && controlCommand.length > 0 && controlCommand === runtimeCommand;
   const commandAcked = controlVersion === runtimeVersion && commandIdentityValid;
-  const runtimeAge = Number(serverTime) - Number(runtime.updated_at);
-  const runtimeStale = !Number.isFinite(runtimeAge) || runtimeAge < -1 || runtimeAge > RUNTIME_STALE_SECONDS;
+  const runtimeAge = Number(serverTime) + Number(snapshotAgeSeconds) - Number(runtime.updated_at);
+  const runtimeStale = !Number.isFinite(runtimeAge) || !Number.isFinite(snapshotAgeSeconds) || snapshotAgeSeconds < -1 || runtimeAge < -1 || runtimeAge > RUNTIME_STALE_SECONDS;
 
   if (runtimeStale || !actualKnown) {
     return {desired, actual, actualKnown, commandAcked, runtimeStale, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
@@ -137,7 +139,10 @@ function render(data) {
   }
   const c = data.control || {};
   const r = data.runtime || {};
-  const state = audioState(c, r, data.server_time);
+  const snapshotAgeSeconds = snapshotReceivedAtMs === null
+    ? Number.POSITIVE_INFINITY
+    : snapshotRequestAgeSeconds + (Date.now() - snapshotReceivedAtMs) / 1000;
+  const state = audioState(c, r, data.server_time, snapshotAgeSeconds);
   const runtimeTrusted = !state.runtimeStale;
   $('session').lastElementChild.textContent = runtimeTrusted ? textForSession(r.session_status) : '状態確認不能';
   $('sessionDot').className = 'dot ' + (runtimeTrusted && r.session_status === 'LIVE' ? 'live' : 'warn');
@@ -177,11 +182,17 @@ function markStatusUnavailable(message) {
 function refresh() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
+    const requestStartedAtMs = Date.now();
     try {
       const response = await fetch('/api/status', {cache:'no-store'});
       if (!response.ok) throw new Error(`status ${response.status}`);
+      const data = await response.json();
+      const receivedAtMs = Date.now();
+      const requestAgeSeconds = (receivedAtMs - requestStartedAtMs) / 1000;
+      snapshotReceivedAtMs = receivedAtMs;
+      snapshotRequestAgeSeconds = requestAgeSeconds >= 0 ? requestAgeSeconds : Number.POSITIVE_INFINITY;
       statusAvailable = true;
-      render(await response.json());
+      render(data);
       $('error').textContent = '';
     } catch (error) {
       markStatusUnavailable(`状態取得に失敗: ${error.message}`);
@@ -241,7 +252,10 @@ $('audioButton').addEventListener('click', async () => {
 });
 
 refresh();
-setInterval(refresh, 1000);
+setInterval(() => {
+  if (snapshot && statusAvailable) render(snapshot);
+  refresh();
+}, 1000);
 </script>
 </body>
 </html>

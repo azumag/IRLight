@@ -70,6 +70,19 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("async function refreshAfterCurrent()", INDEX)
         self.assertIn("if (refreshPromise) await refreshPromise", INDEX)
 
+    def test_cached_snapshot_ages_out_while_status_request_is_in_flight(self) -> None:
+        self.assertIn("let snapshotReceivedAtMs = null", INDEX)
+        self.assertIn("let snapshotRequestAgeSeconds = Number.POSITIVE_INFINITY", INDEX)
+        self.assertIn("const requestStartedAtMs = Date.now()", INDEX)
+        self.assertIn("const receivedAtMs = Date.now()", INDEX)
+        self.assertIn("snapshotReceivedAtMs = receivedAtMs", INDEX)
+        self.assertIn("snapshotRequestAgeSeconds = requestAgeSeconds >= 0", INDEX)
+        self.assertIn("snapshotRequestAgeSeconds + (Date.now() - snapshotReceivedAtMs) / 1000", INDEX)
+        self.assertIn("Number(serverTime) + Number(snapshotAgeSeconds)", INDEX)
+        self.assertIn("snapshotAgeSeconds < -1", INDEX)
+        self.assertIn("if (snapshot && statusAvailable) render(snapshot)", INDEX)
+        self.assertIn("setInterval(() => {", INDEX)
+
     def test_unknown_command_outcome_resyncs_before_controls_reopen(self) -> None:
         self.assertIn("const idempotencyKey = crypto.randomUUID()", INDEX)
         self.assertIn("statusAvailable = false;\n    if (snapshot) render(snapshot);\n    await refreshAfterCurrent()", INDEX)
