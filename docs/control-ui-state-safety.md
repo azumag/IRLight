@@ -4,6 +4,8 @@ The Phase 0 Control UI polls `/api/status` once per second and treats the respon
 
 If a status poll fails, the UI must not continue presenting values from the last successful response as though they were current. Session, video source, input presence, desired/actual audio state, control/runtime version, and last-update fields are replaced with `状態確認不能`; the audio action is disabled and shown with the neutral unavailable style. A later successful poll repopulates the fields from the newly fetched snapshot.
 
+Screen-reader announcements are intentionally separated from the one-second polling grid. The grid itself is not a live region because its timestamp and other fields change frequently and would otherwise create continuous announcement noise. A dedicated visually-hidden polite/atomic status region announces only semantic session/audio state changes and de-duplicates identical summaries. Repeated identical polling failures likewise do not rewrite the existing alert text, while a genuinely new error still uses the existing `role="alert"` path.
+
 A failed `PUT /api/audio` is also treated as an unknown outcome. The UI closes actions first, re-reads `/api/status`, and only re-enables control after a fresh authoritative snapshot satisfies the same freshness and command-acknowledgement checks. It does not retry the toggle with a new idempotency key.
 
 This remains a Phase 0 local-only surface. It does not replace the Session-authenticated control API or change the deployment/security boundary described in `AGENTS.md`.
