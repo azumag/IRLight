@@ -66,12 +66,13 @@ def _require_regular_marker(authority_path: Path) -> None:
 def _read_json_authority(path: Path) -> dict[str, Any]:
     fd = _open_regular_readonly(path)
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1  # ``handle`` owns the descriptor from this point forward.
+        with handle:
             try:
                 value = json.load(handle, parse_constant=_reject_json_constant)
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                 raise StateReadinessError("required state contains invalid JSON") from exc
-            fd = -1
     finally:
         if fd >= 0:
             os.close(fd)
