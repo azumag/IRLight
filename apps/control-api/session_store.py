@@ -15,6 +15,7 @@ new work; cleanup must finish before FINISHED.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -103,6 +104,58 @@ class OrphanCleanupInProgress(RuntimeError):
     """Raised when provider cleanup owns a Session ID tombstone."""
 
     pass
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value} is not allowed")
+
+
+def _require_nonempty_string(
+    record: dict[str, Any], field: str, *, context: str
+) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise SessionStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _require_finite_number(
+    record: dict[str, Any], field: str, *, context: str, optional: bool = False
+) -> float | None:
+    value = record.get(field)
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SessionStateError(f"{context} has invalid {field}")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise SessionStateError(f"{context} has invalid {field}") from None
+    if not math.isfinite(number):
+        raise SessionStateError(f"{context} has invalid {field}")
+    return number
+
+
+def _require_bool(
+    record: dict[str, Any], field: str, *, context: str, optional: bool = False
+) -> bool | None:
+    if field not in record and optional:
+        return None
+    value = record.get(field)
+    if not isinstance(value, bool):
+        raise SessionStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _require_nonnegative_int(
+    record: dict[str, Any], field: str, *, context: str, optional: bool = False
+) -> int | None:
+    if field not in record and optional:
+        return None
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SessionStateError(f"{context} has invalid {field}")
+    return value
 
 
 def new_session_id() -> str:
@@ -215,7 +268,10 @@ class SessionStore:
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(handle)
+                raw = json.load(
+                    handle,
+                    parse_constant=_reject_non_finite_json_constant,
+                )
         except FileNotFoundError:
             if was_initialized(self.path):
                 raise SessionStateError(
@@ -225,7 +281,7 @@ class SessionStore:
             self._orphan_cleanup_leases = {}
             self._authoritative = False
             return
-        except (json.JSONDecodeError, OSError) as exc:
+        except (ValueError, OSError) as exc:
             raise SessionStateError(
                 f"cannot read Session state {self.path}: {exc}"
             ) from exc
@@ -233,33 +289,169 @@ class SessionStore:
         if not isinstance(raw, dict) or not isinstance(raw.get("sessions"), dict):
             raise SessionStateError(f"invalid Session state payload in {self.path}")
         sessions = raw["sessions"]
-        if any(not isinstance(key, str) or not isinstance(value, dict) for key, value in sessions.items()):
-            raise SessionStateError(f"invalid Session record in {self.path}")
+        self._validate_sessions(sessions)
         leases = raw.get("orphan_cleanup_leases", {})
-        if not isinstance(leases, dict) or any(
-            not isinstance(key, str) or not isinstance(value, dict)
-            for key, value in leases.items()
-        ):
+        if not isinstance(leases, dict):
             raise SessionStateError(f"invalid cleanup lease state in {self.path}")
+        self._validate_cleanup_leases(leases)
         self._sessions = dict(sessions)
         self._orphan_cleanup_leases = dict(leases)
         mark_initialized(self.path)
         self._authoritative = True
 
+    @staticmethod
+    def _validate_sessions(sessions: dict[Any, Any]) -> None:
+        required_timestamps = ("created_at", "updated_at")
+        optional_timestamps = (
+            "relay_client_updated_at",
+            "node_registered_at",
+            "node_last_heartbeat_at",
+            "provisioning_started_at",
+            "ready_at",
+            "first_ingest_at",
+            "last_ingest_at",
+            "hold_deadline_at",
+            "recovery_candidate_since",
+            "absolute_deadline_at",
+        )
+        optional_booleans = (
+            "entitlement_reserved",
+            "provisioning_in_progress",
+            "provisioning_cancel_requested",
+            "relay_client_connected",
+        )
+
+        for session_id, record in sessions.items():
+            if (
+                not isinstance(session_id, str)
+                or not session_id
+                or not isinstance(record, dict)
+            ):
+                raise SessionStateError("invalid Session state record")
+
+            stored_id = _require_nonempty_string(
+                record, "session_id", context="Session state record"
+            )
+            _require_nonempty_string(record, "user_id", context="Session state record")
+            status = _require_nonempty_string(
+                record, "status", context="Session state record"
+            )
+            if stored_id != session_id:
+                raise SessionStateError(
+                    "Session state record session_id does not match its key"
+                )
+            if status not in SESSION_STATES:
+                raise SessionStateError("Session state record has unknown status")
+
+            _require_nonnegative_int(
+                record, "version", context="Session state record"
+            )
+            _require_bool(record, "cleanup_pending", context="Session state record")
+            for field in required_timestamps:
+                _require_finite_number(record, field, context="Session state record")
+            for field in optional_timestamps:
+                if field in record:
+                    _require_finite_number(
+                        record,
+                        field,
+                        context="Session state record",
+                        optional=True,
+                    )
+            for field in optional_booleans:
+                if field in record:
+                    _require_bool(
+                        record, field, context="Session state record", optional=True
+                    )
+            if "relay_client_reader_count" in record:
+                _require_nonnegative_int(
+                    record,
+                    "relay_client_reader_count",
+                    context="Session state record",
+                    optional=True,
+                )
+            if "next_event_seq" in record:
+                sequence = _require_nonnegative_int(
+                    record,
+                    "next_event_seq",
+                    context="Session state record",
+                    optional=True,
+                )
+                if sequence == 0:
+                    raise SessionStateError(
+                        "Session state record has invalid next_event_seq"
+                    )
+            if "events" in record and not isinstance(record.get("events"), list):
+                raise SessionStateError("Session state record has invalid events")
+
+    @staticmethod
+    def _validate_cleanup_leases(leases: dict[Any, Any]) -> None:
+        for session_id, lease in leases.items():
+            if (
+                not isinstance(session_id, str)
+                or not session_id
+                or not isinstance(lease, dict)
+            ):
+                raise SessionStateError("invalid cleanup lease state record")
+            _require_nonempty_string(lease, "lease_id", context="cleanup lease record")
+            scope = _require_nonempty_string(
+                lease, "scope", context="cleanup lease record"
+            )
+            if scope not in {"orphan", "session"}:
+                raise SessionStateError("cleanup lease record has unknown scope")
+            created_at = _require_finite_number(
+                lease, "created_at", context="cleanup lease record"
+            )
+            expires_at = _require_finite_number(
+                lease, "expires_at", context="cleanup lease record"
+            )
+            assert created_at is not None and expires_at is not None
+            if expires_at <= created_at:
+                raise SessionStateError("cleanup lease record has invalid expiry")
+
+            if scope == "orphan":
+                _require_nonempty_string(
+                    lease, "resource_id", context="cleanup lease record"
+                )
+                _require_nonempty_string(
+                    lease, "resource_kind", context="cleanup lease record"
+                )
+                continue
+
+            expected_states = lease.get("expected_states")
+            if (
+                not isinstance(expected_states, list)
+                or not expected_states
+                or any(
+                    not isinstance(state, str) or state not in SESSION_STATES
+                    for state in expected_states
+                )
+            ):
+                raise SessionStateError(
+                    "cleanup lease record has invalid expected_states"
+                )
+
     def _persist(self) -> None:
+        self._validate_sessions(self._sessions)
+        self._validate_cleanup_leases(self._orphan_cleanup_leases)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "sessions": self._sessions,
-                        "orphan_cleanup_leases": self._orphan_cleanup_leases,
-                    },
-                    handle,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
+                try:
+                    json.dump(
+                        {
+                            "sessions": self._sessions,
+                            "orphan_cleanup_leases": self._orphan_cleanup_leases,
+                        },
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise SessionStateError(
+                        "Session state cannot be serialized"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             # A missing sessions.json must never look like a pristine store
