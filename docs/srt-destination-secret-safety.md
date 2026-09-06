@@ -10,7 +10,9 @@ Routing-only stream IDs remain supported. For example:
 srt://stream.example.test:8890?streamid=publish:probe&latency=120
 ```
 
-The Destination URL query is deliberately narrow: `streamid`, `latency`, `mode`, and `conntimeo` are the only accepted query names. `mode` must still be `caller` when explicitly supplied, and the verifier replaces `mode` and `conntimeo` with its own controlled values before spawning the child process. Unknown or duplicate query names are rejected rather than forwarded to the SRT implementation.
+The Destination URL query is deliberately narrow: `streamid`, `latency`, `mode`, and `conntimeo` are the only accepted query names. `latency` and `conntimeo` must be decimal integers. `mode`, when supplied, must be `caller`; the verifier replaces `mode` and `conntimeo` with its own controlled values before spawning the child process. Unknown or duplicate query names are rejected rather than forwarded to the SRT implementation.
+
+`streamid` is also allowlisted rather than searched for a few known secret markers. The public compact form is `publish:<route>`, where `<route>` contains only ASCII letters/digits plus `.`, `_`, `-`, and `/`. The public structured form is limited to `#!::r=<route>,m=publish`. Extra structured fields are rejected. This keeps `publish:probe` and routing-only paths working without accepting an opaque string that could later acquire credential semantics.
 
 The verifier may pass accepted non-secret routing information to `srt-live-transmit` while pinning the resolved target IP and forcing caller mode.
 
@@ -21,10 +23,10 @@ The following forms are rejected before catalog persistence and before a verifie
 - URL userinfo (`user:password@host`)
 - SRT `passphrase` query parameters
 - IRLight/MediaMTX authenticated stream IDs such as `publish:<path>:<user>:<credential>`
-- structured SRT stream IDs containing credential fields such as `u`, `username`, `password`, `passphrase`, `secret`, or `token`
+- structured SRT stream IDs with fields outside the public `r` / `m` routing contract
 - encoded equivalents of the above, including repeated percent encoding
 - duplicate query parameters whose interpretation could differ between validation and the SRT implementation
-- query parameters outside the explicit public allowlist
+- query parameters or values outside the explicit public allowlist
 
 Validation errors never include the credential value.
 
