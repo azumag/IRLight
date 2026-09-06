@@ -30,12 +30,12 @@ publisher_pid=""
 auth_cookie_jar="$tmp_dir/auth-cookies.txt"
 publisher_log="$tmp_dir/publisher.log"
 auth_reject_body="$tmp_dir/auth-reject.json"
+srt_guard_body="$tmp_dir/srt-guard.json"
 ingest_username=""
 ingest_secret=""
 ingest_session_id=""
 ingest_provider_server_id=""
 ingest_csrf=""
-ingest_srt_destination_id=""
 current_stage="bootstrap"
 
 annotation_escape() {
@@ -293,7 +293,7 @@ control_mode() {
 }
 
 setup_control_plane_and_ingest() {
-  local email password login destination destination_id credential srt_url srt_payload auth_status prepared
+  local email password login destination destination_id credential auth_status prepared
   email="smoke-$(date +%s)-$RANDOM@example.invalid"
   password="SmokePassword123!"
   rm -f "$auth_cookie_jar"
@@ -341,24 +341,31 @@ setup_control_plane_and_ingest() {
     echo "invalid ingest credential was not rejected (HTTP $auth_status)" >&2
     return 1
   fi
-
-  srt_url="srt://mediamtx:8890?streamid=publish:live/input:${ingest_username}:${ingest_secret}"
-  srt_payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Local SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' "$srt_url")"
-  destination="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
-    -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $ingest_csrf" \
-    --data "$srt_payload")"
-  ingest_srt_destination_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$destination")"
 }
 
-verify_srt_destination() {
-  if [[ -z "$ingest_srt_destination_id" || -z "$ingest_csrf" ]]; then
-    echo "SRT destination verification context is not initialized" >&2
+assert_srt_destination_secret_guard() {
+  local dummy_secret payload status destinations
+  dummy_secret="AUDIT_DUMMY_SECRET"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"type":"srt","display_name":"Rejected authenticated SRT probe","server_url":sys.argv[1],"secret_ref":"smoke/srt"}))' \
+    "srt://mediamtx:8890?streamid=publish:live/input:dummy-user:${dummy_secret}")"
+  status="$(curl -sS -o "$srt_guard_body" -w '%{http_code}' --max-time 10 \
+    -b "$auth_cookie_jar" -X POST "$base_url/v1/destinations" \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: $ingest_csrf" \
+    --data "$payload")"
+  if [[ "$status" != "422" ]]; then
+    echo "credential-bearing SRT destination was not rejected (HTTP $status)" >&2
     return 1
   fi
-  curl -fsS --max-time 10 -b "$auth_cookie_jar" -X POST \
-    "$base_url/v1/destinations/$ingest_srt_destination_id/verify" \
-    -H "X-CSRF-Token: $ingest_csrf" >/dev/null
+  if grep -Fq "$dummy_secret" "$srt_guard_body"; then
+    echo "SRT destination validation response exposed credential material" >&2
+    return 1
+  fi
+  destinations="$(curl -fsS --max-time 10 -b "$auth_cookie_jar" "$base_url/v1/destinations")"
+  if grep -Fq "$dummy_secret" <<<"$destinations"; then
+    echo "rejected SRT credential was persisted in destination catalog" >&2
+    return 1
+  fi
 }
 
 wait_status() {
@@ -385,8 +392,8 @@ current_stage="node-auth-ready"
 wait_node_registered 45
 wait_ingest_auth_proxy_ready 30
 
-current_stage="authenticated-srt-verify"
-verify_srt_destination
+current_stage="srt-destination-secret-guard"
+assert_srt_destination_secret_guard
 
 current_stage="initial-holding"
 wait_status \
