@@ -58,7 +58,7 @@ class EgressDockerEntrypointTest(unittest.TestCase):
         dockerfile = (ROOT / "apps" / "egress-gateway" / "Dockerfile").read_text(
             encoding="utf-8"
         )
-        self.assertIn("egress_entrypoint.py rtmp_session.py", dockerfile)
+        self.assertIn("egress_entrypoint.py rtmp_session.py rtmp_sink.py", dockerfile)
         self.assertIn(
             'CMD ["python3", "-u", "/app/egress_entrypoint.py"]',
             dockerfile,

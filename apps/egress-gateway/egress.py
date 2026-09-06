@@ -24,6 +24,7 @@ from destination_guard import (
     validate_destination_runtime,
 )
 from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
+from rtmp_sink import RTMP2_SINK_FACTORY, parse_rtmp_sink_factory, sink_progress
 
 
 LOG = logging.getLogger("irlight.egress")
@@ -121,6 +122,7 @@ class EgressAttempt:
         *,
         connect_timeout_seconds: float,
         status_heartbeat_seconds: float,
+        sink_factory: str | None = None,
     ) -> None:
         self.input_uri = input_uri
         self.destination_url = destination_url
@@ -132,6 +134,9 @@ class EgressAttempt:
         )
         self.output_stall_timeout_seconds = max(
             0.0, env_float("EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS", 5.0)
+        )
+        self.sink_factory = parse_rtmp_sink_factory(
+            os.getenv("EGRESS_RTMP_SINK_FACTORY") if sink_factory is None else sink_factory
         )
         self.pipeline: Gst.Pipeline | None = None
         self.loop = GLib.MainLoop()
@@ -145,11 +150,13 @@ class EgressAttempt:
         self._track_attached: set[str] = set()
         self._track_block_probes: dict[str, tuple[Gst.Pad, int]] = {}
         self._poll_source_id: int | None = None
+        self._sink_buffer_probe: tuple[Gst.Pad, int] | None = None
+        self._observed_sink_buffers = 0
         self._attempt_started = time.monotonic()
         self._first_rendered_at: float | None = None
         self._last_progress_at = self._attempt_started
         self._last_reported_rendered = 0
-        self._last_observed_rendered = 0
+        self._last_progress_marker = (0, 0)
         self._last_rendered_at = self._attempt_started
         self.on_connected: Callable[[int], None] | None = None
         self.on_progress: Callable[[int], None] | None = None
@@ -165,7 +172,7 @@ class EgressAttempt:
         pipeline = Gst.Pipeline.new("irlight-egress")
         source = self._make("rtspsrc", "src")
         mux = self._make("flvmux", "mux")
-        sink = self._make("rtmpsink", "egress_sink")
+        sink = self._make(self.sink_factory, "egress_sink")
 
         source.set_property("location", self.input_uri)
         source.set_property("protocols", 4)  # GstRTSPLowerTrans.TCP
@@ -177,6 +184,17 @@ class EgressAttempt:
         sink.set_property("location", self.destination_url)
         sink.set_property("sync", False)
         sink.set_property("async", False)
+        if self.sink_factory == RTMP2_SINK_FACTORY:
+            # rtmp2sink validates RTMPS certificates by default. Do not weaken
+            # tls-validation-flags here; the migration smoke verifies the
+            # default rejects an untrusted certificate.
+            sink_pad = sink.get_static_pad("sink")
+            if sink_pad is None:
+                raise RuntimeError("failed to get RTMP2 sink pad")
+            probe_id = sink_pad.add_probe(
+                Gst.PadProbeType.BUFFER, self._on_sink_buffer
+            )
+            self._sink_buffer_probe = (sink_pad, probe_id)
 
         pipeline.add(source)
         pipeline.add(mux)
@@ -285,6 +303,20 @@ class EgressAttempt:
         if self._track_attached == {"video", "audio"}:
             self._clear_track_blocks()
 
+    def _on_sink_buffer(self, _pad: Gst.Pad, _info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
+        self._observed_sink_buffers += 1
+        return Gst.PadProbeReturn.OK
+
+    def _clear_sink_buffer_probe(self) -> None:
+        if self._sink_buffer_probe is None:
+            return
+        pad, probe_id = self._sink_buffer_probe
+        try:
+            pad.remove_probe(probe_id)
+        except Exception:
+            pass
+        self._sink_buffer_probe = None
+
     def _clear_track_blocks(self) -> None:
         for pad, probe_id in self._track_block_probes.values():
             try:
@@ -313,22 +345,39 @@ class EgressAttempt:
         sink = self.sink
         if sink is None:
             return True
+        stats_values: dict[str, object] = {}
         try:
             stats = sink.get_property("stats")
-            rendered = int(stats.get_value("rendered")) if stats is not None else 0
+            if stats is not None:
+                if self.sink_factory == RTMP2_SINK_FACTORY:
+                    for key in ("out-bytes-total", "out-bytes-acked"):
+                        try:
+                            stats_values[key] = stats.get_value(key)
+                        except (TypeError, ValueError, AttributeError):
+                            pass
+                else:
+                    stats_values["rendered"] = stats.get_value("rendered")
         except (TypeError, ValueError, AttributeError):
-            rendered = self.rendered_buffers
-        self.rendered_buffers = max(self.rendered_buffers, rendered)
+            pass
+        progress = sink_progress(
+            self.sink_factory,
+            stats_values,
+            observed_sink_buffers=self._observed_sink_buffers,
+        )
+        rendered = max(self.rendered_buffers, progress.rendered_buffers)
+        self.rendered_buffers = rendered
         now = time.monotonic()
-        if rendered > self._last_observed_rendered:
-            self._last_observed_rendered = rendered
+        progress_changed = progress.progress_marker != self._last_progress_marker
+        if progress_changed:
+            self._last_progress_marker = progress.progress_marker
             self._last_rendered_at = now
-        if rendered > 0 and not self.connected_once:
+        if progress.ready and not self.connected_once:
             if self._first_rendered_at is None:
                 self._first_rendered_at = now
-            # librtmp can report a handful of rendered buffers before the
-            # server rejects NetStream.Publish. Only promote to CONNECTED after
-            # writes remain healthy through a short stability window.
+            # Both sinks can make limited progress before a publish rejection.
+            # Only promote after a short stability window. For rtmp2sink,
+            # readiness requires both media at the sink pad and transport-byte
+            # progress; it never relies on a synthetic/rendered count alone.
             if now - self._first_rendered_at < self.connect_stability_seconds:
                 return True
             self.connected_once = True
@@ -338,7 +387,7 @@ class EgressAttempt:
                 self.on_connected(rendered)
         elif (
             self.connected_once
-            and rendered > self._last_reported_rendered
+            and progress_changed
             and self.status_heartbeat_seconds > 0
             and now - self._last_progress_at >= self.status_heartbeat_seconds
         ):
@@ -412,6 +461,7 @@ class EgressAttempt:
         state_result = self.pipeline.set_state(Gst.State.PLAYING)
         if state_result == Gst.StateChangeReturn.FAILURE:
             self._clear_track_blocks()
+            self._clear_sink_buffer_probe()
             self.pipeline.set_state(Gst.State.NULL)
             if self._poll_source_id is not None:
                 GLib.source_remove(self._poll_source_id)
@@ -429,6 +479,7 @@ class EgressAttempt:
                 self._poll_source_id = None
             bus.remove_signal_watch()
             self._clear_track_blocks()
+            self._clear_sink_buffer_probe()
             self.pipeline.set_state(Gst.State.NULL)
             for pad in self._requested_mux_pads:
                 if self.mux is not None:
@@ -509,6 +560,14 @@ class EgressGateway:
     def run(self) -> int:
         Gst.init(None)
         try:
+            sink_factory = parse_rtmp_sink_factory(os.getenv("EGRESS_RTMP_SINK_FACTORY"))
+        except ValueError:
+            LOG.error("unsupported RTMP sink factory configuration")
+            self._write_status(
+                "FAILED", connected=False, reason_code="LOCAL_PIPELINE_FAILED"
+            )
+            return 2
+        try:
             destination_url = read_destination_url(self.destination_file)
         except RuntimeError:
             LOG.error("egress destination secret file is unavailable or invalid")
@@ -516,6 +575,9 @@ class EgressGateway:
                 "FAILED", connected=False, reason_code="SECRET_UNAVAILABLE"
             )
             return 1
+        # Keep the validated value alive for diagnostics without ever writing
+        # the factory to state; it is non-secret but not part of the status API.
+        self.sink_factory = sink_factory
         self.destination_scheme, self.destination_host = safe_destination(
             destination_url
         )
@@ -548,6 +610,7 @@ class EgressGateway:
                     self.stop_event,
                     connect_timeout_seconds=self.connect_timeout_seconds,
                     status_heartbeat_seconds=self.status_heartbeat_seconds,
+                    sink_factory=self.sink_factory,
                 )
 
                 def connected(rendered: int) -> None:
