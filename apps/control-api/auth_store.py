@@ -233,8 +233,14 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
         )
         _require_nonempty_string(item, "role", context="user state record")
         _require_nonempty_string(item, "status", context="user state record")
-        _require_finite_number(item, "created_at", context="user state record")
-        _require_finite_number(item, "updated_at", context="user state record")
+        created_at = _require_finite_number(
+            item, "created_at", context="user state record"
+        )
+        updated_at = _require_finite_number(
+            item, "updated_at", context="user state record"
+        )
+        if updated_at < created_at:
+            raise AuthStateError("user state record has invalid updated_at")
         display_name = item.get("display_name")
         if display_name is not None and not isinstance(display_name, str):
             raise AuthStateError("user state record has invalid display_name")
