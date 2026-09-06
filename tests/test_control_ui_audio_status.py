@@ -42,6 +42,20 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("状態確認不能", INDEX)
         self.assertIn("状態を再取得しています", INDEX)
 
+    def test_stale_runtime_hides_runtime_derived_values(self) -> None:
+        self.assertIn("const runtimeTrusted = !state.runtimeStale", INDEX)
+        self.assertIn("runtimeTrusted ? textForSession(r.session_status) : '状態確認不能'", INDEX)
+        self.assertIn("runtimeTrusted ? (r.video_source === 'LIVE' ? '通常映像' : '待機画面') : '状態確認不能'", INDEX)
+        self.assertIn("runtimeTrusted && Number.isInteger(r.control_version) ? r.control_version : '状態確認不能'", INDEX)
+
+    def test_unavailable_status_hides_cached_runtime_and_control_values(self) -> None:
+        self.assertIn("function renderUnavailable()", INDEX)
+        self.assertIn("if (!statusAvailable) {\n    renderUnavailable();\n    return;", INDEX)
+        self.assertIn("['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']", INDEX)
+        self.assertIn("$('session').lastElementChild.textContent = unknown", INDEX)
+        self.assertIn("button.className = 'unknown'", INDEX)
+        self.assertIn("button.unknown", INDEX)
+
     def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
         self.assertIn(
             "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
