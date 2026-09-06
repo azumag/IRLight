@@ -194,10 +194,19 @@ class DestinationProbeTest(unittest.TestCase):
         popen.assert_not_called()
 
     @patch("destination_probe.subprocess.Popen")
-    def test_srt_rejects_duplicate_streamid_parameters(self, popen) -> None:
-        with self.assertRaisesRegex(DestinationProbeError, "duplicate streamid"):
+    def test_srt_rejects_duplicate_query_parameters(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "duplicate query parameters"):
             probe_destination(
                 "srt://127.0.0.1:8890?streamid=publish:probe&STREAMID=publish:other",
+                ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
+            )
+        popen.assert_not_called()
+
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_rejects_unknown_query_parameter(self, popen) -> None:
+        with self.assertRaisesRegex(DestinationProbeError, "unsupported query parameter"):
+            probe_destination(
+                "srt://127.0.0.1:8890?streamid=publish:probe&futuresecret=AUDIT_DUMMY_SECRET",
                 ProbeConfig(timeout_seconds=1.0, allow_private_targets=True),
             )
         popen.assert_not_called()
