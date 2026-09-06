@@ -27,6 +27,10 @@ from auth_store import AuthStateError  # noqa: E402
 
 class AuthSessionGcTest(unittest.TestCase):
     @staticmethod
+    def _token_hash(value: int) -> str:
+        return f"{value:064x}"
+
+    @staticmethod
     def _record(*, expires_at: float) -> dict[str, object]:
         return {
             "user_id": "user-a",
@@ -38,17 +42,17 @@ class AuthSessionGcTest(unittest.TestCase):
     def test_expiry_boundary_and_limit_are_deterministic(self) -> None:
         state = {
             "sessions": {
-                "later": self._record(expires_at=100.0),
-                "old-b": self._record(expires_at=10.0),
-                "old-a": self._record(expires_at=10.0),
-                "active": self._record(expires_at=101.0),
+                self._token_hash(4): self._record(expires_at=100.0),
+                self._token_hash(2): self._record(expires_at=10.0),
+                self._token_hash(1): self._record(expires_at=10.0),
+                self._token_hash(3): self._record(expires_at=101.0),
             }
         }
         selected, expired_count = _expired_token_hashes(
             state, now=100.0, max_deletions=2
         )
         self.assertEqual(expired_count, 3)
-        self.assertEqual(selected, ["old-a", "old-b"])
+        self.assertEqual(selected, [self._token_hash(1), self._token_hash(2)])
 
     def test_prune_deletes_only_expired_records_and_reports_remaining(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
@@ -57,9 +61,9 @@ class AuthSessionGcTest(unittest.TestCase):
                 json.dumps(
                     {
                         "sessions": {
-                            "expired-1": self._record(expires_at=10.0),
-                            "expired-2": self._record(expires_at=20.0),
-                            "active": self._record(expires_at=200.0),
+                            self._token_hash(1): self._record(expires_at=10.0),
+                            self._token_hash(2): self._record(expires_at=20.0),
+                            self._token_hash(3): self._record(expires_at=200.0),
                         }
                     }
                 ),
@@ -74,13 +78,15 @@ class AuthSessionGcTest(unittest.TestCase):
         self.assertEqual(result.scanned, 3)
         self.assertEqual(result.deleted, 1)
         self.assertEqual(result.expired_remaining, 1)
-        self.assertEqual(set(state["sessions"]), {"expired-2", "active"})
+        self.assertEqual(
+            set(state["sessions"]), {self._token_hash(2), self._token_hash(3)}
+        )
 
     def test_dry_run_does_not_rewrite_authority(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
             path = Path(tmp) / "auth_sessions.json"
             original = json.dumps(
-                {"sessions": {"expired": self._record(expires_at=10.0)}}
+                {"sessions": {self._token_hash(1): self._record(expires_at=10.0)}}
             )
             path.write_text(original, encoding="utf-8")
 
@@ -101,7 +107,7 @@ class AuthSessionGcTest(unittest.TestCase):
             path = Path(tmp) / "auth_sessions.json"
             path.write_text(
                 json.dumps(
-                    {"sessions": {"active": self._record(expires_at=200.0)}}
+                    {"sessions": {self._token_hash(1): self._record(expires_at=200.0)}}
                 ),
                 encoding="utf-8",
             )
@@ -121,7 +127,7 @@ class AuthSessionGcTest(unittest.TestCase):
             path = Path(tmp) / "auth_sessions.json"
             original = {
                 "sessions": {
-                    "bad": {
+                    self._token_hash(1): {
                         "user_id": "user-a",
                         "csrf_token": "csrf",
                         "created_at": 1.0,
@@ -139,6 +145,19 @@ class AuthSessionGcTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8")), original
             )
+
+    def test_invalid_token_hash_fails_closed_without_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
+            path = Path(tmp) / "auth_sessions.json"
+            original = {"sessions": {"not-a-digest": self._record(expires_at=10.0)}}
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            with patch("auth_session_gc.atomic_write_json") as writer:
+                with self.assertRaisesRegex(AuthStateError, "invalid token hash"):
+                    prune_expired_sessions(now=200.0, path=path)
+                writer.assert_not_called()
+
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
 
     def test_max_delete_and_now_must_be_bounded_and_finite(self) -> None:
         with self.assertRaises(ValueError):

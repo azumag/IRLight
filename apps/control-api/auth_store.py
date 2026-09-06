@@ -254,8 +254,12 @@ def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(sessions, dict):
         raise AuthStateError("authentication session state has invalid structure")
     for token_hash, item in sessions.items():
-        if not isinstance(token_hash, str) or not token_hash or not isinstance(item, dict):
+        if not isinstance(token_hash, str) or not isinstance(item, dict):
             raise AuthStateError("authentication session state has an invalid record")
+        if len(token_hash) != hashlib.sha256().digest_size * 2 or any(
+            char not in "0123456789abcdef" for char in token_hash
+        ):
+            raise AuthStateError("authentication session state has an invalid token hash")
         _require_nonempty_string(
             item, "user_id", context="authentication session record"
         )

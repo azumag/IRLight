@@ -204,11 +204,33 @@ class AuthStoreTest(unittest.TestCase):
             session = create_session(str(user["id"]), ttl_seconds=0)
             self.assertIsNone(get_session_user(session["token"]))
 
+    def test_auth_session_token_hash_must_match_writer_format(self) -> None:
+        user = self._register()
+        session = create_session(str(user["id"]))
+        state = json.loads(AUTH_SESSIONS_PATH.read_text(encoding="utf-8"))
+        token_hash, record = next(iter(state["sessions"].items()))
+        self.assertEqual(len(token_hash), 64)
+        self.assertTrue(all(char in "0123456789abcdef" for char in token_hash))
+
+        for bad_hash in (
+            "token-hash",
+            "0" * 63,
+            "0" * 65,
+            "G" + "0" * 63,
+            "A" + "0" * 63,
+        ):
+            with self.subTest(bad_hash=bad_hash):
+                AUTH_SESSIONS_PATH.write_text(
+                    json.dumps({"sessions": {bad_hash: record}}), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(AuthStateError, "invalid token hash"):
+                    get_session_user(session["token"])
+
     def test_auth_session_json_rejects_non_finite_constants(self) -> None:
         for constant in ("NaN", "Infinity", "-Infinity"):
             with self.subTest(constant=constant):
                 AUTH_SESSIONS_PATH.write_text(
-                    '{"sessions":{"token-hash":{"user_id":"user-a",'
+                    '{"sessions":{"0000000000000000000000000000000000000000000000000000000000000000":{"user_id":"user-a",'
                     '"csrf_token":"csrf","created_at":1.0,'
                     f'"expires_at":{constant}}}}}',
                     encoding="utf-8",
@@ -223,7 +245,7 @@ class AuthStoreTest(unittest.TestCase):
                     json.dumps(
                         {
                             "sessions": {
-                                "token-hash": {
+                                "0000000000000000000000000000000000000000000000000000000000000000": {
                                     "user_id": "user-a",
                                     "csrf_token": "csrf",
                                     "created_at": 1.0,
@@ -242,7 +264,7 @@ class AuthStoreTest(unittest.TestCase):
             json.dumps(
                 {
                     "sessions": {
-                        "token-hash": {
+                        "0000000000000000000000000000000000000000000000000000000000000000": {
                             "user_id": "user-a",
                             "created_at": 1.0,
                             "expires_at": 2.0,
