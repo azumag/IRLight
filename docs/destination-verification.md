@@ -26,6 +26,8 @@ IRLIGHT_VERIFY_ALLOW_PRIVATE_TARGETS=1
 
 URL の userinfo (`user:password@host`) と SRT の `passphrase` query は拒否する。secret は `server_url` に埋め込まず `secret_ref` 側で管理する。
 
+SRT verifier の stderr はログやレスポンスへ転送せず、4 KiB 以下の固定 chunk で読み取る。接続成功 marker の検出に必要な末尾だけを保持し、総読取量が 64 KiB を超えた時点で verification を fail-closed に終了する。改行なしの巨大な stderr や大量行でも `readline()` / 無制限 queue によるメモリ増加を許さない。
+
 ## タイムアウト
 
 既定の probe timeout は 5 秒。以下で 0.5〜30 秒の範囲に変更できる。
@@ -33,6 +35,12 @@ URL の userinfo (`user:password@host`) と SRT の `passphrase` query は拒否
 ```text
 IRLIGHT_VERIFY_TIMEOUT_SECONDS=5
 ```
+
+この値は RTMP/RTMPS の各 socket 操作ごとにリセットされる timeout ではなく、probe 開始時に作る単一の単調時計 deadline として扱う。DNS 解決から戻った時点で消費済み時間を差し引き、複数 A/AAAA 候補の connect、TLS handshake、RTMP send/recv は同じ残り予算を共有する。slow-drip peer が短い recv を繰り返しても deadline を延長しない。SRT も DNS 解決後の残り予算を `srt-live-transmit` の `conntimeo` と接続イベント待ちに引き継ぐ。
+
+ただし Python の同期 `socket.getaddrinfo()` 自体は呼び出し途中で安全にキャンセルできないため、**DNS resolver が返らないケースの hard wall-clock 上限はまだ未実装**。現在の deadline は resolver が戻った後に超過を検出して外向き接続を開始しないところまでを保証する。DNS を含む完全な総時間上限と probe admission control は Issue #91 の後続実装で扱う。
+
+SRT 子 process の終了回収には handshake deadline とは別に最大 1 秒単位の cleanup 猶予を使う。cleanup 猶予を handshake 成功判定の追加時間として利用しない。
 
 ## 状態更新
 
