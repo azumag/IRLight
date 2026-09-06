@@ -369,19 +369,51 @@ class SessionStore:
                     context="Session state record",
                     optional=True,
                 )
+            next_event_seq: int | None = None
             if "next_event_seq" in record:
-                sequence = _require_nonnegative_int(
+                next_event_seq = _require_nonnegative_int(
                     record,
                     "next_event_seq",
                     context="Session state record",
                     optional=True,
                 )
-                if sequence == 0:
+                if next_event_seq == 0:
                     raise SessionStateError(
                         "Session state record has invalid next_event_seq"
                     )
-            if "events" in record and not isinstance(record.get("events"), list):
+
+            events = record.get("events", [])
+            if not isinstance(events, list):
                 raise SessionStateError("Session state record has invalid events")
+            previous_event_sequence = 0
+            for event in events:
+                if not isinstance(event, dict):
+                    raise SessionStateError("Session state record has invalid event")
+                event_sequence = _require_nonnegative_int(
+                    event, "sequence", context="Session event"
+                )
+                if event_sequence == 0 or event_sequence <= previous_event_sequence:
+                    raise SessionStateError("Session event sequence is not strictly increasing")
+                previous_event_sequence = event_sequence
+
+                _require_nonempty_string(event, "type", context="Session event")
+                _require_nonempty_string(event, "origin", context="Session event")
+                _require_finite_number(event, "occurred_at", context="Session event")
+
+                reason_code = event.get("reason_code")
+                if reason_code is not None and not isinstance(reason_code, str):
+                    raise SessionStateError("Session event has invalid reason_code")
+                if not isinstance(event.get("payload"), dict):
+                    raise SessionStateError("Session event has invalid payload")
+
+            if (
+                next_event_seq is not None
+                and previous_event_sequence > 0
+                and next_event_seq <= previous_event_sequence
+            ):
+                raise SessionStateError(
+                    "Session state record next_event_seq does not advance retained events"
+                )
 
     @staticmethod
     def _validate_cleanup_leases(leases: dict[Any, Any]) -> None:
