@@ -7,31 +7,13 @@ also unsafe to persist or return from the catalog.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl, unquote_plus, urlsplit
 
 
 SENSITIVE_SRT_QUERY_KEYS = {"passphrase"}
 PUBLIC_SRT_QUERY_KEYS = {"conntimeo", "latency", "mode", "streamid"}
-SENSITIVE_STREAMID_NAMED_FIELDS = {
-    "p",
-    "pass",
-    "passwd",
-    "password",
-    "passphrase",
-    "pw",
-    "secret",
-    "token",
-    "u",
-    "user",
-    "username",
-}
-SENSITIVE_STREAMID_MARKERS = (
-    "password=",
-    "passwd=",
-    "passphrase=",
-    "secret=",
-    "token=",
-)
+ROUTING_VALUE_RE = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 
 
 class DestinationUrlSafetyError(ValueError):
@@ -39,13 +21,13 @@ class DestinationUrlSafetyError(ValueError):
 
 
 def validate_destination_url_secret_safety(url: str) -> None:
-    """Reject credential-bearing or ambiguous URL forms without echoing values.
+    """Accept only explicitly public Destination URL forms.
 
     Ordinary routing-only SRT stream IDs such as ``publish:probe`` remain
-    supported. IRLight's authenticated four-part publish stream ID and named
-    credential fields are rejected until a non-argv secret delivery path is
-    implemented. SRT query options are allowlisted so an unknown option cannot
-    become a second, unvalidated credential channel.
+    supported. Authentication-bearing and ambiguous forms are rejected until a
+    non-argv secret delivery path exists. SRT query names and values are both
+    allowlisted so an unknown option cannot become an unvalidated credential
+    channel through parser differences or percent encoding.
     """
 
     try:
@@ -64,6 +46,7 @@ def validate_destination_url_secret_safety(url: str) -> None:
     seen_keys: set[str] = set()
     for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
         key = _decode_repeated(raw_key).strip().casefold()
+        value = _decode_repeated(raw_value).strip()
         if key in seen_keys:
             raise DestinationUrlSafetyError(
                 "SRT destination must not contain duplicate query parameters"
@@ -78,8 +61,7 @@ def validate_destination_url_secret_safety(url: str) -> None:
             raise DestinationUrlSafetyError(
                 "SRT destination contains an unsupported query parameter"
             )
-        if key == "streamid":
-            _validate_streamid(raw_value)
+        _validate_public_query_value(key, value)
 
 
 def _decode_repeated(value: str) -> str:
@@ -92,30 +74,57 @@ def _decode_repeated(value: str) -> str:
     raise DestinationUrlSafetyError("SRT destination query is over-encoded")
 
 
+def _validate_public_query_value(key: str, value: str) -> None:
+    if key == "streamid":
+        _validate_streamid(value)
+        return
+    if key == "mode":
+        if value.casefold() != "caller":
+            raise DestinationUrlSafetyError(
+                "SRT destination verification requires caller mode"
+            )
+        return
+    if key in {"latency", "conntimeo"}:
+        if not value or not value.isascii() or not value.isdecimal():
+            raise DestinationUrlSafetyError(
+                f"SRT destination {key} must be a decimal integer"
+            )
+        return
+    raise DestinationUrlSafetyError("SRT destination contains an unsupported query parameter")
+
+
 def _validate_streamid(value: str) -> None:
-    decoded = _decode_repeated(value).strip()
-    lowered = decoded.casefold()
+    if value.startswith("#!::"):
+        _validate_structured_streamid(value)
+        return
 
-    # IRLight/MediaMTX authenticated ingest stream IDs are currently emitted as
-    # publish:<path>:<username>:<credential>. Passing that form to
-    # srt-live-transmit would expose the credential in the child argv.
-    if lowered.startswith("publish:") and decoded.count(":") >= 3:
+    prefix, separator, route = value.partition(":")
+    if (
+        separator != ":"
+        or prefix.casefold() != "publish"
+        or not ROUTING_VALUE_RE.fullmatch(route)
+    ):
         raise DestinationUrlSafetyError(
-            "authenticated SRT streamid must not be embedded in server_url"
+            "authenticated or unsupported SRT streamid must not be embedded in server_url"
         )
 
-    if any(marker in lowered for marker in SENSITIVE_STREAMID_MARKERS):
-        raise DestinationUrlSafetyError(
-            "authenticated SRT streamid must not be embedded in server_url"
-        )
 
-    # SRT's structured streamid form (#!::k=v,...) can carry user/auth fields.
-    # Treat those fields as credential-bearing rather than guessing whether a
-    # particular value is harmless.
-    if lowered.startswith("#!::"):
-        for field in decoded[4:].split(","):
-            key = field.split("=", 1)[0].strip().casefold()
-            if key in SENSITIVE_STREAMID_NAMED_FIELDS:
-                raise DestinationUrlSafetyError(
-                    "authenticated SRT streamid must not be embedded in server_url"
-                )
+def _validate_structured_streamid(value: str) -> None:
+    fields: dict[str, str] = {}
+    for field in value[4:].split(","):
+        key, separator, field_value = field.partition("=")
+        key = key.strip().casefold()
+        field_value = field_value.strip()
+        if separator != "=" or not key or key in fields:
+            raise DestinationUrlSafetyError("SRT streamid has invalid public routing syntax")
+        if key not in {"m", "r"}:
+            raise DestinationUrlSafetyError(
+                "authenticated or unsupported SRT streamid must not be embedded in server_url"
+            )
+        fields[key] = field_value
+
+    if fields.get("m", "").casefold() != "publish":
+        raise DestinationUrlSafetyError("SRT streamid has invalid public routing syntax")
+    route = fields.get("r", "")
+    if not ROUTING_VALUE_RE.fullmatch(route):
+        raise DestinationUrlSafetyError("SRT streamid has invalid public routing syntax")
