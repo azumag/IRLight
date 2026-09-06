@@ -59,6 +59,7 @@ const $ = (id) => document.getElementById(id);
 const RUNTIME_STALE_SECONDS = 3;
 let snapshot = null;
 let applying = false;
+let statusAvailable = false;
 let refreshPromise = null;
 
 function textForSession(value) {
@@ -107,7 +108,10 @@ function render(data) {
   snapshot = data;
   const c = data.control || {};
   const r = data.runtime || {};
-  const state = audioState(c, r, data.server_time);
+  const observedState = audioState(c, r, data.server_time);
+  const state = statusAvailable
+    ? observedState
+    : {...observedState, runtimeStale:true, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
   $('session').lastElementChild.textContent = textForSession(r.session_status);
   $('sessionDot').className = 'dot ' + (r.session_status === 'LIVE' ? 'live' : 'warn');
   $('video').textContent = r.video_source === 'LIVE' ? '通常映像' : '待機画面';
@@ -122,18 +126,21 @@ function render(data) {
   const runtimeVersion = Number.isInteger(r.control_version) ? r.control_version : '—';
   $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
-  button.disabled = applying || state.runtimeStale || !state.commandAcked;
+  button.disabled = applying || !statusAvailable || state.runtimeStale || !state.commandAcked;
   button.className = state.desired === 'MUTED' ? 'muted' : 'live';
   button.textContent = applying
     ? '指示を送信中…'
-    : (state.runtimeStale
-      ? '実状態を確認できません'
-      : (!state.commandAcked
-        ? '最新の指示を反映中…'
-        : (state.desired === 'MUTED' ? '配信音声をオンに戻す' : '配信音声をミュートする')));
+    : (!statusAvailable
+      ? '状態を再取得しています'
+      : (state.runtimeStale
+        ? '実状態を確認できません'
+        : (!state.commandAcked
+          ? '最新の指示を反映中…'
+          : (state.desired === 'MUTED' ? '配信音声をオンに戻す' : '配信音声をミュートする'))));
 }
 
 function markStatusUnavailable(message) {
+  statusAvailable = false;
   $('audio').lastElementChild.textContent = '状態確認不能';
   $('audioDot').className = 'dot warn';
   $('actual').textContent = '状態確認不能';
@@ -148,6 +155,7 @@ function refresh() {
     try {
       const response = await fetch('/api/status', {cache:'no-store'});
       if (!response.ok) throw new Error(`status ${response.status}`);
+      statusAvailable = true;
       render(await response.json());
       $('error').textContent = '';
     } catch (error) {
