@@ -371,9 +371,12 @@ STOPPING / FINISHEDへ何度送っても安全にする。
 ```http
 GET /v1/sessions/{sessionId}
 GET /v1/sessions/{sessionId}/events
+GET /v1/sessions/{sessionId}/events?after_sequence=123&limit=100
 ```
 
-UIはSSEまたはpollingで状態を更新し、最後に受け取ったsequenceより古いeventで画面を巻き戻さない。
+UIはSSEまたはpollingで状態を更新し、最後に受け取ったsequenceより古いeventで画面を巻き戻さない。`events` は既存互換のため query 省略時に現在保持しているeventをすべて返す。cursor取得では `after_sequence` より大きいsequenceだけを最大 `limit` 件返し、`next_after_sequence` と `has_more` で継続取得する。
+
+Session eventは有界ringなので、古いcursorがすでに保持範囲から脱落している場合は `retention_gap=true` と `earliest_sequence` を返す。UIや集計処理はgapを通常の空pageとみなさず、必要ならSession snapshotを再取得して再同期する。`latest_sequence` は取得時点で保持されている末尾sequenceを示す。
 
 ### Credential rotation
 

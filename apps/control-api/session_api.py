@@ -20,7 +20,7 @@ from destination_secret_store import (
 from egress_destination import EgressDestinationError, build_egress_url
 from entitlement_store import EntitlementStateError, default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
-from session_store import EntitlementExceeded, SessionStateError
+from session_store import SESSION_EVENT_LIMIT, EntitlementExceeded, SessionStateError
 from session_workflow import ProvisioningWorkflow
 
 
@@ -265,11 +265,60 @@ def add_session_event(
         raise _session_state_unavailable(exc) from exc
 
 
-@router.get("/{session_id}/events")
-def list_session_events(session_id: str, current_user: CurrentUser) -> dict[str, Any]:
-    session = _owned_session(session_id, str(current_user["id"]))
+def _event_page(
+    session: dict[str, Any],
+    *,
+    after_sequence: int | None,
+    limit: int,
+) -> dict[str, Any]:
+    if after_sequence is not None and after_sequence < 0:
+        raise HTTPException(status_code=400, detail="after_sequence must be non-negative")
+    if limit < 1 or limit > SESSION_EVENT_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be between 1 and {SESSION_EVENT_LIMIT}",
+        )
+
     events = list(session.get("events", []))
-    return {"session_id": session_id, "events": events}
+    earliest_sequence = int(events[0]["sequence"]) if events else None
+    latest_sequence = int(events[-1]["sequence"]) if events else None
+    retention_gap = bool(
+        after_sequence is not None
+        and earliest_sequence is not None
+        and after_sequence < earliest_sequence - 1
+    )
+
+    if after_sequence is None:
+        remaining = events
+    else:
+        remaining = [
+            event for event in events if int(event["sequence"]) > after_sequence
+        ]
+    page = remaining[:limit]
+
+    return {
+        "events": page,
+        "earliest_sequence": earliest_sequence,
+        "latest_sequence": latest_sequence,
+        "next_after_sequence": (
+            int(page[-1]["sequence"]) if page else after_sequence
+        ),
+        "has_more": len(remaining) > len(page),
+        "retention_gap": retention_gap,
+    }
+
+
+@router.get("/{session_id}/events")
+def list_session_events(
+    session_id: str,
+    current_user: CurrentUser,
+    after_sequence: int | None = None,
+    limit: int = SESSION_EVENT_LIMIT,
+) -> dict[str, Any]:
+    session = _owned_session(session_id, str(current_user["id"]))
+    return {"session_id": session_id, **_event_page(
+        session, after_sequence=after_sequence, limit=limit
+    )}
 
 
 @router.get("")
