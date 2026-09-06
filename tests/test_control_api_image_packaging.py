@@ -11,6 +11,7 @@ CONTROL_API_DIR = ROOT / "apps" / "control-api"
 DOCKERFILE = CONTROL_API_DIR / "Dockerfile"
 RUNTIME_ENTRYPOINTS = (
     "app.py",
+    "auth_session_gc.py",
     "reaper_cli.py",
     "state_inspect_cli.py",
 )
