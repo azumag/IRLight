@@ -15,9 +15,9 @@ class AuthStateNumericValidationTest(unittest.TestCase):
     def test_huge_integer_timestamp_fails_with_controlled_state_error(self) -> None:
         state = {
             "sessions": {
-                "token-hash": {
+                "0" * 64: {
                     "user_id": "user-a",
-                    "csrf_token": "csrf",
+                    "csrf_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                     "created_at": 1.0,
                     "expires_at": 10**10_000,
                 }
