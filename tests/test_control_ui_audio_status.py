@@ -18,8 +18,13 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("SILENT_FALLBACK: '入力音声なし'", INDEX)
 
     def test_latest_control_command_must_be_acknowledged_before_next_action(self) -> None:
+        self.assertIn("const commandIdentityValid = controlVersion === 0", INDEX)
         self.assertIn(
-            "controlVersion === runtimeVersion && controlCommand === runtimeCommand",
+            "controlVersion !== null && controlVersion > 0 && typeof controlCommand === 'string' && controlCommand.length > 0 && controlCommand === runtimeCommand",
+            INDEX,
+        )
+        self.assertIn(
+            "const commandAcked = controlVersion === runtimeVersion && commandIdentityValid",
             INDEX,
         )
         self.assertIn(
