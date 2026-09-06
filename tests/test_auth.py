@@ -124,6 +124,33 @@ class AuthStoreTest(unittest.TestCase):
                 with self.assertRaises(AuthStateError):
                     get_user(str(user["id"]))
 
+    def test_user_updated_at_cannot_precede_created_at(self) -> None:
+        user = self._register()
+        state = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        record = state["users"][str(user["id"])]
+        record["created_at"] = 200.0
+        record["updated_at"] = 100.0
+        damaged = json.dumps(state, sort_keys=True)
+        USERS_PATH.write_text(damaged, encoding="utf-8")
+
+        with self.assertRaisesRegex(AuthStateError, "invalid updated_at"):
+            get_user(str(user["id"]))
+
+        self.assertEqual(USERS_PATH.read_text(encoding="utf-8"), damaged)
+
+    def test_user_equal_created_and_updated_at_remains_valid(self) -> None:
+        user = self._register()
+        state = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        record = state["users"][str(user["id"])]
+        record["created_at"] = 123.0
+        record["updated_at"] = 123.0
+        USERS_PATH.write_text(json.dumps(state), encoding="utf-8")
+
+        resolved = get_user(str(user["id"]))
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["created_at"], 123.0)
+        self.assertEqual(resolved["updated_at"], 123.0)
+
     def test_register_rejects_invalid_email(self) -> None:
         with self.assertRaises(AuthError):
             self._register(email="not-an-email")
