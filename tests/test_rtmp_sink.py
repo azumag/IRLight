@@ -51,6 +51,15 @@ class RtmpSinkSelectionTest(unittest.TestCase):
         )
 
 
+class RtmpSinkComposeTest(unittest.TestCase):
+    def test_production_compose_exposes_opt_in_with_legacy_default(self) -> None:
+        compose = (ROOT / "docker-compose.node.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "EGRESS_RTMP_SINK_FACTORY: ${EGRESS_RTMP_SINK_FACTORY:-rtmpsink}",
+            compose,
+        )
+
+
 class RtmpSinkProgressTest(unittest.TestCase):
     def test_legacy_progress_preserves_rendered_semantics(self) -> None:
         progress = sink_progress("rtmpsink", {"rendered": 12})
