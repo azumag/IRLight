@@ -132,10 +132,25 @@ def _resolve(
     return safe
 
 
-def _recv_exact(stream: socket.socket, size: int) -> bytes:
+def _remaining_budget(deadline: float, timeout_message: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise DestinationProbeError(timeout_message)
+    return remaining
+
+
+def _recv_exact(
+    stream: socket.socket,
+    size: int,
+    *,
+    deadline: float,
+) -> bytes:
     chunks: list[bytes] = []
     remaining = size
     while remaining:
+        stream.settimeout(
+            _remaining_budget(deadline, "RTMP destination probe timed out")
+        )
         chunk = stream.recv(remaining)
         if not chunk:
             raise DestinationProbeError("RTMP peer closed during handshake")
@@ -151,27 +166,33 @@ def _probe_rtmp(
     use_tls: bool,
     config: ProbeConfig,
 ) -> dict[str, Any]:
+    started = time.monotonic()
+    deadline = started + config.timeout_seconds
     addresses = _resolve(
         host,
         port,
         socktype=socket.SOCK_STREAM,
         allow_private_targets=config.allow_private_targets,
     )
+    _remaining_budget(deadline, "RTMP destination probe timed out")
     last_error: Exception | None = None
-    started = time.monotonic()
 
     for family, socktype, proto, _canonname, sockaddr in addresses:
         raw: socket.socket | None = None
         stream: socket.socket | None = None
         try:
             raw = socket.socket(family, socktype, proto)
-            raw.settimeout(config.timeout_seconds)
+            raw.settimeout(
+                _remaining_budget(deadline, "RTMP destination probe timed out")
+            )
             raw.connect(sockaddr)
             stream = raw
             if use_tls:
                 context = ssl.create_default_context()
+                raw.settimeout(
+                    _remaining_budget(deadline, "RTMP destination probe timed out")
+                )
                 stream = context.wrap_socket(raw, server_hostname=host)
-                stream.settimeout(config.timeout_seconds)
 
             timestamp = int(time.time()) & 0xFFFFFFFF
             c1 = (
@@ -179,11 +200,21 @@ def _probe_rtmp(
                 + b"\x00\x00\x00\x00"
                 + secrets.token_bytes(RTMP_HANDSHAKE_BYTES - 8)
             )
+            stream.settimeout(
+                _remaining_budget(deadline, "RTMP destination probe timed out")
+            )
             stream.sendall(bytes([RTMP_VERSION]) + c1)
-            response = _recv_exact(stream, 1 + RTMP_HANDSHAKE_BYTES * 2)
+            response = _recv_exact(
+                stream,
+                1 + RTMP_HANDSHAKE_BYTES * 2,
+                deadline=deadline,
+            )
             if response[0] != RTMP_VERSION:
                 raise DestinationProbeError("peer did not complete an RTMP v3 handshake")
             # C2 echoes S1. We do not send RTMP commands or publish media.
+            stream.settimeout(
+                _remaining_budget(deadline, "RTMP destination probe timed out")
+            )
             stream.sendall(response[1 : 1 + RTMP_HANDSHAKE_BYTES])
             elapsed_ms = round((time.monotonic() - started) * 1000, 1)
             return {
@@ -194,6 +225,8 @@ def _probe_rtmp(
             }
         except (OSError, ssl.SSLError, DestinationProbeError) as exc:
             last_error = exc
+            if time.monotonic() >= deadline:
+                raise DestinationProbeError("RTMP destination probe timed out") from exc
         finally:
             if stream is not None:
                 try:
@@ -228,12 +261,15 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     if mode is not None and mode != "caller":
         raise DestinationProbeError("SRT destination verification requires caller mode")
 
+    started = time.monotonic()
+    deadline = started + config.timeout_seconds
     addresses = _resolve(
         parsed.hostname,
         port,
         socktype=socket.SOCK_DGRAM,
         allow_private_targets=config.allow_private_targets,
     )
+    remaining = _remaining_budget(deadline, "SRT destination handshake timed out")
     # Resolve once, validate all answers, then hand the CLI a literal IP so a
     # second DNS lookup cannot redirect the probe to an internal address.
     sockaddr = addresses[0][4]
@@ -254,7 +290,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     raw_tokens.extend(
         [
             "mode=caller",
-            f"conntimeo={int(config.timeout_seconds * 1000)}",
+            f"conntimeo={max(1, int(remaining * 1000))}",
         ]
     )
     safe_uri = urlunsplit(
@@ -272,7 +308,6 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     # stdin open and wait for the application's explicit SRTS_CONNECTED event.
     # This lets verify stop immediately after the transport handshake without
     # having to publish media or depend on the destination's application path.
-    started = time.monotonic()
     connected_at: float | None = None
     process: subprocess.Popen[bytes] | None = None
     reader: threading.Thread | None = None
@@ -298,12 +333,12 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
             daemon=True,
         )
         reader.start()
-        deadline = started + config.timeout_seconds + 1.0
 
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise DestinationProbeError("SRT destination handshake timed out")
+            remaining = _remaining_budget(
+                deadline,
+                "SRT destination handshake timed out",
+            )
             try:
                 line = messages.get(timeout=remaining)
             except queue.Empty as exc:
@@ -313,6 +348,8 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
                 raise DestinationProbeError("destination did not complete the SRT handshake")
             if any(marker in line for marker in SRT_CONNECTED_MARKERS):
                 connected_at = time.monotonic()
+                if connected_at > deadline:
+                    raise DestinationProbeError("SRT destination handshake timed out")
                 break
     except FileNotFoundError as exc:
         raise DestinationProbeError("SRT verifier is unavailable") from exc
