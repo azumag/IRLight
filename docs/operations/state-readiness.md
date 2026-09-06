@@ -47,6 +47,26 @@ Keep the container/process liveness probe on `/healthz`. Use `/readyz` for traff
 
 A 503 means an operator should inspect the mounted state and initialization markers from a controlled maintenance context. Preserve the affected files before recovery. Writers, including a separate reaper, should be quiesced before restoring authority.
 
+## Administrative inspection
+
+The Control Plane image also includes a read-only inspection command for a controlled maintenance shell:
+
+```bash
+python /app/state_inspect_cli.py
+```
+
+It uses `STATE_DIR` and `NODE_STATE_DIR` by default. Explicit directories can be supplied with `--state-dir` and `--node-state-dir` when inspecting a mounted copy. The command prints one JSON object and exits `0` only when every startup authority is readable and valid; otherwise it exits `2`.
+
+The output contains only stable authority labels (`control`, `catalog`, `users`, `auth_sessions`, `nodes`, `legacy_bootstrap_tokens`), `OK` / `UNAVAILABLE`, and normalized reasons such as invalid JSON or failed validation. It never prints state paths, raw records, credentials, parser exception details, or validator exception details. The command uses the same non-mutating file reader as `/readyz`, so it does not create a missing lock, marker, directory, or authority file.
+
+Example shape:
+
+```json
+{"checks":[{"authority":"control","reason":null,"status":"OK"},{"authority":"catalog","reason":"required state contains invalid JSON","status":"UNAVAILABLE"}],"status":"UNAVAILABLE"}
+```
+
+Use this only to identify which local authority requires investigation. It deliberately has no repair, restore, marker deletion, provider cleanup, or credential-reset option.
+
 ## Recovery boundary
 
-This endpoint is detection, not automatic repair. Issue #90 also tracks the broader recovery procedure: backup generation/fencing, provider inventory reconciliation, credential re-issuance after restoring older state, and a read-only administrative inspection command. Those steps can change security or provider ownership semantics and must not be guessed by the readiness handler.
+Readiness and `state_inspect_cli.py` are detection, not automatic repair. Issue #90 also tracks the broader recovery procedure: backup generation/fencing, provider inventory reconciliation, credential re-issuance after restoring older state, and explicit restore/reconcile operations. Those steps can change security or provider ownership semantics and must not be guessed by the readiness handler or inspection command.
