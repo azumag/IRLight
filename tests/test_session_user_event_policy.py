@@ -13,12 +13,26 @@ from session_event_policy import (  # noqa: E402
     USER_EVENT_MAX_DEPTH,
     USER_EVENT_MAX_ELEMENTS,
     USER_EVENT_MAX_PAYLOAD_BYTES,
+    USER_EVENT_RESERVED_TYPE_PREFIXES,
     UserEventPayloadError,
+    UserEventTypeError,
     validate_user_event_payload,
+    validate_user_event_type,
 )
 
 
 class SessionUserEventPolicyTest(unittest.TestCase):
+    def test_internal_event_namespaces_are_reserved_case_insensitively(self) -> None:
+        for prefix in USER_EVENT_RESERVED_TYPE_PREFIXES:
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(UserEventTypeError):
+                    validate_user_event_type(f"  {prefix.upper()}sample  ")
+
+    def test_custom_user_event_namespace_remains_allowed(self) -> None:
+        for event_type in ("user.note", "annotation.marker", "custom"):
+            with self.subTest(event_type=event_type):
+                validate_user_event_type(event_type)
+
     def test_payload_at_byte_budget_is_allowed(self) -> None:
         overhead = len('{"note":""}'.encode("utf-8"))
         payload = {"note": "x" * (USER_EVENT_MAX_PAYLOAD_BYTES - overhead)}

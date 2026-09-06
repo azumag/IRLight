@@ -28,6 +28,13 @@ request envelope remain compatible while whitespace/duplicate-key inflation is
 bounded. A reverse proxy may impose an equal or stricter global body limit as a
 defense-in-depth measure.
 
+User-authored event types also cannot use the trusted internal namespaces
+`session.*`, `ingest.*`, `egress.*`, `relay.*`, or `media_control.*`. The check
+is case-insensitive and ignores surrounding whitespace, so a cosmetic spelling
+variant cannot impersonate a trusted lifecycle/media fact for a downstream
+consumer that normalizes event names. Rejection is HTTP 422 with fixed code
+`USER_EVENT_TYPE_RESERVED`. Other custom user event names remain accepted for
+compatibility; this change does not yet narrow the endpoint to only `user.note`.
+
 User events and internal audit events still share the retained event ring today;
-separating their retention and reserving the internal event namespace remain
-follow-up work under Issue #93.
+separating their retention remains follow-up work under Issue #93.

@@ -20,7 +20,13 @@ from destination_secret_store import (
 from egress_destination import EgressDestinationError, build_egress_url
 from entitlement_store import EntitlementStateError, default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
-from session_event_policy import UserEventPayloadError, validate_user_event_payload
+from session_event_policy import (
+    USER_EVENT_TYPE_RESERVED_CODE,
+    UserEventPayloadError,
+    UserEventTypeError,
+    validate_user_event_payload,
+    validate_user_event_type,
+)
 from session_store import SESSION_EVENT_LIMIT, EntitlementExceeded, SessionStateError
 from session_workflow import ProvisioningWorkflow
 
@@ -252,6 +258,13 @@ def add_session_event(
     _csrf: Csrf = None,
 ) -> dict[str, Any]:
     _owned_session(session_id, str(current_user["id"]))
+    try:
+        validate_user_event_type(request.type)
+    except UserEventTypeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": USER_EVENT_TYPE_RESERVED_CODE},
+        ) from exc
     try:
         validate_user_event_payload(request.payload)
     except UserEventPayloadError as exc:
