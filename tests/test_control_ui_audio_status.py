@@ -23,10 +23,11 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
             INDEX,
         )
         self.assertIn(
-            "button.disabled = applying || !statusAvailable || state.runtimeStale || !state.commandAcked",
+            "button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.commandAcked",
             INDEX,
         )
         self.assertIn("最新の指示を反映中…", INDEX)
+        self.assertIn("ミュート適用待ち（ACK未確認）", INDEX)
         self.assertIn("指定 ${controlVersion} / 反映 ${runtimeVersion}", INDEX)
 
     def test_stale_or_unavailable_runtime_fails_closed_in_ui(self) -> None:
@@ -40,6 +41,13 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("if (refreshPromise) return refreshPromise", INDEX)
         self.assertIn("async function refreshAfterCurrent()", INDEX)
         self.assertIn("if (refreshPromise) await refreshPromise", INDEX)
+
+    def test_unknown_command_outcome_resyncs_before_controls_reopen(self) -> None:
+        self.assertIn("const idempotencyKey = crypto.randomUUID()", INDEX)
+        self.assertIn("statusAvailable = false;\n    if (snapshot) render(snapshot);\n    await refreshAfterCurrent()", INDEX)
+        self.assertIn("操作結果を確認できないため操作を停止しています", INDEX)
+        self.assertIn("controlUnavailable = true", INDEX)
+        self.assertIn("音声制御APIは利用できません", INDEX)
 
 
 if __name__ == "__main__":
