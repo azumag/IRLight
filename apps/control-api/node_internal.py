@@ -169,7 +169,7 @@ def node_state_lock(*, exclusive: bool):
 
 
 class StrictRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 BoundedReason = Annotated[str, Field(min_length=1, max_length=100)]
@@ -271,7 +271,16 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            try:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise NodeStateError("cannot encode Node state") from exc
             handle.flush()
             os.fsync(handle.fileno())
         # nodes.json and the rollback token ledger are both authority. Arm the
@@ -293,14 +302,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = json.load(handle, parse_constant=_reject_json_constant)
     except FileNotFoundError:
         return default
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
         raise NodeStateError(f"cannot read Node state {path}") from exc
     if not isinstance(value, dict):
         raise NodeStateError(f"invalid Node state payload in {path}")
     return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 def _default_nodes() -> dict[str, Any]:
@@ -352,8 +365,7 @@ def _read_authority() -> dict[str, Any]:
     if not _nodes_path().exists():
         detail = " disappeared after initialization" if was_initialized(_nodes_path()) else " is missing"
         raise NodeStateError(f"Node authority {_nodes_path()}{detail}")
-    authority = _validate_nodes(read_json(_nodes_path(), _default_nodes()))
-    _validate_tokens(authority)
+    authority = validate_node_authority(read_json(_nodes_path(), _default_nodes()))
     # The rollback ledger is also a write-ahead consumption fuse. If a process
     # dies after committing that fuse but before replacing nodes.json, merge
     # every consumed record into the in-memory authority so the current build
@@ -378,8 +390,7 @@ def _read_authority() -> dict[str, Any]:
 
 def _write_authority(authority: dict[str, Any]) -> None:
     _refresh_legacy_paths()
-    _validate_nodes(authority)
-    _validate_tokens(authority)
+    validate_node_authority(authority)
     atomic_write_json(_nodes_path(), authority)
 
 
@@ -407,29 +418,204 @@ def _write_legacy_token_fuse(
     atomic_write_json(_tokens_path(), legacy)
 
 
+NODE_STATUSES = {"BOOTSTRAPPING", "READY", "STOPPING", "STOPPED", "FAILED"}
+NODE_DESIRED_STATES = {"RUNNING", "STOPPED"}
+NODE_EGRESS_MODES = {"DIRECT_PUSH", "RELAY_ONLY"}
+INGEST_STATUSES = {"OFFLINE", "UNKNOWN", "PENDING", "ACCEPTED", "WARNING", "DEGRADED", "REJECTED"}
+EGRESS_STATUSES = {"UNKNOWN", "STARTING", "CONNECTED", "RECONNECTING", "AUTH_FAILED", "FAILED", "STOPPED"}
+RELAY_CLIENT_STATUSES = {"UNKNOWN", "CONNECTED", "DISCONNECTED"}
+
+
+def _require_nonempty_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise NodeStateError(f"Node state has an invalid {label}")
+    return value
+
+
+def _require_bool(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise NodeStateError(f"Node state has an invalid {label}")
+    return value
+
+
+def _require_nonnegative_int(value: object, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise NodeStateError(f"Node state has an invalid {label}")
+    return value
+
+
+def _require_finite_number(
+    value: object,
+    label: str,
+    *,
+    minimum: float | None = None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NodeStateError(f"Node state has an invalid {label}")
+    try:
+        numeric = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise NodeStateError(f"Node state has an invalid {label}") from exc
+    if not math.isfinite(numeric) or (minimum is not None and numeric < minimum):
+        raise NodeStateError(f"Node state has an invalid {label}")
+    return numeric
+
+
+def _reject_nonfinite_tree(value: object, label: str = "payload") -> None:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return
+    if isinstance(value, (int, float)):
+        _require_finite_number(value, label)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_nonfinite_tree(item, f"{label}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_nonfinite_tree(item, f"{label}.{key}")
+
+
+def _validate_observation(
+    observation: object,
+    *,
+    label: str,
+    statuses: set[str],
+    bool_fields: tuple[str, ...],
+    int_fields: tuple[str, ...] = (),
+    finite_fields: tuple[str, ...] = (),
+) -> None:
+    if observation is None:
+        return
+    if not isinstance(observation, dict):
+        raise NodeStateError(f"Node state has an invalid {label} observation")
+    status = observation.get("status")
+    if status not in statuses:
+        raise NodeStateError(f"Node state has an invalid {label} status")
+    _require_finite_number(observation.get("observed_at"), f"{label} observed_at", minimum=0)
+    for field in bool_fields:
+        if field in observation:
+            _require_bool(observation[field], f"{label} {field}")
+    for field in int_fields:
+        if field in observation:
+            value = observation[field]
+            if value is not None:
+                _require_nonnegative_int(value, f"{label} {field}")
+    for field in finite_fields:
+        if field in observation:
+            value = observation[field]
+            if value is not None:
+                _require_finite_number(value, f"{label} {field}", minimum=0)
+
+
+def _validate_node_events(events: object) -> None:
+    if events is None:
+        return
+    if not isinstance(events, list):
+        raise NodeStateError("Node state has invalid events")
+    for event in events:
+        if not isinstance(event, dict):
+            raise NodeStateError("Node state has an invalid event record")
+        _require_nonnegative_int(event.get("sequence"), "event sequence", minimum=1)
+        _require_nonempty_string(event.get("type"), "event type")
+        _require_finite_number(event.get("occurred_at"), "event timestamp", minimum=0)
+        if not isinstance(event.get("payload"), dict):
+            raise NodeStateError("Node state has an invalid event payload")
+
+
 def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
     nodes = payload.get("nodes")
     if not isinstance(nodes, dict):
         raise NodeStateError("Node state has no nodes mapping")
-    try:
-        next_node_seq = int(payload.get("next_node_seq", 1))
-    except (TypeError, ValueError) as exc:
-        raise NodeStateError("Node state has an invalid sequence") from exc
-    if next_node_seq < 1:
-        raise NodeStateError("Node state has an invalid sequence")
+    _reject_nonfinite_tree(payload)
+    next_node_seq = _require_nonnegative_int(
+        payload.get("next_node_seq"), "sequence", minimum=1
+    )
+    highest_issued_sequence = 0
+
     for node_id, node in nodes.items():
         if not isinstance(node_id, str) or not isinstance(node, dict):
             raise NodeStateError("Node state has an invalid Node record")
         if node.get("node_id") != node_id:
             raise NodeStateError("Node state has an inconsistent Node id")
-        if not isinstance(node.get("session_id"), str) or not node.get("session_id"):
-            raise NodeStateError("Node state has an invalid Session binding")
+        prefix, separator, suffix = node_id.partition("-")
+        if prefix == "node" and separator and suffix.isdecimal():
+            highest_issued_sequence = max(highest_issued_sequence, int(suffix))
+        for field, label in (
+            ("session_id", "Session binding"),
+            ("provider_server_id", "provider server id"),
+            ("boot_id", "boot id"),
+            ("agent_version", "agent version"),
+        ):
+            _require_nonempty_string(node.get(field), label)
         access_digest = node.get("access_token_sha256")
         if not _is_sha256(access_digest):
             raise NodeStateError("Node state has an invalid access token digest")
-        if "session_assigned" in node and not isinstance(node["session_assigned"], bool):
-            raise NodeStateError("Node state has an invalid assignment flag")
-    payload["next_node_seq"] = next_node_seq
+
+        status = node.get("status")
+        if status not in NODE_STATUSES:
+            raise NodeStateError("Node state has an invalid status")
+        desired_state = node.get("desired_state")
+        if desired_state not in NODE_DESIRED_STATES:
+            raise NodeStateError("Node state has an invalid desired state")
+        if "egress_mode" in node and node["egress_mode"] not in NODE_EGRESS_MODES:
+            raise NodeStateError("Node state has an invalid egress mode")
+        if "destination_id" in node and node["destination_id"] is not None:
+            _require_nonempty_string(node["destination_id"], "Destination binding")
+
+        _require_finite_number(node.get("absolute_deadline"), "absolute deadline", minimum=0)
+        _require_finite_number(node.get("created_at"), "created timestamp", minimum=0)
+        if node.get("last_heartbeat_at") is not None:
+            _require_finite_number(node["last_heartbeat_at"], "heartbeat timestamp", minimum=0)
+
+        for field in (
+            "session_assigned",
+            "active_publisher",
+            "egress_connected",
+            "ingest_ever_online",
+            "egress_ever_connected",
+            "relay_client_ever_connected",
+        ):
+            if field in node:
+                _require_bool(node[field], field)
+        for field in (
+            "cpu_percent",
+            "memory_mb",
+            "deadline_remaining_seconds",
+            "media_unhealthy_since",
+            "pipeline_failure_latched_at",
+        ):
+            if field in node and node[field] is not None:
+                _require_finite_number(node[field], field, minimum=0)
+        if "next_event_seq" in node:
+            _require_nonnegative_int(node["next_event_seq"], "event sequence", minimum=1)
+        _validate_node_events(node.get("events"))
+
+        _validate_observation(
+            node.get("ingest"),
+            label="ingest",
+            statuses=INGEST_STATUSES,
+            bool_fields=("online", "enforced"),
+            int_fields=("max_bitrate_bps",),
+            finite_fields=("bitrate_bps",),
+        )
+        _validate_observation(
+            node.get("egress"),
+            label="egress",
+            statuses=EGRESS_STATUSES,
+            bool_fields=("connected",),
+            int_fields=("attempt", "rendered_buffers"),
+            finite_fields=("next_retry_at",),
+        )
+        _validate_observation(
+            node.get("relay_client"),
+            label="relay client",
+            statuses=RELAY_CLIENT_STATUSES,
+            bool_fields=("connected",),
+            int_fields=("reader_count",),
+        )
+    if highest_issued_sequence >= next_node_seq:
+        raise NodeStateError("Node state has an inconsistent next Node sequence")
     return payload
 
 
@@ -450,14 +636,7 @@ def _validate_tokens(payload: dict[str, Any]) -> dict[str, Any]:
         if record.get("consumed") is not True:
             # Ambiguous or reverted consumption must never become reusable.
             raise NodeStateError("bootstrap token state has an invalid consumed flag")
-        consumed_at = record.get("consumed_at")
-        if (
-            isinstance(consumed_at, bool)
-            or not isinstance(consumed_at, (int, float))
-            or not math.isfinite(float(consumed_at))
-            or float(consumed_at) < 0
-        ):
-            raise NodeStateError("bootstrap token state has an invalid timestamp")
+        _require_finite_number(record.get("consumed_at"), "bootstrap token timestamp", minimum=0)
         node_id = record.get("node_id")
         session_id = record.get("session_id")
         if not isinstance(node_id, str) or not node_id or not isinstance(session_id, str) or not session_id:
@@ -487,6 +666,18 @@ def _validate_tokens(payload: dict[str, Any]) -> dict[str, Any]:
                 ):
                     raise NodeStateError("bootstrap token and Node authority disagree")
     return payload
+
+
+def validate_node_authority(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the canonical Node and bootstrap-token authority without mutation."""
+    _validate_nodes(payload)
+    _validate_tokens(payload)
+    return payload
+
+
+def read_node_authority_snapshot(path: Path) -> dict[str, Any]:
+    """Read and validate one Node authority snapshot without creating state."""
+    return validate_node_authority(read_json(path, {}))
 
 
 def _is_sha256(value: object) -> bool:

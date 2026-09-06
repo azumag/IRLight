@@ -20,4 +20,4 @@ Other validated fields that existed from the first Session schema (`session_id`,
 
 Do not delete the initialization marker, replace a corrupt record with `{}`, or change an unknown status to `STOPPED` merely to restore service. Those actions can hide provider resources and undercount capacity. Restore the last known-good `sessions.json` from backup or reconcile the record against provider/node evidence first, then restart the control plane. The store does not rewrite a rejected authority file.
 
-The node authority remains a separate validation surface under issue #87.
+Node authority validation is documented separately in `docs/node-authority-validation.md`.
