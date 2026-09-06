@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 class DestinationSecretError(RuntimeError):
@@ -117,7 +117,7 @@ class DestinationSecretStore:
     def _load(self) -> None:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(handle)
+                raw = load_json_authority(handle)
         except FileNotFoundError:
             if was_initialized(self.path):
                 raise DestinationSecretError(
@@ -125,7 +125,7 @@ class DestinationSecretStore:
                 )
             self._records = {}
             return
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, ValueError) as exc:
             raise DestinationSecretError(
                 "destination secret state contains invalid JSON"
             ) from exc

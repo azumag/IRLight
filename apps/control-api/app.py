@@ -28,6 +28,7 @@ from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
 from session_api import router as session_router
 from state_readiness import StateReadinessError, check_state_readiness
+from state_safety import load_json_authority
 
 
 STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
@@ -45,9 +46,9 @@ class AudioCommand(BaseModel):
 def read_json(path: Path, default: dict[str, object]) -> dict[str, object]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = load_json_authority(handle)
         return value if isinstance(value, dict) else default
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
         return default
 
 

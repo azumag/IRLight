@@ -35,7 +35,7 @@ from egress_destination import EgressDestinationError, build_egress_url
 from fake_provider_for_api import default_store, provider_mode
 from pipeline_health import apply_pipeline_health
 from session_store import ACTIVE_STATES
-from state_safety import mark_initialized, was_initialized
+from state_safety import load_json_authority, mark_initialized, was_initialized
 
 
 def _state_dir() -> Path:
@@ -302,7 +302,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle, parse_constant=_reject_json_constant)
+            value = load_json_authority(handle, parse_constant=_reject_json_constant)
     except FileNotFoundError:
         return default
     except (json.JSONDecodeError, ValueError, OSError) as exc:
