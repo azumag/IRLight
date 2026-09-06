@@ -272,13 +272,19 @@ def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
     max_tail = max(len(marker) for marker in SRT_CONNECTED_MARKERS) - 1
     tail = b""
     total = 0
+    # Popen stderr is normally an io.BufferedReader. ``read(n)`` may perform
+    # multiple raw reads while trying to fill n bytes, which can delay a short
+    # connected marker until the child emits more output. ``read1`` performs at
+    # most one raw read; fall back to ``read`` for test/file-like objects that
+    # do not expose it.
+    read_chunk = getattr(stream, "read1", stream.read)
     try:
         while True:
             # Read at most one byte beyond the remaining budget so overflow is
             # detected without allocating an arbitrarily large line/chunk.
             remaining = SRT_STDERR_MAX_BYTES - total
             read_size = min(SRT_STDERR_READ_CHUNK_BYTES, remaining + 1)
-            chunk = stream.read(read_size)
+            chunk = read_chunk(read_size)
             if not chunk:
                 _emit_srt_stderr_event(events, SRT_STDERR_EVENT_EOF)
                 return
