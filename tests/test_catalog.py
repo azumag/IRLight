@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import multiprocessing
 import sys
@@ -20,6 +21,7 @@ from catalog_store import (  # noqa: E402
     CATALOG_PATH,
     CatalogNotFound,
     CatalogStateError,
+    CatalogValidationError,
     CatalogVerifyFailed,
     create_asset,
     create_destination,
@@ -112,6 +114,75 @@ class CatalogStoreTest(unittest.TestCase):
         self.assertEqual(updated["verification_status"], "UNVERIFIED")
         self.assertIsNone(updated["last_verified_at"])
         self.assertIsNone(updated["verification_transport"])
+
+    def test_create_rejects_authenticated_srt_streamid_without_persisting(self) -> None:
+        with self.assertRaisesRegex(CatalogValidationError, "authenticated SRT streamid"):
+            create_destination(
+                user_id="deadbeef",
+                type="srt",
+                display_name="Unsafe SRT",
+                server_url=(
+                    "srt://example.com:8890?streamid="
+                    "publish:live/input:dummy-user:AUDIT_DUMMY_SECRET"
+                ),
+                secret_ref="secret/srt",
+            )
+
+        self.assertEqual(list_destinations("deadbeef"), [])
+        self.assertNotIn("AUDIT_DUMMY_SECRET", CATALOG_PATH.read_text(encoding="utf-8"))
+
+    def test_update_rejects_encoded_authenticated_srt_streamid_without_mutating(self) -> None:
+        item = create_destination(
+            user_id="deadbeef",
+            type="srt",
+            display_name="Safe SRT",
+            server_url="srt://example.com:8890?streamid=publish:probe",
+            secret_ref="secret/srt",
+        )
+        original_url = str(item["server_url"])
+
+        with self.assertRaisesRegex(CatalogValidationError, "authenticated SRT streamid"):
+            update_destination(
+                str(item["id"]),
+                user_id="deadbeef",
+                server_url=(
+                    "srt://example.com:8890?streamid="
+                    "publish%253Alive%252Finput%253Adummy-user%253AAUDIT_DUMMY_SECRET"
+                ),
+            )
+
+        fetched = get_destination(str(item["id"]), "deadbeef")
+        self.assertEqual(fetched["server_url"], original_url)
+        self.assertNotIn("AUDIT_DUMMY_SECRET", CATALOG_PATH.read_text(encoding="utf-8"))
+
+    def test_existing_sensitive_destination_url_fails_closed_before_crud(self) -> None:
+        destination_id = str(uuid.uuid4())
+        unsafe_url = (
+            "srt://example.com:8890?streamid="
+            "publish:live/input:dummy-user:AUDIT_DUMMY_SECRET"
+        )
+        CATALOG_PATH.write_text(
+            json.dumps(
+                {
+                    "destinations": {
+                        destination_id: {
+                            "id": destination_id,
+                            "user_id": "deadbeef",
+                            "type": "srt",
+                            "display_name": "Legacy unsafe SRT",
+                            "server_url": unsafe_url,
+                            "secret_ref": "secret/srt",
+                        }
+                    },
+                    "assets": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(CatalogStateError, "embedded credential material"):
+            list_destinations("deadbeef")
+        self.assertIn("AUDIT_DUMMY_SECRET", CATALOG_PATH.read_text(encoding="utf-8"))
 
     def test_delete_destination(self) -> None:
         item = self._create_destination()

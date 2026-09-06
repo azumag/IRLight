@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from auth_api import require_csrf, require_user
 from catalog_store import (
     CatalogNotFound,
+    CatalogValidationError,
     CatalogVerifyFailed,
     create_asset as store_create_asset,
     create_destination as store_create_destination,
@@ -61,6 +62,10 @@ def _not_found(exc: CatalogNotFound) -> HTTPException:
     return HTTPException(status_code=404, detail="unknown item")
 
 
+def _validation_error(exc: CatalogValidationError) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(exc))
+
+
 def _secret_store_unavailable(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail="destination secret store is not configured")
 
@@ -69,13 +74,16 @@ def _secret_store_unavailable(exc: Exception) -> HTTPException:
 def create_destination(
     request: DestinationCreate, current_user: CurrentUser, _csrf: Csrf = None
 ) -> dict[str, Any]:
-    return store_create_destination(
-        user_id=str(current_user["id"]),
-        type=request.type,
-        display_name=request.display_name,
-        server_url=request.server_url,
-        secret_ref=request.secret_ref,
-    )
+    try:
+        return store_create_destination(
+            user_id=str(current_user["id"]),
+            type=request.type,
+            display_name=request.display_name,
+            server_url=request.server_url,
+            secret_ref=request.secret_ref,
+        )
+    except CatalogValidationError as exc:
+        raise _validation_error(exc) from exc
 
 
 @router.get("/destinations")
@@ -112,6 +120,8 @@ def update_destination(
         )
     except CatalogNotFound as exc:
         raise _not_found(exc) from exc
+    except CatalogValidationError as exc:
+        raise _validation_error(exc) from exc
 
 
 @router.put("/destinations/{destination_id}/secret")

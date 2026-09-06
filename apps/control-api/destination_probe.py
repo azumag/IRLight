@@ -26,10 +26,14 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, unquote_plus, urlsplit, urlunsplit
 
+from destination_url_safety import (
+    DestinationUrlSafetyError,
+    validate_destination_url_secret_safety,
+)
+
 
 RTMP_HANDSHAKE_BYTES = 1536
 RTMP_VERSION = 3
-SENSITIVE_SRT_QUERY_KEYS = {"passphrase"}
 # Different srt-live-transmit releases use different wording for the same
 # successful SRTS_CONNECTED state. Keep the legacy IRLight marker while also
 # accepting the messages emitted by current upstream packages.
@@ -64,14 +68,17 @@ class ProbeConfig:
 
 def probe_destination(url: str, config: ProbeConfig | None = None) -> dict[str, Any]:
     cfg = config or ProbeConfig.from_env()
+    try:
+        validate_destination_url_secret_safety(url)
+    except DestinationUrlSafetyError as exc:
+        raise DestinationProbeError(str(exc)) from exc
+
     parsed = urlsplit(url)
     scheme = parsed.scheme.lower()
     if scheme not in {"rtmp", "rtmps", "srt"}:
         raise DestinationProbeError("unsupported destination URL scheme")
     if parsed.fragment:
         raise DestinationProbeError("destination URL fragments are not supported")
-    if parsed.username is not None or parsed.password is not None:
-        raise DestinationProbeError("credentials must not be embedded in destination URL")
     if not parsed.hostname:
         raise DestinationProbeError("destination host is required")
 
@@ -217,12 +224,6 @@ def _read_stderr_lines(stream: Any, messages: queue.Queue[bytes | None]) -> None
 
 def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     query = parse_qsl(parsed.query, keep_blank_values=True)
-    for key, _value in query:
-        if key.lower() in SENSITIVE_SRT_QUERY_KEYS:
-            raise DestinationProbeError(
-                "SRT secrets must be referenced separately, not embedded in server_url"
-            )
-
     mode = next((value.lower() for key, value in query if key.lower() == "mode"), None)
     if mode is not None and mode != "caller":
         raise DestinationProbeError("SRT destination verification requires caller mode")
@@ -240,7 +241,8 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     host_for_uri = f"[{peer_ip}]" if ":" in peer_ip else peer_ip
 
     # Preserve the caller's original query encoding (notably streamid syntax)
-    # while taking control of connection mode and timeout.
+    # while taking control of connection mode and timeout. Secret-bearing
+    # streamids have already been rejected before this argv is constructed.
     raw_tokens: list[str] = []
     for token in parsed.query.split("&"):
         if not token:
