@@ -382,11 +382,15 @@ class NodeAgentTest(unittest.TestCase):
 
         supervisor = BlockingSupervisor()
         self.agent.supervisor = supervisor
-        self.control.absolute_deadline = time.time() + 0.2
+        # Do not let scheduler/runner load expire the bootstrap deadline before
+        # the test has actually entered the blocked heartbeat path. Arm the real
+        # watchdog only after health() proves that the heartbeat is blocked.
+        self.control.absolute_deadline = time.time() + 30.0
         result: list[int] = []
         thread = threading.Thread(target=lambda: result.append(self.agent.run()), daemon=True)
         thread.start()
-        self.assertTrue(health_entered.wait(timeout=3))
+        self.assertTrue(health_entered.wait(timeout=10))
+        self.agent.absolute_deadline = time.time() + 0.05
 
         deadline = time.monotonic() + 1.0
         while not supervisor.stopped_sessions and time.monotonic() < deadline:
