@@ -19,6 +19,10 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from destination_probe import DestinationProbeError, probe_destination
+from destination_url_safety import (
+    DestinationUrlSafetyError,
+    validate_destination_url_secret_safety,
+)
 from state_safety import mark_initialized, was_initialized
 
 
@@ -29,6 +33,10 @@ LOCK = threading.RLock()
 
 
 class CatalogStateError(RuntimeError):
+    pass
+
+
+class CatalogValidationError(ValueError):
     pass
 
 
@@ -96,6 +104,13 @@ def _default_catalog() -> dict[str, Any]:
     return {"destinations": {}, "assets": {}}
 
 
+def _validate_destination_server_url(server_url: str) -> None:
+    try:
+        validate_destination_url_secret_safety(server_url)
+    except DestinationUrlSafetyError as exc:
+        raise CatalogValidationError(str(exc)) from exc
+
+
 def ensure_catalog() -> None:
     with _catalog_lock(exclusive=True):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -120,6 +135,21 @@ def _load() -> dict[str, Any]:
             for key, item in catalog[section].items()
         ):
             raise CatalogStateError("catalog state has an invalid record")
+
+    # A credential-bearing URL is unsafe even for a read: list/get responses
+    # would otherwise echo the persisted secret back to the API client. Fail
+    # closed without rewriting the authority so an operator can recover it
+    # deliberately and rotate the affected credential.
+    for item in catalog["destinations"].values():
+        server_url = item.get("server_url")
+        if not isinstance(server_url, str):
+            continue
+        try:
+            _validate_destination_server_url(server_url)
+        except CatalogValidationError as exc:
+            raise CatalogStateError(
+                "catalog contains a destination URL with embedded credential material"
+            ) from exc
     return catalog
 
 
@@ -151,6 +181,7 @@ def create_destination(
     server_url: str,
     secret_ref: str,
 ) -> dict[str, Any]:
+    _validate_destination_server_url(server_url)
     with _catalog_lock(exclusive=True):
         catalog = _load()
         item_id = str(uuid.uuid4())
@@ -200,6 +231,8 @@ def update_destination(
     secret_ref: str | None = None,
     enabled: bool | None = None,
 ) -> dict[str, Any]:
+    if server_url is not None:
+        _validate_destination_server_url(server_url)
     with _catalog_lock(exclusive=True):
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
