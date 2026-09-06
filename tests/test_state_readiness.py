@@ -17,6 +17,14 @@ from state_readiness import StateReadinessError, check_state_readiness  # noqa: 
 from state_safety import initialization_marker  # noqa: E402
 
 
+class StateReadinessPackagingTest(unittest.TestCase):
+    def test_control_api_image_copies_readiness_module(self) -> None:
+        dockerfile = (ROOT / "apps" / "control-api" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("apps/control-api/state_readiness.py", dockerfile)
+
+
 class StateReadinessTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(prefix="irlight-readyz-")
