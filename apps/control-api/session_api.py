@@ -20,11 +20,12 @@ from destination_secret_store import (
 from egress_destination import EgressDestinationError, build_egress_url
 from entitlement_store import EntitlementStateError, default_entitlement_store
 from fake_provider_for_api import default_provider, default_store, provider_mode
-from session_store import EntitlementExceeded
+from session_store import EntitlementExceeded, SessionStateError
 from session_workflow import ProvisioningWorkflow
 
 
 ENTITLEMENT_STATE_UNAVAILABLE_CODE = "ENTITLEMENT_STATE_UNAVAILABLE"
+SESSION_STATE_UNAVAILABLE_CODE = "SESSION_STATE_UNAVAILABLE"
 
 
 class PrepareRequest(BaseModel):
@@ -45,8 +46,26 @@ CurrentUser = Annotated[dict[str, Any], Depends(require_user)]
 Csrf = Annotated[None, Depends(require_csrf)]
 
 
+def _session_state_unavailable(exc: SessionStateError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"code": SESSION_STATE_UNAVAILABLE_CODE},
+    )
+
+
+def _session_store():
+    try:
+        return default_store()
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
+
+
 def _owned_session(session_id: str, user_id: str) -> dict[str, Any]:
-    session = default_store().get(session_id)
+    store = _session_store()
+    try:
+        session = store.get(session_id)
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
     if session is None or session.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="unknown session")
     return session
@@ -125,7 +144,7 @@ def prepare_session(
         raise HTTPException(status_code=400, detail="Idempotency-Key is too long")
 
     user_id = str(current_user["id"])
-    store = default_store()
+    store = _session_store()
     try:
         prepared = store.get_prepare_replay(
             session_id,
@@ -137,6 +156,8 @@ def prepare_session(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -174,6 +195,8 @@ def prepare_session(
             raise HTTPException(status_code=404, detail="unknown session") from exc
         except EntitlementExceeded as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SessionStateError as exc:
+            raise _session_state_unavailable(exc) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -188,6 +211,8 @@ def prepare_session(
             user_id=user_id,
             environment=request.environment,
         )
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
@@ -201,12 +226,14 @@ def stop_session(
     session_id: str, current_user: CurrentUser, _csrf: Csrf = None
 ) -> dict[str, Any]:
     _owned_session(session_id, str(current_user["id"]))
-    store = default_store()
+    store = _session_store()
     workflow = ProvisioningWorkflow(store, default_provider())
     try:
         return workflow.stop(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -225,7 +252,7 @@ def add_session_event(
 ) -> dict[str, Any]:
     _owned_session(session_id, str(current_user["id"]))
     try:
-        return default_store().append_event(
+        return _session_store().append_event(
             session_id,
             event_type=request.type,
             reason_code=request.reason_code,
@@ -234,6 +261,8 @@ def add_session_event(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
 
 
 @router.get("/{session_id}/events")
@@ -246,5 +275,9 @@ def list_session_events(session_id: str, current_user: CurrentUser) -> dict[str,
 @router.get("")
 def list_sessions(current_user: CurrentUser) -> dict[str, Any]:
     user_id = str(current_user["id"])
-    sessions = [s for s in default_store().list() if s.get("user_id") == user_id]
+    store = _session_store()
+    try:
+        sessions = [s for s in store.list() if s.get("user_id") == user_id]
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
     return {"sessions": sessions}
