@@ -13,7 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # tests/test_control_api_image_packaging.py verifies that the static local-import
 # closure of each runtime entrypoint remains present in this explicit source list.
 COPY apps/control-api/app.py apps/control-api/node_internal.py \
-     apps/control-api/auth_api.py apps/control-api/auth_store.py \
+     apps/control-api/auth_api.py apps/control-api/auth_session_gc.py \
+     apps/control-api/auth_store.py \
      apps/control-api/catalog_api.py apps/control-api/catalog_store.py \
      apps/control-api/destination_probe.py apps/control-api/destination_url_safety.py \
      apps/control-api/destination_secret_store.py \
