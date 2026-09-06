@@ -75,7 +75,10 @@ function audioState(control, runtime, serverTime) {
   const runtimeVersion = Number.isInteger(runtime.control_version) ? runtime.control_version : null;
   const controlCommand = control.command_id ?? null;
   const runtimeCommand = runtime.command_id ?? null;
-  const commandAcked = controlVersion === runtimeVersion && controlCommand === runtimeCommand;
+  const commandIdentityValid = controlVersion === 0
+    ? controlCommand === null && runtimeCommand === null
+    : controlVersion !== null && controlVersion > 0 && typeof controlCommand === 'string' && controlCommand.length > 0 && controlCommand === runtimeCommand;
+  const commandAcked = controlVersion === runtimeVersion && commandIdentityValid;
   const runtimeAge = Number(serverTime) - Number(runtime.updated_at);
   const runtimeStale = !Number.isFinite(runtimeAge) || runtimeAge < -1 || runtimeAge > RUNTIME_STALE_SECONDS;
 
