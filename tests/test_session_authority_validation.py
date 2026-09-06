@@ -104,6 +104,104 @@ class SessionAuthorityValidationTest(unittest.TestCase):
                     with self.assertRaises(SessionStateError):
                         SessionStore(state_dir)
 
+    def _event(self, *, sequence: int = 1) -> dict[str, object]:
+        return {
+            "sequence": sequence,
+            "type": "session.ready",
+            "reason_code": None,
+            "payload": {},
+            "occurred_at": 1.0,
+            "origin": "control-api",
+        }
+
+    def test_session_events_fail_closed_on_malformed_records(self) -> None:
+        cases = (
+            ("event", None),
+            ("sequence", True),
+            ("sequence", 0),
+            ("sequence", "1"),
+            ("type", ""),
+            ("type", 1),
+            ("reason_code", {}),
+            ("payload", []),
+            ("occurred_at", True),
+            ("occurred_at", 10**1000),
+            ("origin", ""),
+            ("origin", None),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=type(value).__name__), tempfile.TemporaryDirectory() as state_dir:
+                record = self._record()
+                event = self._event()
+                if field == "event":
+                    record["events"] = [value]
+                else:
+                    event[field] = value
+                    record["events"] = [event]
+                record["next_event_seq"] = 2
+                self._write_state(state_dir, record)
+                with self.assertRaises(SessionStateError):
+                    SessionStore(state_dir)
+
+    def test_event_sequence_and_counter_must_not_move_backwards(self) -> None:
+        cases = (
+            ([1, 1], 2),
+            ([2, 1], 3),
+            ([1, 2], 2),
+            ([1, 2], 1),
+        )
+        for sequences, next_sequence in cases:
+            with self.subTest(sequences=sequences, next_sequence=next_sequence), tempfile.TemporaryDirectory() as state_dir:
+                record = self._record()
+                record["events"] = [self._event(sequence=value) for value in sequences]
+                record["next_event_seq"] = next_sequence
+                self._write_state(state_dir, record)
+                with self.assertRaises(SessionStateError):
+                    SessionStore(state_dir)
+
+    def test_legacy_event_stream_without_counter_keeps_monotonic_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            record = self._record()
+            record["events"] = [self._event(sequence=7)]
+            record.pop("next_event_seq")
+            self._write_state(state_dir, record)
+
+            store = SessionStore(state_dir)
+            event = store.append_event(
+                self.session_id,
+                event_type="session.live",
+                payload={},
+                origin="control-api",
+                occurred_at=2.0,
+            )
+            self.assertEqual(event["sequence"], 8)
+            reloaded = SessionStore(state_dir).get(self.session_id)
+            assert reloaded is not None
+            self.assertEqual(reloaded["next_event_seq"], 9)
+
+    def test_writer_rejects_non_finite_event_time_without_replacing_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = SessionStore(state_dir)
+            session = store.create(user_id="user-1", environment="dev")
+            session_id = str(session["session_id"])
+            path = Path(state_dir, "sessions.json")
+            before = path.read_bytes()
+
+            with self.assertRaises(SessionStateError):
+                store.append_event(
+                    session_id,
+                    event_type="session.ready",
+                    payload={},
+                    origin="control-api",
+                    occurred_at=float("inf"),
+                )
+
+            self.assertEqual(path.read_bytes(), before)
+            reloaded = SessionStore(state_dir).get(session_id)
+            assert reloaded is not None
+            self.assertEqual(reloaded["events"], [])
+            self.assertEqual(reloaded["next_event_seq"], 1)
+
     def test_cleanup_lease_fields_fail_closed(self) -> None:
         cases = (
             {"lease_id": "lease-1", "scope": "bogus", "created_at": 1.0, "expires_at": 2.0},

@@ -8,6 +8,8 @@
 
 Each persisted Session must have a non-empty key, matching `session_id`, a non-empty `user_id`, a known `status`, a non-negative integer `version`, boolean `cleanup_pending`, and finite numeric `created_at` / `updated_at`. Present lifecycle timestamps must be finite numbers (or `null` where the field is optional). Present lifecycle booleans and counters are type-checked so Python truthiness or numeric coercion cannot change capacity or recovery behavior. Cleanup leases in the same authority file are also validated for scope, identity, finite increasing expiry, and scope-specific fields; a corrupt lease is never silently treated as expired.
 
+Retained Session events are part of the same authority boundary. Each event must have a positive, strictly increasing integer `sequence`, non-empty `type` and `origin`, finite `occurred_at`, an object `payload`, and a string-or-null `reason_code`. When `next_event_seq` is present it must be strictly greater than every retained event sequence, preventing a restored or corrupt counter from reusing an existing sequence. Legacy records that predate `next_event_seq` remain readable; the next append derives the sequence from the retained tail and persists a new counter.
+
 Unknown Session fields remain preserved for forward-compatible metadata; this validation is intentionally focused on fields that affect identity, capacity, state-machine transitions, and timeout/recovery decisions.
 
 ## Compatibility
@@ -18,6 +20,6 @@ Other validated fields that existed from the first Session schema (`session_id`,
 
 ## Recovery
 
-Do not delete the initialization marker, replace a corrupt record with `{}`, or change an unknown status to `STOPPED` merely to restore service. Those actions can hide provider resources and undercount capacity. Restore the last known-good `sessions.json` from backup or reconcile the record against provider/node evidence first, then restart the control plane. The store does not rewrite a rejected authority file.
+Do not delete the initialization marker, replace a corrupt record with `{}`, change an unknown status to `STOPPED`, drop malformed events, or rewind `next_event_seq` merely to restore service. Those actions can hide provider resources, undercount capacity, or make event ordering ambiguous. Restore the last known-good `sessions.json` from backup or reconcile the record against provider/node evidence first, then restart the control plane. The store does not rewrite a rejected authority file.
 
 Node authority validation is documented separately in `docs/node-authority-validation.md`.
