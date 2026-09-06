@@ -21,3 +21,6 @@ list/stop専用の管理Bearerを分離する。
 
 Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 `docs/ingest-device-compatibility.md` と Issue #39 を参照。
+
+Phase 0 Control UI の状態鮮度・通信断時の fail-closed 表示契約は
+`docs/control-ui-state-safety.md` を参照。

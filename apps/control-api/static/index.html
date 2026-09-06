@@ -23,6 +23,7 @@
     button { width: 100%; min-height: 5.2rem; border: 0; border-radius: 1rem; font-size: 1.25rem; font-weight: 850; padding: 1rem; cursor: pointer; touch-action: manipulation; }
     button.live { background: #e11d48; color: white; }
     button.muted { background: #10b981; color: #06120e; }
+    button.unknown { background: #475569; color: #f8fafc; }
     button:disabled { opacity: .55; cursor: wait; }
     .small { color: #aebbd5; font-size: .88rem; line-height: 1.55; }
     .error { color: #fda4af; min-height: 1.5em; }
@@ -113,30 +114,47 @@ function audioState(control, runtime, serverTime) {
   return {desired, actual, actualKnown, commandAcked, runtimeStale, label:actualLabel, dot, actualLabel};
 }
 
+function renderUnavailable() {
+  const unknown = '状態確認不能';
+  $('session').lastElementChild.textContent = unknown;
+  $('sessionDot').className = 'dot warn';
+  for (const id of ['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']) {
+    $(id).textContent = unknown;
+  }
+  $('audio').lastElementChild.textContent = unknown;
+  $('audioDot').className = 'dot warn';
+  const button = $('audioButton');
+  button.disabled = true;
+  button.className = 'unknown';
+  button.textContent = controlUnavailable ? '音声制御APIは利用できません' : '状態を再取得しています';
+}
+
 function render(data) {
   snapshot = data;
+  if (!statusAvailable) {
+    renderUnavailable();
+    return;
+  }
   const c = data.control || {};
   const r = data.runtime || {};
-  const observedState = audioState(c, r, data.server_time);
-  const state = statusAvailable
-    ? observedState
-    : {...observedState, runtimeStale:true, label:'状態確認不能', dot:'warn', actualLabel:'状態確認不能'};
-  $('session').lastElementChild.textContent = textForSession(r.session_status);
-  $('sessionDot').className = 'dot ' + (r.session_status === 'LIVE' ? 'live' : 'warn');
-  $('video').textContent = r.video_source === 'LIVE' ? '通常映像' : '待機画面';
+  const state = audioState(c, r, data.server_time);
+  const runtimeTrusted = !state.runtimeStale;
+  $('session').lastElementChild.textContent = runtimeTrusted ? textForSession(r.session_status) : '状態確認不能';
+  $('sessionDot').className = 'dot ' + (runtimeTrusted && r.session_status === 'LIVE' ? 'live' : 'warn');
+  $('video').textContent = runtimeTrusted ? (r.video_source === 'LIVE' ? '通常映像' : '待機画面') : '状態確認不能';
   $('audio').lastElementChild.textContent = state.label;
   $('audioDot').className = 'dot ' + state.dot;
-  $('inputVideo').textContent = r.input_video_recent ? '受信中' : '停止';
-  $('inputAudio').textContent = r.input_audio_recent ? '受信中' : '停止／なし';
-  $('updated').textContent = r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '—';
+  $('inputVideo').textContent = runtimeTrusted ? (r.input_video_recent ? '受信中' : '停止') : '状態確認不能';
+  $('inputAudio').textContent = runtimeTrusted ? (r.input_audio_recent ? '受信中' : '停止／なし') : '状態確認不能';
+  $('updated').textContent = runtimeTrusted && r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '状態確認不能';
   $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
   $('actual').textContent = state.actualLabel;
   const controlVersion = Number.isInteger(c.version) ? c.version : '—';
-  const runtimeVersion = Number.isInteger(r.control_version) ? r.control_version : '—';
+  const runtimeVersion = runtimeTrusted && Number.isInteger(r.control_version) ? r.control_version : '状態確認不能';
   $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
   button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.actualKnown || !state.commandAcked;
-  button.className = state.desired === 'MUTED' ? 'muted' : 'live';
+  button.className = state.runtimeStale || !state.actualKnown ? 'unknown' : (state.desired === 'MUTED' ? 'muted' : 'live');
   button.textContent = applying
     ? '指示を送信中…'
     : (controlUnavailable
@@ -152,11 +170,7 @@ function render(data) {
 
 function markStatusUnavailable(message) {
   statusAvailable = false;
-  $('audio').lastElementChild.textContent = '状態確認不能';
-  $('audioDot').className = 'dot warn';
-  $('actual').textContent = '状態確認不能';
-  $('audioButton').disabled = true;
-  $('audioButton').textContent = '状態を再取得しています';
+  renderUnavailable();
   $('error').textContent = message;
 }
 
