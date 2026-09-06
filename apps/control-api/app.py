@@ -27,6 +27,7 @@ from ingest_api import user_router as ingest_user_router
 from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
 from session_api import router as session_router
+from session_event_policy import UserEventBodyLimitMiddleware
 from state_readiness import StateReadinessError, check_state_readiness
 from state_safety import load_json_authority
 
@@ -61,6 +62,7 @@ ensure_node_state()
 ensure_catalog()
 ensure_auth_state()
 app = FastAPI(title="IRLight Phase 0 Control API", version="0.1.0")
+app.add_middleware(UserEventBodyLimitMiddleware)
 app.include_router(node_internal_router)
 app.include_router(ingest_internal_router)
 app.include_router(auth_router)
