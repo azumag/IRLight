@@ -60,7 +60,9 @@ http://localhost:8888/output/relay/index.m3u8
 http://localhost:8080
 ```
 
-APIでも最終状態を指定できます。
+UIの主表示は `control.audio_mode`（指定状態）だけでは「ミュート中」と確定しません。Continuity Engine が返す `actual_audio_mode` と、現在の `version` / `command_id` の反映確認が一致し、status が新鮮な場合だけ実状態として表示します。反映待ち、status停止、取得失敗では「未反映／確認不能」として次の操作を止めます。
+
+旧式の `/api/audio` はローカルPoC互換用で、既定では無効です。明示的に `IRLIGHT_LEGACY_AUDIO_API_ENABLED=1` とした閉域テスト環境だけで、APIから最終状態を指定できます。
 
 ```bash
 curl -X PUT http://localhost:8080/api/audio \
@@ -68,6 +70,8 @@ curl -X PUT http://localhost:8080/api/audio \
   -H 'Idempotency-Key: example-1' \
   --data '{"mode":"MUTED","expected_version":0}'
 ```
+
+本番向けの音声操作は、owner認証・CSRF・Session/Node実行世代に束縛したACKを持つSession単位APIへ移行するまで、このlegacy endpointを代替として有効化しません。
 
 状態確認:
 
