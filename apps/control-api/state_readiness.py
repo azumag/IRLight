@@ -157,6 +157,61 @@ def _inspect_optional_legacy_token_fuse(node_state_dir: Path) -> None:
         raise StateReadinessError("legacy token fuse failed validation") from exc
 
 
+def _authority_specs(
+    *, state_dir: Path, node_state_dir: Path | None = None
+) -> tuple[tuple[str, Path, Validator], ...]:
+    effective_node_state_dir = node_state_dir or state_dir
+    return (
+        ("control", state_dir / "control.json", _validate_control),
+        ("catalog", state_dir / "catalog.json", _validate_catalog),
+        ("users", state_dir / "users.json", _validate_users),
+        ("auth_sessions", state_dir / "auth_sessions.json", _validate_sessions),
+        ("nodes", effective_node_state_dir / "nodes.json", validate_node_authority),
+    )
+
+
+def inspect_state_readiness(
+    *,
+    state_dir: Path,
+    node_state_dir: Path | None = None,
+) -> list[dict[str, str | None]]:
+    """Inspect every startup authority and return safe operator diagnostics.
+
+    The returned records contain only a stable authority label, status, and a
+    normalized validation reason. They intentionally omit file paths, raw JSON,
+    parser exceptions, credentials, and validator exception details.
+    """
+    checks: list[dict[str, str | None]] = []
+    for authority, path, validator in _authority_specs(
+        state_dir=state_dir, node_state_dir=node_state_dir
+    ):
+        try:
+            _inspect_authority(path, validator)
+        except StateReadinessError as exc:
+            checks.append(
+                {"authority": authority, "status": "UNAVAILABLE", "reason": str(exc)}
+            )
+        else:
+            checks.append({"authority": authority, "status": "OK", "reason": None})
+
+    effective_node_state_dir = node_state_dir or state_dir
+    try:
+        _inspect_optional_legacy_token_fuse(effective_node_state_dir)
+    except StateReadinessError as exc:
+        checks.append(
+            {
+                "authority": "legacy_bootstrap_tokens",
+                "status": "UNAVAILABLE",
+                "reason": str(exc),
+            }
+        )
+    else:
+        checks.append(
+            {"authority": "legacy_bootstrap_tokens", "status": "OK", "reason": None}
+        )
+    return checks
+
+
 def check_state_readiness(
     *,
     state_dir: Path,
@@ -169,16 +224,8 @@ def check_state_readiness(
     their own fail-closed request paths and can be added to readiness only when
     their deployment lifecycle is made mandatory.
     """
-    control_path = state_dir / "control.json"
-    catalog_path = state_dir / "catalog.json"
-    users_path = state_dir / "users.json"
-    auth_sessions_path = state_dir / "auth_sessions.json"
-    effective_node_state_dir = node_state_dir or state_dir
-    nodes_path = effective_node_state_dir / "nodes.json"
-
-    _inspect_authority(control_path, _validate_control)
-    _inspect_authority(catalog_path, _validate_catalog)
-    _inspect_authority(users_path, _validate_users)
-    _inspect_authority(auth_sessions_path, _validate_sessions)
-    _inspect_authority(nodes_path, validate_node_authority)
-    _inspect_optional_legacy_token_fuse(effective_node_state_dir)
+    for _authority, path, validator in _authority_specs(
+        state_dir=state_dir, node_state_dir=node_state_dir
+    ):
+        _inspect_authority(path, validator)
+    _inspect_optional_legacy_token_fuse(node_state_dir or state_dir)
