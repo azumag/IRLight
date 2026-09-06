@@ -16,6 +16,12 @@ from session_event_policy import USER_EVENT_MAX_PAYLOAD_BYTES  # noqa: E402
 
 
 class SessionUserEventApiTest(unittest.TestCase):
+    def test_control_api_image_packages_policy_module(self) -> None:
+        dockerfile = (ROOT / "apps" / "control-api" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("apps/control-api/session_event_policy.py", dockerfile)
+
     def test_invalid_payload_is_rejected_before_store_append(self) -> None:
         store = Mock()
         request = SessionEventRequest(
