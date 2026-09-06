@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, unquote_plus, urlsplit
 
 
 SENSITIVE_SRT_QUERY_KEYS = {"passphrase"}
+PUBLIC_SRT_QUERY_KEYS = {"conntimeo", "latency", "mode", "streamid"}
 SENSITIVE_STREAMID_NAMED_FIELDS = {
     "p",
     "pass",
@@ -34,16 +35,17 @@ SENSITIVE_STREAMID_MARKERS = (
 
 
 class DestinationUrlSafetyError(ValueError):
-    """A destination URL contains credential material that must not be stored."""
+    """A destination URL contains material that is unsafe to persist or probe."""
 
 
 def validate_destination_url_secret_safety(url: str) -> None:
-    """Reject credential-bearing URL forms without exposing their values.
+    """Reject credential-bearing or ambiguous URL forms without echoing values.
 
     Ordinary routing-only SRT stream IDs such as ``publish:probe`` remain
     supported. IRLight's authenticated four-part publish stream ID and named
     credential fields are rejected until a non-argv secret delivery path is
-    implemented.
+    implemented. SRT query options are allowlisted so an unknown option cannot
+    become a second, unvalidated credential channel.
     """
 
     try:
@@ -59,21 +61,25 @@ def validate_destination_url_secret_safety(url: str) -> None:
     if parsed.scheme.casefold() != "srt":
         return
 
-    seen_streamid = False
+    seen_keys: set[str] = set()
     for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
         key = _decode_repeated(raw_key).strip().casefold()
+        if key in seen_keys:
+            raise DestinationUrlSafetyError(
+                "SRT destination must not contain duplicate query parameters"
+            )
+        seen_keys.add(key)
+
         if key in SENSITIVE_SRT_QUERY_KEYS:
             raise DestinationUrlSafetyError(
                 "SRT secrets must be configured separately from server_url"
             )
-        if key != "streamid":
-            continue
-        if seen_streamid:
+        if key not in PUBLIC_SRT_QUERY_KEYS:
             raise DestinationUrlSafetyError(
-                "SRT destination must not contain duplicate streamid parameters"
+                "SRT destination contains an unsupported query parameter"
             )
-        seen_streamid = True
-        _validate_streamid(raw_value)
+        if key == "streamid":
+            _validate_streamid(raw_value)
 
 
 def _decode_repeated(value: str) -> str:
