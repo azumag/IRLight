@@ -92,10 +92,19 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
                         "node-0001": {
                             "node_id": "node-0001",
                             "session_id": node_session_id or session_id,
-                            "last_heartbeat_at": last_heartbeat_at,
+                            "provider_server_id": "provider-test",
+                            "boot_id": "boot-heartbeat-reaper",
+                            "agent_version": "test",
                             "status": "READY",
+                            "desired_state": "RUNNING",
+                            "absolute_deadline": 50_000.0,
+                            "last_heartbeat_at": last_heartbeat_at,
+                            "created_at": 1.0,
+                            "access_token_sha256": "0" * 64,
                         }
-                    }
+                    },
+                    "next_node_seq": 2,
+                    "tokens": {},
                 }
             ),
             encoding="utf-8",
@@ -155,7 +164,10 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
 
     def test_missing_node_record_uses_registration_time(self) -> None:
         session_id, _ = self._session(registered_at=80.0)
-        self.nodes_path.write_text(json.dumps({"nodes": {}}), encoding="utf-8")
+        self.nodes_path.write_text(
+            json.dumps({"nodes": {}, "next_node_seq": 1, "tokens": {}}),
+            encoding="utf-8",
+        )
 
         result = self._reaper(now=200.0).run()
         self.assertEqual(result["heartbeat_failures"], 1)
@@ -170,6 +182,18 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
         self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
 
         self.nodes_path.write_text("{broken", encoding="utf-8")
+        result = self._reaper(now=1_000.0).run()
+        self.assertEqual(result["heartbeat_failures"], 0)
+        self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
+        self.assertEqual(len(self.provider.list_managed_resources()), 2)
+
+    def test_structurally_corrupt_node_registry_skips_heartbeat_enforcement(self) -> None:
+        session_id, _ = self._session(registered_at=10.0)
+        self._write_nodes(session_id=session_id, last_heartbeat_at=0.0)
+        payload = json.loads(self.nodes_path.read_text(encoding="utf-8"))
+        payload["nodes"]["node-0001"]["status"] = "INVALID"
+        self.nodes_path.write_text(json.dumps(payload), encoding="utf-8")
+
         result = self._reaper(now=1_000.0).run()
         self.assertEqual(result["heartbeat_failures"], 0)
         self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")

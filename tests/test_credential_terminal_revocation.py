@@ -217,10 +217,21 @@ class TerminalCredentialRevocationTest(unittest.TestCase):
                     {
                         "nodes": {
                             "node-stale": {
+                                "node_id": "node-stale",
                                 "session_id": session_id,
+                                "provider_server_id": str(session["provider_server_id"]),
+                                "boot_id": "boot-test",
+                                "agent_version": "test",
+                                "status": "READY",
+                                "desired_state": "RUNNING",
+                                "absolute_deadline": 10_000.0,
                                 "last_heartbeat_at": 0,
+                                "created_at": 0.0,
+                                "access_token_sha256": "0" * 64,
                             }
-                        }
+                        },
+                        "next_node_seq": 1,
+                        "tokens": {},
                     }
                 ),
                 encoding="utf-8",

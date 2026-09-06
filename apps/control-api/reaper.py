@@ -13,7 +13,6 @@ It is safe to run repeatedly; every delete re-checks provider inventory.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -24,6 +23,7 @@ from typing import Any
 from provider.conoha import SessionMetadata
 
 from ingest_store import default_ingest_store
+from node_internal import NodeStateError, read_node_authority_snapshot
 from session_store import (
     ACTIVE_STATES,
     TERMINAL_STATES,
@@ -90,15 +90,10 @@ class Reaper:
         down otherwise healthy Sessions.
         """
         try:
-            with self.node_state_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
-            LOG.warning("cannot read node state %s: %s", self.node_state_path, exc)
+            return read_node_authority_snapshot(self.node_state_path)
+        except (NodeStateError, OSError) as exc:
+            LOG.warning("cannot trust node state %s: %s", self.node_state_path, exc)
             return None
-        if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), dict):
-            LOG.warning("invalid node state payload in %s", self.node_state_path)
-            return None
-        return payload
 
     @staticmethod
     def _heartbeat_baseline(
