@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -13,16 +15,22 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from auth_store import _default_sessions, _default_users  # noqa: E402
 from control_store import default_control  # noqa: E402
-from state_readiness import StateReadinessError, check_state_readiness  # noqa: E402
+from state_inspect_cli import main as inspect_main  # noqa: E402
+from state_readiness import (  # noqa: E402
+    StateReadinessError,
+    check_state_readiness,
+    inspect_state_readiness,
+)
 from state_safety import initialization_marker  # noqa: E402
 
 
 class StateReadinessPackagingTest(unittest.TestCase):
-    def test_control_api_image_copies_readiness_module(self) -> None:
+    def test_control_api_image_copies_readiness_modules(self) -> None:
         dockerfile = (ROOT / "apps" / "control-api" / "Dockerfile").read_text(
             encoding="utf-8"
         )
         self.assertIn("apps/control-api/state_readiness.py", dockerfile)
+        self.assertIn("apps/control-api/state_inspect_cli.py", dockerfile)
 
 
 class StateReadinessTest(unittest.TestCase):
@@ -80,6 +88,12 @@ class StateReadinessTest(unittest.TestCase):
             node_state_dir=self.node_state_dir,
         )
 
+    def _inspect(self) -> list[dict[str, str | None]]:
+        return inspect_state_readiness(
+            state_dir=self.state_dir,
+            node_state_dir=self.node_state_dir,
+        )
+
     def test_valid_readiness_does_not_create_or_rewrite_state(self) -> None:
         before = self._snapshot()
         self._check()
@@ -90,6 +104,89 @@ class StateReadinessTest(unittest.TestCase):
         self.assertFalse((self.state_dir / ".auth-state.lock").exists())
         self.assertFalse((self.state_dir / ".catalog.lock").exists())
         self.assertFalse((self.node_state_dir / ".node-state.lock").exists())
+
+    def test_inspector_reports_all_authorities_without_mutation(self) -> None:
+        before = self._snapshot()
+        checks = self._inspect()
+        self.assertEqual(self._snapshot(), before)
+        self.assertEqual(
+            [check["authority"] for check in checks],
+            [
+                "control",
+                "catalog",
+                "users",
+                "auth_sessions",
+                "nodes",
+                "legacy_bootstrap_tokens",
+            ],
+        )
+        self.assertTrue(all(check["status"] == "OK" for check in checks))
+        self.assertTrue(all(check["reason"] is None for check in checks))
+
+    def test_inspector_continues_after_one_authority_failure(self) -> None:
+        users_path = self.state_dir / "users.json"
+        users_path.unlink()
+        checks = {check["authority"]: check for check in self._inspect()}
+
+        self.assertEqual(checks["users"]["status"], "UNAVAILABLE")
+        self.assertIsNotNone(checks["users"]["reason"])
+        self.assertEqual(checks["auth_sessions"]["status"], "OK")
+        self.assertEqual(checks["nodes"]["status"], "OK")
+        self.assertFalse(users_path.exists())
+
+    def test_inspect_cli_is_machine_readable_and_redacts_state_details(self) -> None:
+        secret = "AUDIT_DUMMY_INSPECT_SECRET"
+        catalog_path = self.state_dir / "catalog.json"
+        catalog_path.write_text(
+            json.dumps(
+                {
+                    "destinations": {
+                        "unsafe": {
+                            "server_url": f"rtmp://user:{secret}@example.invalid/live"
+                        }
+                    },
+                    "assets": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = self._snapshot()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = inspect_main(
+                [
+                    "--state-dir",
+                    str(self.state_dir),
+                    "--node-state-dir",
+                    str(self.node_state_dir),
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["status"], "UNAVAILABLE")
+        catalog = next(
+            check for check in payload["checks"] if check["authority"] == "catalog"
+        )
+        self.assertEqual(catalog["status"], "UNAVAILABLE")
+        rendered = output.getvalue()
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn(str(self.root), rendered)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_inspect_cli_returns_zero_when_ready(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = inspect_main(
+                [
+                    "--state-dir",
+                    str(self.state_dir),
+                    "--node-state-dir",
+                    str(self.node_state_dir),
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "READY")
 
     def test_missing_authority_after_marker_is_not_recreated(self) -> None:
         users_path = self.state_dir / "users.json"
