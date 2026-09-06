@@ -19,7 +19,8 @@ COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/ingest_api.py apps/control-api/ingest_auth_guard.py \
      apps/control-api/ingest_store.py apps/control-api/pipeline_health.py \
      apps/control-api/control_store.py \
-     apps/control-api/session_api.py apps/control-api/session_store.py \
+     apps/control-api/session_api.py apps/control-api/session_event_policy.py \
+     apps/control-api/session_store.py \
      apps/control-api/session_workflow.py apps/control-api/state_safety.py \
      apps/control-api/state_readiness.py apps/control-api/state_inspect_cli.py \
      apps/control-api/reaper.py \
