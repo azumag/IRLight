@@ -187,6 +187,18 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
         self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
         self.assertEqual(len(self.provider.list_managed_resources()), 2)
 
+    def test_structurally_corrupt_node_registry_skips_heartbeat_enforcement(self) -> None:
+        session_id, _ = self._session(registered_at=10.0)
+        self._write_nodes(session_id=session_id, last_heartbeat_at=0.0)
+        payload = json.loads(self.nodes_path.read_text(encoding="utf-8"))
+        payload["nodes"]["node-0001"]["status"] = "INVALID"
+        self.nodes_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = self._reaper(now=1_000.0).run()
+        self.assertEqual(result["heartbeat_failures"], 0)
+        self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
+        self.assertEqual(len(self.provider.list_managed_resources()), 2)
+
     def test_future_heartbeat_does_not_fail_on_wall_clock_correction(self) -> None:
         session_id, _ = self._session(registered_at=100.0)
         self._write_nodes(session_id=session_id, last_heartbeat_at=500.0)

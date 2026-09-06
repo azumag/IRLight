@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -162,8 +163,9 @@ class NodeAuthorityValidationTest(unittest.TestCase):
             path.write_text(baseline, encoding="utf-8")
             state = valid_authority()
             state["nodes"]["node-0001"]["absolute_deadline"] = math.inf
-            with self.assertRaises(node_internal.NodeStateError):
-                node_internal._write_authority(state)
+            with patch.object(node_internal, "NODES_PATH", path):
+                with self.assertRaises(node_internal.NodeStateError):
+                    node_internal._write_authority(state)
             self.assertEqual(path.read_text(encoding="utf-8"), baseline)
 
     def test_request_models_reject_nonfinite_numbers_before_state_mutation(self) -> None:
