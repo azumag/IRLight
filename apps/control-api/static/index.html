@@ -37,7 +37,8 @@
   <h1>IRLight 配信コントロール</h1>
   <p id="statusAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
   <p id="actionAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-  <section class="card grid">
+  <h2 id="statusRegionHeading" class="sr-only">配信状態</h2>
+  <section class="card grid" aria-labelledby="statusRegionHeading">
     <span class="label">セッション</span><span id="session" class="value badge"><span id="sessionDot" class="dot"></span><span>読込中</span></span>
     <span class="label">表示中</span><span id="video" class="value">—</span>
     <span class="label">配信音声</span><span id="audio" class="value badge"><span id="audioDot" class="dot"></span><span>—</span></span>
@@ -49,13 +50,15 @@
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
   </section>
 
-  <section class="card">
+  <h2 id="audioControlHeading" class="sr-only">配信音声の操作</h2>
+  <section class="card" aria-labelledby="audioControlHeading">
     <button id="audioButton" aria-label="配信音声をミュート" aria-describedby="audioButtonHelp" disabled>状態を取得しています</button>
     <p id="audioButtonHelp" class="small">ミュートしても映像と配信接続は維持し、連続した無音AACを送ります。表示は指定状態ではなく実際の音声状態を優先し、最新指示をランタイムが確認するまでは次の操作を受け付けません。</p>
     <p id="error" class="error" role="alert"></p>
   </section>
 
-  <section class="card small">
+  <h2 id="phase0NoticeHeading" class="sr-only">Phase 0 ローカルPoCの注意事項</h2>
+  <section class="card small" aria-labelledby="phase0NoticeHeading">
     <strong>Phase 0 ローカルPoC</strong><br>
     認証・TLS・複数ユーザー制御は未実装です。インターネットへ公開しないでください。現在地・時刻・通信指標の映像オーバーレイは次フェーズです。
   </section>
