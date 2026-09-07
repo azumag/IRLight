@@ -11,6 +11,8 @@ IRLight の Control API は `apps/control-api/Dockerfile` と同じ Python 3.13 
 
 脆弱性監査は `--strict` を使用する。依存収集に失敗した場合を成功扱いにしない。通常の runtime requirements が既知脆弱性を含む場合もジョブを失敗させる。
 
+runtime audit は JSON report を `runtime-dependency-audit` artifact として7日間保持する。内容は解決済み dependency の名称・version と advisory metadata であり、secret や production credential を収集しない。監査が赤になった場合は report を根拠に対象 package と advisory を特定し、監査を無効化せず依存更新または明示的な時限例外を別 PR で扱う。
+
 ## Audit contract fixtures
 
 監査経路そのものが壊れていないことを確認するため、CI は次の fixture も検査する。
