@@ -1,3 +1,5 @@
-fastapi==0.116.1
+fastapi==0.141.1
+# Security floor: patched Range parsing and Host URL reconstruction.
+starlette==1.6.0
 uvicorn[standard]==0.35.0
 cryptography==49.0.0
