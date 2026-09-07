@@ -27,12 +27,14 @@
     button:disabled { opacity: .55; cursor: wait; }
     .small { color: #aebbd5; font-size: .88rem; line-height: 1.55; }
     .error { color: #fda4af; min-height: 1.5em; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   </style>
 </head>
 <body>
 <main>
   <h1>IRLight 配信コントロール</h1>
-  <section class="card grid" aria-live="polite">
+  <p id="statusAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+  <section class="card grid">
     <span class="label">セッション</span><span id="session" class="value badge"><span id="sessionDot" class="dot"></span><span>読込中</span></span>
     <span class="label">表示中</span><span id="video" class="value">—</span>
     <span class="label">配信音声</span><span id="audio" class="value badge"><span id="audioDot" class="dot"></span><span>—</span></span>
@@ -65,9 +67,16 @@ let controlUnavailable = false;
 let refreshPromise = null;
 let snapshotReceivedAtMs = null;
 let snapshotRequestAgeSeconds = Number.POSITIVE_INFINITY;
+let lastAnnouncedStatus = null;
 
 function textForSession(value) {
   return ({LIVE:'通常映像', HOLDING:'待機中', STABILIZING:'復帰確認中', STARTING:'起動中'})[value] || value || '不明';
+}
+
+function announceStatus(message) {
+  if (message === lastAnnouncedStatus) return;
+  lastAnnouncedStatus = message;
+  $('statusAnnouncement').textContent = message;
 }
 
 function audioState(control, runtime, serverTime, snapshotAgeSeconds = 0) {
@@ -129,6 +138,7 @@ function renderUnavailable() {
   button.disabled = true;
   button.className = 'unknown';
   button.textContent = controlUnavailable ? '音声制御APIは利用できません' : '状態を再取得しています';
+  announceStatus('配信状態を確認できません');
 }
 
 function render(data) {
@@ -144,7 +154,8 @@ function render(data) {
     : snapshotRequestAgeSeconds + (Date.now() - snapshotReceivedAtMs) / 1000;
   const state = audioState(c, r, data.server_time, snapshotAgeSeconds);
   const runtimeTrusted = !state.runtimeStale;
-  $('session').lastElementChild.textContent = runtimeTrusted ? textForSession(r.session_status) : '状態確認不能';
+  const sessionLabel = runtimeTrusted ? textForSession(r.session_status) : '状態確認不能';
+  $('session').lastElementChild.textContent = sessionLabel;
   $('sessionDot').className = 'dot ' + (runtimeTrusted && r.session_status === 'LIVE' ? 'live' : 'warn');
   $('video').textContent = runtimeTrusted ? (r.video_source === 'LIVE' ? '通常映像' : '待機画面') : '状態確認不能';
   $('audio').lastElementChild.textContent = state.label;
@@ -171,12 +182,13 @@ function render(data) {
         : (!state.commandAcked
           ? '最新の指示を反映中…'
           : (state.desired === 'MUTED' ? '配信音声をオンに戻す' : '配信音声をミュートする')))));
+  announceStatus(runtimeTrusted ? `セッション ${sessionLabel}。配信音声 ${state.label}` : '配信状態を確認できません');
 }
 
 function markStatusUnavailable(message) {
   statusAvailable = false;
   renderUnavailable();
-  $('error').textContent = message;
+  if ($('error').textContent !== message) $('error').textContent = message;
 }
 
 function refresh() {
@@ -193,7 +205,7 @@ function refresh() {
       snapshotRequestAgeSeconds = requestAgeSeconds >= 0 ? requestAgeSeconds : Number.POSITIVE_INFINITY;
       statusAvailable = true;
       render(data);
-      $('error').textContent = '';
+      if ($('error').textContent) $('error').textContent = '';
     } catch (error) {
       markStatusUnavailable(`状態取得に失敗: ${error.message}`);
     }
