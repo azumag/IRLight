@@ -76,6 +76,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const RUNTIME_STALE_SECONDS = 3;
+const REQUEST_TIMEOUT_MS = 5000;
 let snapshot = null;
 let applying = false;
 let statusAvailable = false;
@@ -100,6 +101,16 @@ function syncActionBusyState(button) {
     button.setAttribute('aria-busy', 'true');
   } else {
     button.removeAttribute('aria-busy');
+  }
+}
+
+async function fetchWithTimeout(resource, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(resource, {...options, signal: controller.signal});
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -271,7 +282,7 @@ function refresh() {
   refreshPromise = (async () => {
     const requestStartedAtMs = Date.now();
     try {
-      const response = await fetch('/api/status', {cache:'no-store'});
+      const response = await fetchWithTimeout('/api/status', {cache:'no-store'});
       if (!response.ok) throw new Error(`status ${response.status}`);
       const data = await response.json();
       const receivedAtMs = Date.now();
@@ -305,7 +316,7 @@ $('audioButton').addEventListener('click', async () => {
   render(snapshot);
   const idempotencyKey = crypto.randomUUID();
   try {
-    const response = await fetch('/api/audio', {
+    const response = await fetchWithTimeout('/api/audio', {
       method: 'PUT',
       headers: {'Content-Type':'application/json', 'Idempotency-Key': idempotencyKey},
       body: JSON.stringify({mode: target, expected_version: control.version || 0})
