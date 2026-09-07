@@ -228,6 +228,7 @@ function renderUnavailable() {
   $('stickyConnection').textContent = '再接続中…';
   $('stickyChecked').textContent = lastCheckedText();
   $('statusRetryButton').hidden = false;
+  syncStatusRetryBusyState();
   $('audio').lastElementChild.textContent = unknown;
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
@@ -298,6 +299,18 @@ function render(data) {
   announceStatus(runtimeTrusted ? `セッション ${sessionLabel}。配信音声 ${state.label}` : '配信状態を確認できません');
 }
 
+function syncStatusRetryBusyState() {
+  const button = $('statusRetryButton');
+  const busy = refreshPromise !== null;
+  button.disabled = busy;
+  button.textContent = busy ? '再確認中…' : '今すぐ再確認';
+  if (busy) {
+    button.setAttribute('aria-busy', 'true');
+  } else {
+    button.removeAttribute('aria-busy');
+  }
+}
+
 function markStatusUnavailable(message) {
   statusAvailable = false;
   renderUnavailable();
@@ -306,7 +319,7 @@ function markStatusUnavailable(message) {
 
 function refresh() {
   if (refreshPromise) return refreshPromise;
-  refreshPromise = (async () => {
+  const request = (async () => {
     const requestStartedAtMs = Date.now();
     lastStatusAttemptAtMonotonicMs = performance.now();
     try {
@@ -325,9 +338,12 @@ function refresh() {
       markStatusUnavailable(`状態取得に失敗: ${error.message}`);
     }
   })();
-  return refreshPromise.finally(() => {
+  refreshPromise = request.finally(() => {
     refreshPromise = null;
+    syncStatusRetryBusyState();
   });
+  syncStatusRetryBusyState();
+  return refreshPromise;
 }
 
 async function refreshAfterCurrent() {
