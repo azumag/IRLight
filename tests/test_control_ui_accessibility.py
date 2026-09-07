@@ -58,6 +58,19 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn("@media (forced-colors: active)", INDEX)
         self.assertIn("button:focus-visible { outline-color: CanvasText; box-shadow: none; }", INDEX)
 
+    def test_audio_action_progress_is_announced_without_reusing_polling_status(self) -> None:
+        self.assertIn(
+            'id="actionAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"',
+            INDEX,
+        )
+        self.assertIn("$('actionAnnouncement').textContent = message", INDEX)
+        self.assertIn("function syncActionBusyState(button)", INDEX)
+        self.assertIn("button.setAttribute('aria-busy', 'true')", INDEX)
+        self.assertIn("button.removeAttribute('aria-busy')", INDEX)
+        self.assertGreaterEqual(INDEX.count("syncActionBusyState(button)"), 3)
+        self.assertIn("配信音声のミュート指示を送信中です", INDEX)
+        self.assertIn("配信音声のミュート解除指示を送信中です", INDEX)
+
     def test_primary_audio_action_exposes_toggle_semantics_only_for_trusted_state(self) -> None:
         self.assertIn(
             'id="audioButton" aria-label="配信音声をミュート" aria-describedby="audioButtonHelp" disabled',

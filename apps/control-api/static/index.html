@@ -36,6 +36,7 @@
 <main>
   <h1>IRLight 配信コントロール</h1>
   <p id="statusAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+  <p id="actionAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
   <section class="card grid">
     <span class="label">セッション</span><span id="session" class="value badge"><span id="sessionDot" class="dot"></span><span>読込中</span></span>
     <span class="label">表示中</span><span id="video" class="value">—</span>
@@ -72,6 +73,18 @@ let snapshotRequestAgeSeconds = Number.POSITIVE_INFINITY;
 let lastAnnouncedStatus = null;
 let statusErrorMessage = '';
 let actionErrorMessage = '';
+
+function announceAction(message) {
+  $('actionAnnouncement').textContent = message;
+}
+
+function syncActionBusyState(button) {
+  if (applying) {
+    button.setAttribute('aria-busy', 'true');
+  } else {
+    button.removeAttribute('aria-busy');
+  }
+}
 
 function textForSession(value) {
   return ({LIVE:'通常映像', HOLDING:'待機中', STABILIZING:'復帰確認中', STARTING:'起動中'})[value] || value || '不明';
@@ -167,6 +180,7 @@ function renderUnavailable() {
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
   button.disabled = true;
+  syncActionBusyState(button);
   button.removeAttribute('aria-pressed');
   button.className = 'unknown';
   button.textContent = controlUnavailable ? '音声制御APIは利用できません' : '状態を再取得しています';
@@ -202,6 +216,7 @@ function render(data) {
   $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
   button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.actualKnown || !state.commandAcked;
+  syncActionBusyState(button);
   if (state.runtimeStale || !state.actualKnown || !state.commandAcked) {
     button.removeAttribute('aria-pressed');
   } else {
@@ -263,9 +278,10 @@ $('audioButton').addEventListener('click', async () => {
   if (!snapshot || applying || $('audioButton').disabled) return;
   clearActionError();
   applying = true;
-  render(snapshot);
   const control = snapshot.control || {};
   const target = control.audio_mode === 'MUTED' ? 'LIVE' : 'MUTED';
+  announceAction(target === 'MUTED' ? '配信音声のミュート指示を送信中です' : '配信音声のミュート解除指示を送信中です');
+  render(snapshot);
   const idempotencyKey = crypto.randomUUID();
   try {
     const response = await fetch('/api/audio', {
