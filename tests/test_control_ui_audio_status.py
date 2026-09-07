@@ -73,6 +73,18 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("statusAvailable = false", INDEX)
         self.assertIn("if (!statusAvailable) {\n    renderUnavailable();\n    return;", INDEX)
 
+    def test_unavailable_status_offers_an_explicit_manual_retry(self) -> None:
+        self.assertIn(
+            '<button id="statusRetryButton" class="status-retry" type="button" aria-describedby="connectionHelp" hidden>今すぐ再確認</button>',
+            INDEX,
+        )
+        self.assertIn("$('statusRetryButton').hidden = false", INDEX)
+        self.assertIn("$('statusRetryButton').hidden = true", INDEX)
+        self.assertIn("$('statusRetryButton').addEventListener('click', () => {", INDEX)
+        retry_start = INDEX.index("$('statusRetryButton').addEventListener('click', () => {")
+        retry_end = INDEX.index("});", retry_start)
+        self.assertIn("refresh();", INDEX[retry_start:retry_end])
+
     def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
         self.assertIn(
             "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
