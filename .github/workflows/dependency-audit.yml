@@ -1,0 +1,98 @@
+name: Dependency audit
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-consistency:
+    name: dependency-consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/control-api/requirements.txt
+      - name: Install runtime dependencies
+        run: python -m pip install -r apps/control-api/requirements.txt
+      - name: Check resolved dependency compatibility
+        run: python -m pip check
+
+  dependency-vulnerability-audit:
+    name: dependency-vulnerability-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/control-api/requirements.txt
+      - name: Install audit tooling
+        run: python -m pip install pip-audit==2.10.1
+      - name: Verify the audit detects a known advisory
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          python -m pip_audit \
+            --strict \
+            --progress-spinner off \
+            --format json \
+            --output /tmp/known-vulnerable.json \
+            --requirement tests/fixtures/dependency-audit/known-vulnerable.txt
+          audit_status=$?
+          set -e
+
+          if [[ "$audit_status" -ne 1 ]]; then
+            echo "Expected the known-vulnerable fixture to produce pip-audit exit code 1; got ${audit_status}." >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report_path = Path("/tmp/known-vulnerable.json")
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          matches = [
+              dependency
+              for dependency in report.get("dependencies", report if isinstance(report, list) else [])
+              if dependency.get("name", "").lower() == "starlette"
+              and dependency.get("version") == "0.47.3"
+              and dependency.get("vulns")
+          ]
+          if not matches:
+              raise SystemExit("Known-vulnerable Starlette fixture did not produce an advisory result")
+          PY
+      - name: Verify the patched fixture is clean
+        run: |
+          python -m pip_audit \
+            --strict \
+            --progress-spinner off \
+            --requirement tests/fixtures/dependency-audit/patched.txt
+      - name: Audit runtime requirements
+        run: |
+          # Keep dependency resolution enabled so transitive packages are audited too.
+          # Do not add --ignore-vuln without a documented, time-bounded exception.
+          python -m pip_audit \
+            --strict \
+            --progress-spinner off \
+            --requirement apps/control-api/requirements.txt
