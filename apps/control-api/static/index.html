@@ -26,6 +26,7 @@
     .status-summary-item { min-width: 0; display: flex; align-items: baseline; gap: .35rem; }
     .status-summary-label { flex: 0 0 auto; color: #aebbd5; font-size: .78rem; }
     .status-summary-value { min-width: 0; font-weight: 800; overflow-wrap: anywhere; }
+    .status-retry { grid-column: 1 / -1; min-height: 2.75rem; border: 1px solid #52617f; border-radius: .75rem; background: #24304a; color: #f8fafc; font-size: .95rem; padding: .6rem .8rem; }
     button { width: 100%; min-height: 5.2rem; border: 0; border-radius: 1rem; font-size: 1.25rem; font-weight: 850; padding: 1rem; cursor: pointer; touch-action: manipulation; }
     button.live { background: #e11d48; color: white; }
     button.muted { background: #10b981; color: #06120e; }
@@ -64,6 +65,7 @@
     <span class="label">管理接続</span><span id="connection" class="value" aria-describedby="connectionHelp">接続中…</span>
     <span class="label">最終確認</span><span id="checked" class="value">—</span>
     <p id="connectionHelp" class="grid-note small">「管理接続」はこの画面と Control API の通信状態です。入力映像・配信音声・配信先の接続状態とは別に確認してください。</p>
+    <button id="statusRetryButton" class="status-retry" type="button" aria-describedby="connectionHelp" hidden>今すぐ再確認</button>
   </section>
 
   <h2 id="audioControlHeading" class="sr-only">配信音声の操作</h2>
@@ -225,6 +227,7 @@ function renderUnavailable() {
   $('checked').textContent = lastCheckedText();
   $('stickyConnection').textContent = '再接続中…';
   $('stickyChecked').textContent = lastCheckedText();
+  $('statusRetryButton').hidden = false;
   $('audio').lastElementChild.textContent = unknown;
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
@@ -264,6 +267,7 @@ function render(data) {
   $('checked').textContent = lastCheckedText();
   $('stickyConnection').textContent = '接続済み';
   $('stickyChecked').textContent = lastCheckedText();
+  $('statusRetryButton').hidden = true;
   $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
   $('actual').textContent = state.actualLabel;
   const controlVersion = Number.isInteger(c.version) ? c.version : '—';
@@ -330,6 +334,10 @@ async function refreshAfterCurrent() {
   if (refreshPromise) await refreshPromise;
   await refresh();
 }
+
+$('statusRetryButton').addEventListener('click', () => {
+  refresh();
+});
 
 $('audioButton').addEventListener('click', async () => {
   if (!snapshot || applying || $('audioButton').disabled) return;
