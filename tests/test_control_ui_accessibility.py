@@ -106,6 +106,14 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn("$('stickyAudio').textContent = state.label", INDEX)
         self.assertIn("$('stickyConnection').textContent = '接続済み'", INDEX)
 
+    def test_manual_status_retry_reports_busy_state_without_duplicate_requests(self) -> None:
+        self.assertIn("function syncStatusRetryBusyState()", INDEX)
+        self.assertIn("button.disabled = busy", INDEX)
+        self.assertIn("button.textContent = busy ? '再確認中…' : '今すぐ再確認'", INDEX)
+        self.assertIn("button.setAttribute('aria-busy', 'true')", INDEX)
+        self.assertIn("button.removeAttribute('aria-busy')", INDEX)
+        self.assertIn("if (refreshPromise) return refreshPromise", INDEX)
+
     def test_primary_audio_action_has_visible_keyboard_focus(self) -> None:
         self.assertIn(
             "button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }",

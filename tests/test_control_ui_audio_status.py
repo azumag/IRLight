@@ -85,6 +85,17 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         retry_end = INDEX.index("});", retry_start)
         self.assertIn("refresh();", INDEX[retry_start:retry_end])
 
+    def test_manual_status_retry_exposes_in_flight_progress(self) -> None:
+        self.assertIn("function syncStatusRetryBusyState()", INDEX)
+        self.assertIn("const busy = refreshPromise !== null", INDEX)
+        self.assertIn("button.disabled = busy", INDEX)
+        self.assertIn("button.textContent = busy ? '再確認中…' : '今すぐ再確認'", INDEX)
+        self.assertIn("button.setAttribute('aria-busy', 'true')", INDEX)
+        self.assertIn("button.removeAttribute('aria-busy')", INDEX)
+        self.assertIn("refreshPromise = request.finally(() => {", INDEX)
+        self.assertIn("refreshPromise = null;\n    syncStatusRetryBusyState();", INDEX)
+        self.assertGreaterEqual(INDEX.count("syncStatusRetryBusyState();"), 3)
+
     def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
         self.assertIn(
             "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
