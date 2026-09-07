@@ -58,6 +58,22 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn("@media (forced-colors: active)", INDEX)
         self.assertIn("button:focus-visible { outline-color: CanvasText; box-shadow: none; }", INDEX)
 
+    def test_primary_audio_action_exposes_toggle_semantics_only_for_trusted_state(self) -> None:
+        self.assertIn(
+            'id="audioButton" aria-describedby="audioButtonHelp" disabled',
+            INDEX,
+        )
+        self.assertIn('id="audioButtonHelp" class="small"', INDEX)
+        self.assertIn("button.removeAttribute('aria-pressed')", INDEX)
+        self.assertIn(
+            "button.setAttribute('aria-pressed', state.desired === 'MUTED' ? 'true' : 'false')",
+            INDEX,
+        )
+        self.assertIn(
+            "if (state.runtimeStale || !state.actualKnown || !state.commandAcked)",
+            INDEX,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
