@@ -66,7 +66,7 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertNotIn("'checked', 'updated'", INDEX)
 
     def test_control_api_reconnect_state_is_visible_without_reusing_cached_runtime(self) -> None:
-        self.assertIn('<span class="label">管理接続</span><span id="connection" class="value">接続中…</span>', INDEX)
+        self.assertIn('<span class="label">管理接続</span><span id="connection" class="value" aria-describedby="connectionHelp">接続中…</span>', INDEX)
         self.assertIn("$('connection').textContent = '再接続中…'", INDEX)
         self.assertIn("$('connection').textContent = '接続済み'", INDEX)
         self.assertIn("$('checked').textContent = lastCheckedText()", INDEX)

@@ -77,6 +77,17 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
             INDEX,
         )
 
+    def test_control_connection_scope_is_explained_in_the_ui(self) -> None:
+        self.assertIn(
+            'id="connection" class="value" aria-describedby="connectionHelp"',
+            INDEX,
+        )
+        self.assertIn(
+            '<p id="connectionHelp" class="grid-note small">「管理接続」はこの画面と Control API の通信状態です。入力映像・配信音声・配信先の接続状態とは別に確認してください。</p>',
+            INDEX,
+        )
+        self.assertIn('.grid-note { grid-column: 1 / -1; margin: .15rem 0 0; }', INDEX)
+
     def test_compact_mobile_status_summary_stays_visible_without_duplicate_accessible_output(self) -> None:
         self.assertIn(
             ".status-summary { position: sticky; top: max(.5rem, env(safe-area-inset-top));",
