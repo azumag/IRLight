@@ -342,6 +342,7 @@ window.addEventListener('pageshow', (event) => {
 
 refresh();
 setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
   if (snapshot && statusAvailable) render(snapshot);
   refresh();
 }, 1000);
