@@ -37,6 +37,19 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
             INDEX,
         )
 
+    def test_polling_recovery_preserves_action_feedback(self) -> None:
+        self.assertIn("let statusErrorMessage = ''", INDEX)
+        self.assertIn("let actionErrorMessage = ''", INDEX)
+        self.assertIn("const message = [statusErrorMessage, actionErrorMessage].filter(Boolean).join(' / ')", INDEX)
+        self.assertIn("setStatusError(message)", INDEX)
+        self.assertIn("clearStatusError()", INDEX)
+        self.assertIn("setActionError('別画面で状態が更新されました。最新状態を再取得しました')", INDEX)
+        self.assertNotIn("if ($('error').textContent) $('error').textContent = ''", INDEX)
+
+    def test_action_feedback_clears_when_a_new_action_starts(self) -> None:
+        self.assertIn("clearActionError();\n  applying = true;", INDEX)
+        self.assertIn("setActionError(`音声切替に失敗: ${error.message}。${recovery}`)", INDEX)
+
 
 if __name__ == "__main__":
     unittest.main()
