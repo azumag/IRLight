@@ -136,6 +136,16 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("if (event.persisted) refreshOnResume()", INDEX)
         self.assertIn("if (refreshPromise) return refreshPromise", INDEX)
 
+    def test_browser_network_events_fail_closed_and_retry_immediately(self) -> None:
+        self.assertIn("function markNetworkOffline()", INDEX)
+        self.assertIn(
+            "markStatusUnavailable('ネットワークがオフラインです。接続復帰後に状態を再取得します')",
+            INDEX,
+        )
+        self.assertIn("function refreshOnNetworkOnline()", INDEX)
+        self.assertIn("window.addEventListener('offline', markNetworkOffline)", INDEX)
+        self.assertIn("window.addEventListener('online', refreshOnNetworkOnline)", INDEX)
+
 
 if __name__ == "__main__":
     unittest.main()

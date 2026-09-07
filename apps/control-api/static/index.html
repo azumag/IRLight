@@ -380,10 +380,21 @@ function refreshOnResume() {
   refresh();
 }
 
+function markNetworkOffline() {
+  markStatusUnavailable('ネットワークがオフラインです。接続復帰後に状態を再取得します');
+}
+
+function refreshOnNetworkOnline() {
+  if (document.visibilityState !== 'visible') return;
+  refresh();
+}
+
 document.addEventListener('visibilitychange', refreshOnResume);
 window.addEventListener('pageshow', (event) => {
   if (event.persisted) refreshOnResume();
 });
+window.addEventListener('offline', markNetworkOffline);
+window.addEventListener('online', refreshOnNetworkOnline);
 
 refresh();
 setInterval(() => {
