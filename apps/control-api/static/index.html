@@ -44,6 +44,8 @@
   <div class="status-summary" aria-hidden="true">
     <div class="status-summary-item"><span class="status-summary-label">セッション</span><span id="stickySession" class="status-summary-value">読込中</span></div>
     <div class="status-summary-item"><span class="status-summary-label">音声</span><span id="stickyAudio" class="status-summary-value">—</span></div>
+    <div class="status-summary-item"><span class="status-summary-label">管理接続</span><span id="stickyConnection" class="status-summary-value">接続中…</span></div>
+    <div class="status-summary-item"><span class="status-summary-label">最終確認</span><span id="stickyChecked" class="status-summary-value">—</span></div>
   </div>
   <p id="statusAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
   <p id="actionAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -217,6 +219,8 @@ function renderUnavailable() {
   }
   $('connection').textContent = '再接続中…';
   $('checked').textContent = lastCheckedText();
+  $('stickyConnection').textContent = '再接続中…';
+  $('stickyChecked').textContent = lastCheckedText();
   $('audio').lastElementChild.textContent = unknown;
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
@@ -254,6 +258,8 @@ function render(data) {
   $('updated').textContent = runtimeTrusted && r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '状態確認不能';
   $('connection').textContent = '接続済み';
   $('checked').textContent = lastCheckedText();
+  $('stickyConnection').textContent = '接続済み';
+  $('stickyChecked').textContent = lastCheckedText();
   $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
   $('actual').textContent = state.actualLabel;
   const controlVersion = Number.isInteger(c.version) ? c.version : '—';

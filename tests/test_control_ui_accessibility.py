@@ -85,10 +85,15 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn('<div class="status-summary" aria-hidden="true">', INDEX)
         self.assertIn('id="stickySession" class="status-summary-value"', INDEX)
         self.assertIn('id="stickyAudio" class="status-summary-value"', INDEX)
+        self.assertIn('id="stickyConnection" class="status-summary-value"', INDEX)
+        self.assertIn('id="stickyChecked" class="status-summary-value"', INDEX)
         self.assertIn("$('stickySession').textContent = unknown", INDEX)
         self.assertIn("$('stickyAudio').textContent = unknown", INDEX)
+        self.assertIn("$('stickyConnection').textContent = '再接続中…'", INDEX)
+        self.assertIn("$('stickyChecked').textContent = lastCheckedText()", INDEX)
         self.assertIn("$('stickySession').textContent = sessionLabel", INDEX)
         self.assertIn("$('stickyAudio').textContent = state.label", INDEX)
+        self.assertIn("$('stickyConnection').textContent = '接続済み'", INDEX)
 
     def test_primary_audio_action_has_visible_keyboard_focus(self) -> None:
         self.assertIn(
