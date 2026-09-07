@@ -58,6 +58,7 @@
     <span class="label">実状態</span><span id="actual" class="value">—</span>
     <span class="label">バージョン</span><span id="version" class="value">—</span>
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
+    <span class="label">管理接続</span><span id="connection" class="value">接続中…</span>
     <span class="label">最終確認</span><span id="checked" class="value">—</span>
   </section>
 
@@ -214,6 +215,7 @@ function renderUnavailable() {
   for (const id of ['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']) {
     $(id).textContent = unknown;
   }
+  $('connection').textContent = '再接続中…';
   $('checked').textContent = lastCheckedText();
   $('audio').lastElementChild.textContent = unknown;
   $('audioDot').className = 'dot warn';
@@ -250,6 +252,7 @@ function render(data) {
   $('inputVideo').textContent = runtimeTrusted ? (r.input_video_recent ? '受信中' : '停止') : '状態確認不能';
   $('inputAudio').textContent = runtimeTrusted ? (r.input_audio_recent ? '受信中' : '停止／なし') : '状態確認不能';
   $('updated').textContent = runtimeTrusted && r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '状態確認不能';
+  $('connection').textContent = '接続済み';
   $('checked').textContent = lastCheckedText();
   $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
   $('actual').textContent = state.actualLabel;
