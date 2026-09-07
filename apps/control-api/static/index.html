@@ -24,6 +24,8 @@
     button.live { background: #e11d48; color: white; }
     button.muted { background: #10b981; color: #06120e; }
     button.unknown { background: #475569; color: #f8fafc; }
+    button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }
+    @media (forced-colors: active) { button:focus-visible { outline-color: CanvasText; box-shadow: none; } }
     button:disabled { opacity: .55; cursor: wait; }
     .small { color: #aebbd5; font-size: .88rem; line-height: 1.55; }
     .error { color: #fda4af; min-height: 1.5em; }
