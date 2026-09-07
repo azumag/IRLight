@@ -50,6 +50,14 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn("clearActionError();\n  applying = true;", INDEX)
         self.assertIn("setActionError(`音声切替に失敗: ${error.message}。${recovery}`)", INDEX)
 
+    def test_primary_audio_action_has_visible_keyboard_focus(self) -> None:
+        self.assertIn(
+            "button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }",
+            INDEX,
+        )
+        self.assertIn("@media (forced-colors: active)", INDEX)
+        self.assertIn("button:focus-visible { outline-color: CanvasText; box-shadow: none; }", INDEX)
+
 
 if __name__ == "__main__":
     unittest.main()
