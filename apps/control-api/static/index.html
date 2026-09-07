@@ -21,6 +21,10 @@
     .dot.live { background: #34d399; }
     .dot.warn { background: #fbbf24; }
     .dot.muted { background: #fb7185; }
+    .status-summary { position: sticky; top: max(.5rem, env(safe-area-inset-top)); z-index: 10; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem; margin: 0 0 1rem; padding: .6rem .75rem; border: 1px solid #2a3654; border-radius: .8rem; background: rgba(21, 29, 49, .96); box-shadow: 0 .35rem 1rem rgba(0, 0, 0, .3); }
+    .status-summary-item { min-width: 0; display: flex; align-items: baseline; gap: .35rem; }
+    .status-summary-label { flex: 0 0 auto; color: #aebbd5; font-size: .78rem; }
+    .status-summary-value { min-width: 0; font-weight: 800; overflow-wrap: anywhere; }
     button { width: 100%; min-height: 5.2rem; border: 0; border-radius: 1rem; font-size: 1.25rem; font-weight: 850; padding: 1rem; cursor: pointer; touch-action: manipulation; }
     button.live { background: #e11d48; color: white; }
     button.muted { background: #10b981; color: #06120e; }
@@ -37,6 +41,10 @@
 <body>
 <main>
   <h1>IRLight 配信コントロール</h1>
+  <div class="status-summary" aria-hidden="true">
+    <div class="status-summary-item"><span class="status-summary-label">セッション</span><span id="stickySession" class="status-summary-value">読込中</span></div>
+    <div class="status-summary-item"><span class="status-summary-label">音声</span><span id="stickyAudio" class="status-summary-value">—</span></div>
+  </div>
   <p id="statusAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
   <p id="actionAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
   <h2 id="statusRegionHeading" class="sr-only">配信状態</h2>
@@ -180,6 +188,8 @@ function audioState(control, runtime, serverTime, snapshotAgeSeconds = 0) {
 
 function renderUnavailable() {
   const unknown = '状態確認不能';
+  $('stickySession').textContent = unknown;
+  $('stickyAudio').textContent = unknown;
   $('session').lastElementChild.textContent = unknown;
   $('sessionDot').className = 'dot warn';
   for (const id of ['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']) {
@@ -210,6 +220,8 @@ function render(data) {
   const state = audioState(c, r, data.server_time, snapshotAgeSeconds);
   const runtimeTrusted = !state.runtimeStale;
   const sessionLabel = runtimeTrusted ? textForSession(r.session_status) : '状態確認不能';
+  $('stickySession').textContent = sessionLabel;
+  $('stickyAudio').textContent = state.label;
   $('session').lastElementChild.textContent = sessionLabel;
   $('sessionDot').className = 'dot ' + (runtimeTrusted && r.session_status === 'LIVE' ? 'live' : 'warn');
   $('video').textContent = runtimeTrusted ? (r.video_source === 'LIVE' ? '通常映像' : '待機画面') : '状態確認不能';
