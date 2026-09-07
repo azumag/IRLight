@@ -90,6 +90,15 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("controlUnavailable = true", INDEX)
         self.assertIn("音声制御APIは利用できません", INDEX)
 
+    def test_mobile_resume_rechecks_cached_state_immediately(self) -> None:
+        self.assertIn("function refreshOnResume()", INDEX)
+        self.assertIn("if (document.visibilityState !== 'visible') return", INDEX)
+        self.assertIn("if (snapshot && statusAvailable) render(snapshot)", INDEX)
+        self.assertIn("document.addEventListener('visibilitychange', refreshOnResume)", INDEX)
+        self.assertIn("window.addEventListener('pageshow', (event) =>", INDEX)
+        self.assertIn("if (event.persisted) refreshOnResume()", INDEX)
+        self.assertIn("if (refreshPromise) return refreshPromise", INDEX)
+
 
 if __name__ == "__main__":
     unittest.main()

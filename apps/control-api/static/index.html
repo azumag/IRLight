@@ -329,6 +329,17 @@ $('audioButton').addEventListener('click', async () => {
   }
 });
 
+function refreshOnResume() {
+  if (document.visibilityState !== 'visible') return;
+  if (snapshot && statusAvailable) render(snapshot);
+  refresh();
+}
+
+document.addEventListener('visibilitychange', refreshOnResume);
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) refreshOnResume();
+});
+
 refresh();
 setInterval(() => {
   if (snapshot && statusAvailable) render(snapshot);
