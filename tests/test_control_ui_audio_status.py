@@ -72,12 +72,16 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
 
     def test_status_and_control_requests_have_a_bounded_timeout(self) -> None:
         self.assertIn("const REQUEST_TIMEOUT_MS = 5000", INDEX)
-        self.assertIn("async function fetchWithTimeout(resource, options = {})", INDEX)
+        self.assertIn("async function fetchWithTimeout(resource, options, consumeResponse)", INDEX)
         self.assertIn("const controller = new AbortController()", INDEX)
         self.assertIn("setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)", INDEX)
+        self.assertIn("signal: controller.signal", INDEX)
+        self.assertIn("return await consumeResponse(response)", INDEX)
         self.assertIn("clearTimeout(timeoutId)", INDEX)
-        self.assertIn("fetchWithTimeout('/api/status', {cache:'no-store'})", INDEX)
+        self.assertIn("fetchWithTimeout('/api/status', {cache:'no-store'}, async (response) =>", INDEX)
+        self.assertIn("return await response.json()", INDEX)
         self.assertIn("fetchWithTimeout('/api/audio', {", INDEX)
+        self.assertIn("async (response) => ({status: response.status, ok: response.ok})", INDEX)
 
     def test_cached_snapshot_ages_out_while_status_request_is_in_flight(self) -> None:
         self.assertIn("let snapshotReceivedAtMs = null", INDEX)

@@ -104,11 +104,12 @@ function syncActionBusyState(button) {
   }
 }
 
-async function fetchWithTimeout(resource, options = {}) {
+async function fetchWithTimeout(resource, options, consumeResponse) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(resource, {...options, signal: controller.signal});
+    const response = await fetch(resource, {...options, signal: controller.signal});
+    return await consumeResponse(response);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -282,9 +283,10 @@ function refresh() {
   refreshPromise = (async () => {
     const requestStartedAtMs = Date.now();
     try {
-      const response = await fetchWithTimeout('/api/status', {cache:'no-store'});
-      if (!response.ok) throw new Error(`status ${response.status}`);
-      const data = await response.json();
+      const data = await fetchWithTimeout('/api/status', {cache:'no-store'}, async (response) => {
+        if (!response.ok) throw new Error(`status ${response.status}`);
+        return await response.json();
+      });
       const receivedAtMs = Date.now();
       const requestAgeSeconds = (receivedAtMs - requestStartedAtMs) / 1000;
       snapshotReceivedAtMs = receivedAtMs;
@@ -320,7 +322,7 @@ $('audioButton').addEventListener('click', async () => {
       method: 'PUT',
       headers: {'Content-Type':'application/json', 'Idempotency-Key': idempotencyKey},
       body: JSON.stringify({mode: target, expected_version: control.version || 0})
-    });
+    }, async (response) => ({status: response.status, ok: response.ok}));
     if (response.status === 404) {
       controlUnavailable = true;
       await refreshAfterCurrent();
