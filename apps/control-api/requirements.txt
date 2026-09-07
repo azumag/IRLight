@@ -1,3 +1,5 @@
-fastapi==0.116.1
+fastapi==0.141.1
+# Framework update: GHSA-7f5h-v6xp-fcq8 and GHSA-86qp-5c8j-p5mr.
+starlette==1.6.0
 uvicorn[standard]==0.35.0
 cryptography==49.0.0
