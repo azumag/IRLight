@@ -376,7 +376,11 @@ $('audioButton').addEventListener('click', async () => {
 
 function refreshOnResume() {
   if (document.visibilityState !== 'visible') return;
-  if (snapshot && statusAvailable) render(snapshot);
+  if (navigator.onLine === false) {
+    markNetworkOffline();
+  } else if (snapshot && statusAvailable) {
+    render(snapshot);
+  }
   refresh();
 }
 
@@ -396,6 +400,7 @@ window.addEventListener('pageshow', (event) => {
 window.addEventListener('offline', markNetworkOffline);
 window.addEventListener('online', refreshOnNetworkOnline);
 
+if (navigator.onLine === false) markNetworkOffline();
 refresh();
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
