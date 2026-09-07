@@ -65,6 +65,18 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
         self.assertIn("clearActionError();\n  applying = true;", INDEX)
         self.assertIn("setActionError(`音声切替に失敗: ${error.message}。${recovery}`)", INDEX)
 
+    def test_status_grid_can_shrink_on_narrow_mobile_viewports(self) -> None:
+        self.assertIn(
+            ".value { min-width: 0; font-weight: 750; text-align: right; overflow-wrap: anywhere; }",
+            INDEX,
+        )
+        self.assertIn(".badge { max-width: 100%;", INDEX)
+        self.assertIn(".badge > span:last-child { min-width: 0; overflow-wrap: anywhere; }", INDEX)
+        self.assertIn(
+            "@media (max-width: 24rem) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }",
+            INDEX,
+        )
+
     def test_primary_audio_action_has_visible_keyboard_focus(self) -> None:
         self.assertIn(
             "button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }",
