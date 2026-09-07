@@ -85,6 +85,16 @@ class WebStackSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body, self.content[:4])
         self.assertEqual(headers[b"content-range"], f"bytes 0-3/{len(self.content)}".encode())
 
+    async def test_excessive_ranges_fall_back_to_bounded_full_response(self) -> None:
+        # More than the patched framework's 100-range limit. Repeated valid
+        # ranges stay within this tiny fixture and do not require load testing.
+        header = b"bytes=" + b",".join([b"0-0", b"3-3"] * 100)
+        status, headers, body = await self.request("/file", headers=[(b"range", header)])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, self.content)
+        self.assertEqual(int(headers[b"content-length"]), len(self.content))
+        self.assertNotIn(b"content-range", headers)
+
     async def test_file_response_head_does_not_send_body(self) -> None:
         status, headers, body = await self.request("/file", method="HEAD")
         self.assertEqual(status, 200)

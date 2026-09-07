@@ -6,7 +6,9 @@ FastAPI だけを固定すると、古い Starlette を許容する依存範囲�
 
 2026-09-08 の更新対象は FastAPI 0.141.1 / Starlette 1.6.0。
 選択したリリースの Python 要件はともに 3.10 以上。
-本番の認可・CSRF・Session 状態機械・provider・配信経路を変更する更新ではない。
+Starlette 1.x への移行を含む framework 更新であり、単一のpatch version変更ではない。
+アプリ側の認可・CSRF・Session 状態機械・provider・配信ロジックは変更せず、
+互換性は全既存テストとDocker / recovery E2Eで確認する。
 
 ## 修正の根拠
 
@@ -33,7 +35,7 @@ python -m unittest discover -s tests -v
 ```
 
 追加テストは、インストールされた Starlette の既知修正版下限に加え、不正・正常な
-Host、FileResponse の通常 GET / HEAD / single range / 範囲外要求を確認する。
+Host、FileResponse の通常 GET / HEAD / single range / 範囲外要求と、過剰な複数範囲要求の全体応答への切替を確認する。
 範囲外要求は 416 と `Content-Range: bytes */<length>` を返す。
 静的ファイルの範囲取得を無効化して回避したものではない。
 
