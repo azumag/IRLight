@@ -15,6 +15,7 @@
     .grid { display: grid; grid-template-columns: 1fr auto; gap: .7rem 1rem; align-items: center; }
     .label { color: #aebbd5; }
     .value { min-width: 0; font-weight: 750; text-align: right; overflow-wrap: anywhere; }
+    .grid-note { grid-column: 1 / -1; margin: .15rem 0 0; }
     .badge { max-width: 100%; display: inline-flex; align-items: center; gap: .45rem; border-radius: 999px; padding: .35rem .7rem; background: #283652; }
     .badge > span:last-child { min-width: 0; overflow-wrap: anywhere; }
     .dot { width: .7rem; height: .7rem; border-radius: 50%; background: #94a3b8; }
@@ -60,8 +61,9 @@
     <span class="label">実状態</span><span id="actual" class="value">—</span>
     <span class="label">バージョン</span><span id="version" class="value">—</span>
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
-    <span class="label">管理接続</span><span id="connection" class="value">接続中…</span>
+    <span class="label">管理接続</span><span id="connection" class="value" aria-describedby="connectionHelp">接続中…</span>
     <span class="label">最終確認</span><span id="checked" class="value">—</span>
+    <p id="connectionHelp" class="grid-note small">「管理接続」はこの画面と Control API の通信状態です。入力映像・配信音声・配信先の接続状態とは別に確認してください。</p>
   </section>
 
   <h2 id="audioControlHeading" class="sr-only">配信音声の操作</h2>
