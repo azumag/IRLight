@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import socket
 import subprocess
 import sys
@@ -51,6 +52,8 @@ class _HangingResolverProcess:
     def __init__(self) -> None:
         self.returncode: int | None = None
         self.killed = False
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
         self.communicate_timeouts: list[float] = []
         self.stdin_payloads: list[bytes | None] = []
 
@@ -70,14 +73,16 @@ class _HangingResolverProcess:
 
 class _ResolverResultProcess:
     def __init__(self, stdout: bytes) -> None:
-        self.stdout = stdout
+        self._output = stdout
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(stdout)
         self.returncode = 0
 
     def communicate(
         self, input: bytes | None = None, timeout: float | None = None
     ) -> tuple[bytes, bytes]:
         del input, timeout
-        return self.stdout, b""
+        return self._output, b""
 
 
 class _BudgetSocket:
@@ -120,6 +125,123 @@ class _BudgetSocket:
 
 
 class DestinationProbeTest(unittest.TestCase):
+    def test_environment_timeout_nonfinite_values_use_safe_default(self) -> None:
+        for raw in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"IRLIGHT_VERIFY_TIMEOUT_SECONDS": raw}):
+                self.assertEqual(ProbeConfig.from_env().timeout_seconds, 5.0)
+
+    def test_direct_timeout_must_be_finite_positive_number(self) -> None:
+        for value in (float("nan"), float("inf"), -float("inf"), 0, -1, True, None, "5"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ProbeConfig(timeout_seconds=value)
+
+    @patch("destination_probe.ResolverPopen")
+    def test_expired_dns_budget_does_not_spawn_child(self, resolver_popen) -> None:
+        import destination_probe
+
+        with patch("destination_probe.time.monotonic", return_value=1.0):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                destination_probe._resolve(
+                    "probe.invalid", 1935, socktype=socket.SOCK_STREAM,
+                    allow_private_targets=False, deadline=1.0,
+                    timeout_message="RTMP destination probe timed out",
+                )
+        resolver_popen.assert_not_called()
+
+    @patch("destination_probe.socket.socket")
+    @patch("destination_probe.ResolverPopen")
+    def test_dns_spawn_exhausting_budget_still_reaps_child(self, resolver_popen, socket_factory) -> None:
+        clock = [0.0]
+        process = _HangingResolverProcess()
+
+        def spawn(*args, **kwargs):
+            clock[0] = 1.0
+            return process
+
+        resolver_popen.side_effect = spawn
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination("rtmp://probe.invalid/live", ProbeConfig(timeout_seconds=1.0))
+        self.assertTrue(process.killed)
+        self.assertEqual(process.returncode, -9)
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertEqual(process.communicate_timeouts, [0.5])
+        socket_factory.assert_not_called()
+
+    @patch("destination_probe.socket.socket")
+    @patch("destination_probe.ResolverPopen")
+    def test_dns_communication_failure_still_reaps_child(self, resolver_popen, socket_factory) -> None:
+        class BrokenPipeProcess(_HangingResolverProcess):
+            def communicate(self, input=None, timeout=None):
+                if not self.killed:
+                    raise BrokenPipeError("test resolver pipe failure")
+                return super().communicate(input=input, timeout=timeout)
+
+        process = BrokenPipeProcess()
+        resolver_popen.return_value = process
+        with self.assertRaisesRegex(DestinationProbeError, "resolver is unavailable"):
+            probe_destination("rtmp://probe.invalid/live", ProbeConfig(timeout_seconds=1.0))
+        self.assertTrue(process.killed)
+        self.assertEqual(process.returncode, -9)
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        socket_factory.assert_not_called()
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.socket.socket")
+    def test_rtmp_final_send_must_finish_before_deadline(self, socket_factory, resolve) -> None:
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 1935))
+        ]
+        for final_send_seconds in (0.5, 1.0, 1.1):
+            with self.subTest(final_send_seconds=final_send_seconds):
+                clock = [0.0]
+
+                class FinalSendSocket(_BudgetSocket):
+                    sends = 0
+
+                    def sendall(self, data):
+                        self.sends += 1
+                        if self.sends == 2:
+                            self.clock[0] += final_send_seconds
+
+                stream = FinalSendSocket(clock)
+                socket_factory.return_value = stream
+                with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+                    if final_send_seconds < 1.0:
+                        result = probe_destination("rtmp://probe.invalid/live", ProbeConfig(timeout_seconds=1.0))
+                        self.assertEqual(result["elapsed_ms"], 500.0)
+                    else:
+                        with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                            probe_destination("rtmp://probe.invalid/live", ProbeConfig(timeout_seconds=1.0))
+                self.assertTrue(stream.closed)
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.subprocess.Popen")
+    @patch("destination_probe.queue.Queue")
+    def test_srt_connected_at_exact_deadline_is_not_success(self, queue_factory, popen, resolve) -> None:
+        import destination_probe
+
+        clock = [0.0]
+        process = _FakeProcess(b"SRT target connected")
+        popen.return_value = process
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890))
+        ]
+
+        def connected_event(*args, **kwargs):
+            clock[0] = 1.0
+            return destination_probe.SRT_STDERR_EVENT_CONNECTED
+
+        queue_factory.return_value.get.side_effect = connected_event
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "handshake timed out"):
+                probe_destination("srt://probe.invalid:8890", ProbeConfig(timeout_seconds=1.0))
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stderr.closed)
+
     def test_rejects_private_target_by_default(self) -> None:
         with self.assertRaisesRegex(DestinationProbeError, "public address"):
             probe_destination(
