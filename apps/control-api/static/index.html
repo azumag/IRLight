@@ -78,6 +78,10 @@ function announceAction(message) {
   $('actionAnnouncement').textContent = message;
 }
 
+function clearActionAnnouncement() {
+  $('actionAnnouncement').textContent = '';
+}
+
 function syncActionBusyState(button) {
   if (applying) {
     button.setAttribute('aria-busy', 'true');
@@ -315,6 +319,7 @@ $('audioButton').addEventListener('click', async () => {
     setActionError(`音声切替に失敗: ${error.message}。${recovery}`);
   } finally {
     applying = false;
+    clearActionAnnouncement();
     if (snapshot) render(snapshot);
   }
 });

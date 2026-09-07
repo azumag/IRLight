@@ -64,6 +64,9 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
             INDEX,
         )
         self.assertIn("$('actionAnnouncement').textContent = message", INDEX)
+        self.assertIn("function clearActionAnnouncement()", INDEX)
+        self.assertIn("$('actionAnnouncement').textContent = ''", INDEX)
+        self.assertIn("applying = false;\n    clearActionAnnouncement();", INDEX)
         self.assertIn("function syncActionBusyState(button)", INDEX)
         self.assertIn("button.setAttribute('aria-busy', 'true')", INDEX)
         self.assertIn("button.removeAttribute('aria-busy')", INDEX)
