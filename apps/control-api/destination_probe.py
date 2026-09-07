@@ -53,6 +53,8 @@ SRT_STDERR_EVENT_CONNECTED = "connected"
 SRT_STDERR_EVENT_EOF = "eof"
 SRT_STDERR_EVENT_OVERFLOW = "overflow"
 SRT_STDERR_EVENT_ERROR = "error"
+SRT_CLEANUP_SECONDS = 1.0
+SRT_TERMINATE_GRACE_SECONDS = 0.25
 DNS_RESOLVER_MAX_ADDRESSES = 64
 DNS_RESOLVER_MAX_OUTPUT_BYTES = 64 * 1024
 DNS_RESOLVER_CLEANUP_SECONDS = 0.5
@@ -457,6 +459,85 @@ def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
         _emit_srt_stderr_event(events, SRT_STDERR_EVENT_ERROR)
 
 
+def _cleanup_srt_process(
+    process: subprocess.Popen[bytes],
+    reader: threading.Thread | None,
+) -> None:
+    """Stop and reap the verifier within one shared cleanup budget.
+
+    Cleanup is deliberately separate from the handshake deadline, but the
+    grace period is shared by terminate/wait/kill/reap and reader shutdown.
+    No individual step receives a fresh timeout.
+    """
+
+    cleanup_deadline = time.monotonic() + SRT_CLEANUP_SECONDS
+    cleanup_failed = False
+
+    if process.poll() is None:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+
+    if process.poll() is None:
+        remaining = cleanup_deadline - time.monotonic()
+        if remaining > 0:
+            try:
+                process.wait(timeout=min(remaining, SRT_TERMINATE_GRACE_SECONDS))
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        # kill() itself is non-blocking. Escalate even if terminate() consumed
+        # the whole grace budget so the child is not deliberately left alive.
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    if process.poll() is None:
+        try:
+            remaining = cleanup_deadline - time.monotonic()
+            if remaining <= 0:
+                cleanup_failed = True
+            else:
+                process.wait(timeout=remaining)
+        except (OSError, subprocess.TimeoutExpired):
+            cleanup_failed = True
+
+    # stdin is not owned by the stderr reader and can be closed immediately.
+    # Do not close BufferedReader stderr from another thread while that thread
+    # may be blocked in read1(): the buffered stream lock itself can block the
+    # cleanup caller past its deadline. A normally reaped child closes the
+    # writer end, letting the reader observe EOF within the remaining budget.
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+
+    reader_alive = False
+    if reader is not None:
+        remaining = max(0.0, cleanup_deadline - time.monotonic())
+        reader.join(timeout=remaining)
+        reader_alive = reader.is_alive()
+        if reader_alive:
+            cleanup_failed = True
+
+    # Closing stderr is safe once no reader can hold its buffered-stream lock.
+    # If an unkillable child also leaves the reader wedged, fail within the
+    # shared budget instead of risking an unbounded cross-thread close().
+    if not reader_alive and process.stderr is not None:
+        try:
+            process.stderr.close()
+        except OSError:
+            pass
+
+    if process.poll() is None:
+        cleanup_failed = True
+    if cleanup_failed:
+        raise DestinationProbeError("SRT verifier cleanup timed out")
+
+
 def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
     query = parse_qsl(parsed.query, keep_blank_values=True)
     mode = next((value.lower() for key, value in query if key.lower() == "mode"), None)
@@ -559,19 +640,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         raise DestinationProbeError("SRT verifier is unavailable") from exc
     finally:
         if process is not None:
-            if process.poll() is None:
-                process.terminate()
-            try:
-                process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=1.0)
-            if reader is not None:
-                reader.join(timeout=1.0)
-            if process.stdin is not None:
-                process.stdin.close()
-            if process.stderr is not None:
-                process.stderr.close()
+            _cleanup_srt_process(process, reader)
 
     if connected_at is None:
         raise DestinationProbeError("destination did not complete the SRT handshake")
