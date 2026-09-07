@@ -1,0 +1,3 @@
+# Audit-contract fixture only. Do not install in the runtime environment.
+# Starlette 0.47.3 predates the Range/Host fixes tracked by the repository.
+starlette==0.47.3

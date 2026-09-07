@@ -1,0 +1,2 @@
+# Audit-contract fixture paired with known-vulnerable.txt.
+starlette==1.6.0
