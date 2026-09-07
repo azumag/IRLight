@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import queue
 import secrets
@@ -109,12 +110,28 @@ class ProbeConfig:
     allow_private_targets: bool = False
     srt_binary: str = "srt-live-transmit"
 
+    def __post_init__(self) -> None:
+        value = self.timeout_seconds
+        try:
+            valid = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+            )
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("probe timeout must be a finite positive number")
+
     @classmethod
     def from_env(cls) -> "ProbeConfig":
         raw_timeout = os.getenv("IRLIGHT_VERIFY_TIMEOUT_SECONDS", "5")
         try:
             timeout = float(raw_timeout)
         except ValueError:
+            timeout = 5.0
+        if not math.isfinite(timeout):
             timeout = 5.0
         timeout = min(max(timeout, 0.5), 30.0)
         allow_private = os.getenv("IRLIGHT_VERIFY_ALLOW_PRIVATE_TARGETS", "") == "1"
@@ -172,6 +189,8 @@ def _resolve(
         {"host": host, "port": port, "socktype": int(socktype)},
         separators=(",", ":"),
     ).encode("utf-8")
+    # Do not create a child after the caller has already exhausted its budget.
+    _remaining_budget(deadline, timeout_message)
     process: ResolverPopen[bytes] | None = None
     try:
         process = ResolverPopen(
@@ -187,14 +206,30 @@ def _resolve(
                 timeout=_remaining_budget(deadline, timeout_message),
             )
         except ResolverTimeoutExpired as exc:
-            process.kill()
-            try:
-                process.communicate(timeout=DNS_RESOLVER_CLEANUP_SECONDS)
-            except ResolverTimeoutExpired:
-                pass
             raise DestinationProbeError(timeout_message) from exc
     except OSError as exc:
         raise DestinationProbeError("destination resolver is unavailable") from exc
+    finally:
+        if process is not None:
+            # Popen itself can consume the remaining budget, and communicate
+            # can fail before waiting. Reap on every exit path, not just its
+            # TimeoutExpired path, without granting a new probe-time budget.
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.communicate(timeout=DNS_RESOLVER_CLEANUP_SECONDS)
+                except (OSError, ResolverTimeoutExpired):
+                    pass
+            for pipe_name in ("stdin", "stdout"):
+                pipe = getattr(process, pipe_name, None)
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
 
     if process.returncode != 0 or not stdout:
         raise DestinationProbeError("destination hostname could not be resolved")
@@ -339,7 +374,10 @@ def _probe_rtmp(
                 _remaining_budget(deadline, "RTMP destination probe timed out")
             )
             stream.sendall(response[1 : 1 + RTMP_HANDSHAKE_BYTES])
-            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+            completed_at = time.monotonic()
+            if completed_at >= deadline:
+                raise DestinationProbeError("RTMP destination probe timed out")
+            elapsed_ms = round((completed_at - started) * 1000, 1)
             return {
                 "protocol": "rtmps" if use_tls else "rtmp",
                 "peer_ip": str(sockaddr[0]),
@@ -515,7 +553,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
             raise DestinationProbeError("destination did not complete the SRT handshake")
 
         connected_at = time.monotonic()
-        if connected_at > deadline:
+        if connected_at >= deadline:
             raise DestinationProbeError("SRT destination handshake timed out")
     except FileNotFoundError as exc:
         raise DestinationProbeError("SRT verifier is unavailable") from exc
