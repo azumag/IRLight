@@ -77,6 +77,19 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
             INDEX,
         )
 
+    def test_compact_mobile_status_summary_stays_visible_without_duplicate_accessible_output(self) -> None:
+        self.assertIn(
+            ".status-summary { position: sticky; top: max(.5rem, env(safe-area-inset-top));",
+            INDEX,
+        )
+        self.assertIn('<div class="status-summary" aria-hidden="true">', INDEX)
+        self.assertIn('id="stickySession" class="status-summary-value"', INDEX)
+        self.assertIn('id="stickyAudio" class="status-summary-value"', INDEX)
+        self.assertIn("$('stickySession').textContent = unknown", INDEX)
+        self.assertIn("$('stickyAudio').textContent = unknown", INDEX)
+        self.assertIn("$('stickySession').textContent = sessionLabel", INDEX)
+        self.assertIn("$('stickyAudio').textContent = state.label", INDEX)
+
     def test_primary_audio_action_has_visible_keyboard_focus(self) -> None:
         self.assertIn(
             "button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }",
