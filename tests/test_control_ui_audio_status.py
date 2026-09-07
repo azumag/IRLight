@@ -130,7 +130,8 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
     def test_mobile_resume_rechecks_cached_state_immediately(self) -> None:
         self.assertIn("function refreshOnResume()", INDEX)
         self.assertIn("if (document.visibilityState !== 'visible') return", INDEX)
-        self.assertIn("if (snapshot && statusAvailable) render(snapshot)", INDEX)
+        self.assertIn("if (navigator.onLine === false) {", INDEX)
+        self.assertIn("} else if (snapshot && statusAvailable) {", INDEX)
         self.assertIn("document.addEventListener('visibilitychange', refreshOnResume)", INDEX)
         self.assertIn("window.addEventListener('pageshow', (event) =>", INDEX)
         self.assertIn("if (event.persisted) refreshOnResume()", INDEX)
@@ -145,6 +146,7 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("function refreshOnNetworkOnline()", INDEX)
         self.assertIn("window.addEventListener('offline', markNetworkOffline)", INDEX)
         self.assertIn("window.addEventListener('online', refreshOnNetworkOnline)", INDEX)
+        self.assertIn("if (navigator.onLine === false) markNetworkOffline()", INDEX)
 
 
 if __name__ == "__main__":
