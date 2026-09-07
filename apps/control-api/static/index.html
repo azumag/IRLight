@@ -14,8 +14,9 @@
     .card { background: #151d31; border: 1px solid #2a3654; border-radius: 1rem; padding: 1rem; margin-bottom: 1rem; }
     .grid { display: grid; grid-template-columns: 1fr auto; gap: .7rem 1rem; align-items: center; }
     .label { color: #aebbd5; }
-    .value { font-weight: 750; text-align: right; }
-    .badge { display: inline-flex; align-items: center; gap: .45rem; border-radius: 999px; padding: .35rem .7rem; background: #283652; }
+    .value { min-width: 0; font-weight: 750; text-align: right; overflow-wrap: anywhere; }
+    .badge { max-width: 100%; display: inline-flex; align-items: center; gap: .45rem; border-radius: 999px; padding: .35rem .7rem; background: #283652; }
+    .badge > span:last-child { min-width: 0; overflow-wrap: anywhere; }
     .dot { width: .7rem; height: .7rem; border-radius: 50%; background: #94a3b8; }
     .dot.live { background: #34d399; }
     .dot.warn { background: #fbbf24; }
@@ -25,6 +26,7 @@
     button.muted { background: #10b981; color: #06120e; }
     button.unknown { background: #475569; color: #f8fafc; }
     button:focus-visible { outline: 3px solid #f8fafc; outline-offset: 3px; box-shadow: 0 0 0 2px #0b1020; }
+    @media (max-width: 24rem) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
     @media (forced-colors: active) { button:focus-visible { outline-color: CanvasText; box-shadow: none; } }
     button:disabled { opacity: .55; cursor: wait; }
     .small { color: #aebbd5; font-size: .88rem; line-height: 1.55; }
