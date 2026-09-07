@@ -48,6 +48,61 @@ class _FakeProcess:
         self._returncode = -9
 
 
+class _UnstoppableSrtProcess:
+    def __init__(self, clock: list[float]) -> None:
+        self.clock = clock
+        self.stderr = io.BytesIO(b"")
+        self.stdin = io.BytesIO()
+        self.terminated = False
+        self.killed = False
+        self.wait_timeouts: list[float] = []
+
+    def poll(self) -> int | None:
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        value = float(timeout or 0.0)
+        self.wait_timeouts.append(value)
+        self.clock[0] += value
+        raise subprocess.TimeoutExpired("srt-live-transmit", timeout)
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class _KillableSrtProcess(_UnstoppableSrtProcess):
+    def __init__(self, clock: list[float]) -> None:
+        super().__init__(clock)
+        self._returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        value = float(timeout or 0.0)
+        self.wait_timeouts.append(value)
+        if not self.killed:
+            self.clock[0] += value
+            raise subprocess.TimeoutExpired("srt-live-transmit", timeout)
+        self.clock[0] += min(value, 0.1)
+        self._returncode = -9
+        return self._returncode
+
+
+class _HangingReader:
+    def __init__(self) -> None:
+        self.join_timeouts: list[float] = []
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_timeouts.append(float(timeout or 0.0))
+
+    def is_alive(self) -> bool:
+        return True
+
+
 class _HangingResolverProcess:
     def __init__(self) -> None:
         self.returncode: int | None = None
@@ -216,6 +271,42 @@ class DestinationProbeTest(unittest.TestCase):
                         with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
                             probe_destination("rtmp://probe.invalid/live", ProbeConfig(timeout_seconds=1.0))
                 self.assertTrue(stream.closed)
+
+    def test_srt_cleanup_escalates_to_kill_within_shared_budget(self) -> None:
+        import destination_probe
+
+        clock = [0.0]
+        process = _KillableSrtProcess(clock)
+
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            destination_probe._cleanup_srt_process(process, None)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertEqual(process.poll(), -9)
+        self.assertEqual(process.wait_timeouts, [0.25, 0.75])
+        self.assertLess(clock[0], destination_probe.SRT_CLEANUP_SECONDS)
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stderr.closed)
+
+    def test_srt_cleanup_uses_one_shared_budget_without_blocking_on_reader(self) -> None:
+        import destination_probe
+
+        clock = [0.0]
+        process = _UnstoppableSrtProcess(clock)
+        reader = _HangingReader()
+
+        with patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "cleanup timed out"):
+                destination_probe._cleanup_srt_process(process, reader)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertTrue(process.stdin.closed)
+        self.assertFalse(process.stderr.closed)
+        self.assertEqual(process.wait_timeouts, [0.25, 0.75])
+        self.assertEqual(reader.join_timeouts, [0.0])
+        self.assertEqual(clock[0], destination_probe.SRT_CLEANUP_SECONDS)
 
     @patch("destination_probe._resolve")
     @patch("destination_probe.subprocess.Popen")

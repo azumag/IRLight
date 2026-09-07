@@ -42,7 +42,7 @@ DNS 解決も同じ deadline に含める。`socket.getaddrinfo()` は短命な 
 
 この hard deadline は 1 probe 内の時間上限を保証するもので、同時 probe 数やユーザー単位の頻度を制限する admission control は含まない。大量の並行 verify による process/socket 枯渇対策は Issue #91 の別 slice として扱う。
 
-SRT 子 process の終了回収には handshake deadline とは別に最大 1 秒単位の cleanup 猶予を使う。cleanup 猶予を handshake 成功判定の追加時間として利用しない。
+SRT 子 process の終了回収には handshake deadline とは別に **単一の 1 秒 cleanup 予算**を使う。terminate / wait / kill / reap / stderr reader の終了確認へそれぞれ新しい 1 秒を与えず、全 cleanup 手順で同じ単調時計 deadline を共有する。stdin は失敗経路でも閉じ、stderr は reader の停止確認後に閉じる。子 process または reader の停止を予算内に確認できない場合は、別 thread が保持する buffered stderr の `close()` で期限を越えて待たず、固定エラーで fail-closed にする。cleanup 予算を handshake 成功判定の追加時間として利用しない。
 
 ## 状態更新
 
