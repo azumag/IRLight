@@ -60,10 +60,11 @@ class ControlUiAccessibilityContractTest(unittest.TestCase):
 
     def test_primary_audio_action_exposes_toggle_semantics_only_for_trusted_state(self) -> None:
         self.assertIn(
-            'id="audioButton" aria-describedby="audioButtonHelp" disabled',
+            'id="audioButton" aria-label="配信音声をミュート" aria-describedby="audioButtonHelp" disabled',
             INDEX,
         )
         self.assertIn('id="audioButtonHelp" class="small"', INDEX)
+        self.assertNotIn("button.setAttribute('aria-label'", INDEX)
         self.assertIn("button.removeAttribute('aria-pressed')", INDEX)
         self.assertIn(
             "button.setAttribute('aria-pressed', state.desired === 'MUTED' ? 'true' : 'false')",
