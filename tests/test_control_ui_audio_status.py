@@ -65,6 +65,14 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']", INDEX)
         self.assertNotIn("'checked', 'updated'", INDEX)
 
+    def test_control_api_reconnect_state_is_visible_without_reusing_cached_runtime(self) -> None:
+        self.assertIn('<span class="label">管理接続</span><span id="connection" class="value">接続中…</span>', INDEX)
+        self.assertIn("$('connection').textContent = '再接続中…'", INDEX)
+        self.assertIn("$('connection').textContent = '接続済み'", INDEX)
+        self.assertIn("$('checked').textContent = lastCheckedText()", INDEX)
+        self.assertIn("statusAvailable = false", INDEX)
+        self.assertIn("if (!statusAvailable) {\n    renderUnavailable();\n    return;", INDEX)
+
     def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
         self.assertIn(
             "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
