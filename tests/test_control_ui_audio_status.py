@@ -127,6 +127,20 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("if (document.visibilityState !== 'visible') return", interval)
         self.assertIn("refresh();", interval)
 
+    def test_known_offline_status_polling_backs_off_without_disabling_recovery_probes(self) -> None:
+        self.assertIn("const OFFLINE_PROBE_INTERVAL_MS = 10000", INDEX)
+        self.assertIn("let lastStatusAttemptAtMonotonicMs = Number.NEGATIVE_INFINITY", INDEX)
+        self.assertIn("lastStatusAttemptAtMonotonicMs = performance.now()", INDEX)
+        self.assertIn("function shouldPollStatus(nowMs = performance.now())", INDEX)
+        self.assertIn("if (navigator.onLine !== false || statusAvailable) return true", INDEX)
+        self.assertIn("nowMs - lastStatusAttemptAtMonotonicMs >= OFFLINE_PROBE_INTERVAL_MS", INDEX)
+        interval_start = INDEX.index("setInterval(() => {")
+        interval_end = INDEX.index("}, 1000);", interval_start)
+        interval = INDEX[interval_start:interval_end]
+        self.assertIn("if (!shouldPollStatus()) return", interval)
+        self.assertIn("function refreshOnNetworkOnline()", INDEX)
+        self.assertIn("refresh();", INDEX[INDEX.index("function refreshOnNetworkOnline()"):INDEX.index("function shouldPollStatus")])
+
     def test_mobile_resume_rechecks_cached_state_immediately(self) -> None:
         self.assertIn("function refreshOnResume()", INDEX)
         self.assertIn("if (document.visibilityState !== 'visible') return", INDEX)

@@ -83,6 +83,7 @@
 const $ = (id) => document.getElementById(id);
 const RUNTIME_STALE_SECONDS = 3;
 const REQUEST_TIMEOUT_MS = 5000;
+const OFFLINE_PROBE_INTERVAL_MS = 10000;
 let snapshot = null;
 let applying = false;
 let statusAvailable = false;
@@ -90,6 +91,7 @@ let controlUnavailable = false;
 let refreshPromise = null;
 let snapshotReceivedAtMs = null;
 let snapshotRequestAgeSeconds = Number.POSITIVE_INFINITY;
+let lastStatusAttemptAtMonotonicMs = Number.NEGATIVE_INFINITY;
 let lastAnnouncedStatus = null;
 let statusErrorMessage = '';
 let actionErrorMessage = '';
@@ -302,6 +304,7 @@ function refresh() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     const requestStartedAtMs = Date.now();
+    lastStatusAttemptAtMonotonicMs = performance.now();
     try {
       const data = await fetchWithTimeout('/api/status', {cache:'no-store'}, async (response) => {
         if (!response.ok) throw new Error(`status ${response.status}`);
@@ -393,6 +396,12 @@ function refreshOnNetworkOnline() {
   refresh();
 }
 
+function shouldPollStatus(nowMs = performance.now()) {
+  if (navigator.onLine !== false || statusAvailable) return true;
+  return !Number.isFinite(lastStatusAttemptAtMonotonicMs)
+    || nowMs - lastStatusAttemptAtMonotonicMs >= OFFLINE_PROBE_INTERVAL_MS;
+}
+
 document.addEventListener('visibilitychange', refreshOnResume);
 window.addEventListener('pageshow', (event) => {
   if (event.persisted) refreshOnResume();
@@ -405,6 +414,7 @@ refresh();
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   if (snapshot && statusAvailable) render(snapshot);
+  if (!shouldPollStatus()) return;
   refresh();
 }, 1000);
 </script>
