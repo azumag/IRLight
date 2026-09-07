@@ -58,6 +58,7 @@
     <span class="label">実状態</span><span id="actual" class="value">—</span>
     <span class="label">バージョン</span><span id="version" class="value">—</span>
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
+    <span class="label">最終確認</span><span id="checked" class="value">—</span>
   </section>
 
   <h2 id="audioControlHeading" class="sr-only">配信音声の操作</h2>
@@ -198,6 +199,12 @@ function audioState(control, runtime, serverTime, snapshotAgeSeconds = 0) {
   return {desired, actual, actualKnown, commandAcked, runtimeStale, label:actualLabel, dot, actualLabel};
 }
 
+function lastCheckedText() {
+  return snapshotReceivedAtMs === null
+    ? '未取得'
+    : new Date(snapshotReceivedAtMs).toLocaleTimeString();
+}
+
 function renderUnavailable() {
   const unknown = '状態確認不能';
   $('stickySession').textContent = unknown;
@@ -207,6 +214,7 @@ function renderUnavailable() {
   for (const id of ['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']) {
     $(id).textContent = unknown;
   }
+  $('checked').textContent = lastCheckedText();
   $('audio').lastElementChild.textContent = unknown;
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
@@ -242,6 +250,7 @@ function render(data) {
   $('inputVideo').textContent = runtimeTrusted ? (r.input_video_recent ? '受信中' : '停止') : '状態確認不能';
   $('inputAudio').textContent = runtimeTrusted ? (r.input_audio_recent ? '受信中' : '停止／なし') : '状態確認不能';
   $('updated').textContent = runtimeTrusted && r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '状態確認不能';
+  $('checked').textContent = lastCheckedText();
   $('desired').textContent = state.desired === 'MUTED' ? 'ミュート指定' : 'オン指定';
   $('actual').textContent = state.actualLabel;
   const controlVersion = Number.isInteger(c.version) ? c.version : '—';

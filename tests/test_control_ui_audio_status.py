@@ -56,6 +56,15 @@ class ControlUiAudioStatusContractTest(unittest.TestCase):
         self.assertIn("button.className = 'unknown'", INDEX)
         self.assertIn("button.unknown", INDEX)
 
+    def test_last_successful_status_check_remains_visible_when_current_state_is_unavailable(self) -> None:
+        self.assertIn('<span class="label">最終確認</span><span id="checked" class="value">—</span>', INDEX)
+        self.assertIn("function lastCheckedText()", INDEX)
+        self.assertIn("snapshotReceivedAtMs === null", INDEX)
+        self.assertIn("new Date(snapshotReceivedAtMs).toLocaleTimeString()", INDEX)
+        self.assertIn("$('checked').textContent = lastCheckedText()", INDEX)
+        self.assertIn("['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']", INDEX)
+        self.assertNotIn("'checked', 'updated'", INDEX)
+
     def test_unknown_runtime_audio_mode_fails_closed_in_ui(self) -> None:
         self.assertIn(
             "const actualKnown = actual === 'LIVE' || actual === 'MUTED' || actual === 'SILENT_FALLBACK'",
