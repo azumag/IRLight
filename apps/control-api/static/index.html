@@ -49,8 +49,8 @@
   </section>
 
   <section class="card">
-    <button id="audioButton" disabled>状態を取得しています</button>
-    <p class="small">ミュートしても映像と配信接続は維持し、連続した無音AACを送ります。表示は指定状態ではなく実際の音声状態を優先し、最新指示をランタイムが確認するまでは次の操作を受け付けません。</p>
+    <button id="audioButton" aria-label="配信音声をミュート" aria-describedby="audioButtonHelp" disabled>状態を取得しています</button>
+    <p id="audioButtonHelp" class="small">ミュートしても映像と配信接続は維持し、連続した無音AACを送ります。表示は指定状態ではなく実際の音声状態を優先し、最新指示をランタイムが確認するまでは次の操作を受け付けません。</p>
     <p id="error" class="error" role="alert"></p>
   </section>
 
@@ -167,6 +167,7 @@ function renderUnavailable() {
   $('audioDot').className = 'dot warn';
   const button = $('audioButton');
   button.disabled = true;
+  button.removeAttribute('aria-pressed');
   button.className = 'unknown';
   button.textContent = controlUnavailable ? '音声制御APIは利用できません' : '状態を再取得しています';
   announceStatus('配信状態を確認できません');
@@ -201,6 +202,13 @@ function render(data) {
   $('version').textContent = `指定 ${controlVersion} / 反映 ${runtimeVersion}`;
   const button = $('audioButton');
   button.disabled = applying || controlUnavailable || !statusAvailable || state.runtimeStale || !state.actualKnown || !state.commandAcked;
+  if (state.runtimeStale || !state.actualKnown || !state.commandAcked) {
+    button.removeAttribute('aria-pressed');
+  } else {
+    // This toggle represents the user-requested mute mode, not incidental
+    // silence such as SILENT_FALLBACK when no input audio is available.
+    button.setAttribute('aria-pressed', state.desired === 'MUTED' ? 'true' : 'false');
+  }
   button.className = state.runtimeStale || !state.actualKnown ? 'unknown' : (state.desired === 'MUTED' ? 'muted' : 'live');
   button.textContent = applying
     ? '指示を送信中…'
