@@ -72,9 +72,16 @@ jobs:
 
           report_path = Path("/tmp/known-vulnerable.json")
           report = json.loads(report_path.read_text(encoding="utf-8"))
+          if isinstance(report, list):
+              dependencies = report
+          elif isinstance(report, dict):
+              dependencies = report.get("dependencies", [])
+          else:
+              raise SystemExit("Unexpected pip-audit JSON report shape")
+
           matches = [
               dependency
-              for dependency in report.get("dependencies", report if isinstance(report, list) else [])
+              for dependency in dependencies
               if dependency.get("name", "").lower() == "starlette"
               and dependency.get("version") == "0.47.3"
               and dependency.get("vulns")
