@@ -12,8 +12,23 @@ INDEX = (ROOT / "apps" / "control-api" / "static" / "index.html").read_text(
 
 class ControlUiAccessibilityContractTest(unittest.TestCase):
     def test_polling_grid_is_not_a_live_region(self) -> None:
-        self.assertIn('<section class="card grid">', INDEX)
-        self.assertNotIn('<section class="card grid" aria-live="polite">', INDEX)
+        self.assertIn('<section class="card grid" aria-labelledby="statusRegionHeading">', INDEX)
+        self.assertNotIn('class="card grid" aria-live="polite"', INDEX)
+
+    def test_major_sections_have_accessible_landmark_names(self) -> None:
+        for heading_id, heading, section_class in (
+            ("statusRegionHeading", "配信状態", "card grid"),
+            ("audioControlHeading", "配信音声の操作", "card"),
+            ("phase0NoticeHeading", "Phase 0 ローカルPoCの注意事項", "card small"),
+        ):
+            with self.subTest(heading_id=heading_id):
+                self.assertIn(
+                    f'<h2 id="{heading_id}" class="sr-only">{heading}</h2>', INDEX
+                )
+                self.assertIn(
+                    f'<section class="{section_class}" aria-labelledby="{heading_id}">',
+                    INDEX,
+                )
 
     def test_dedicated_status_live_region_is_atomic_and_polite(self) -> None:
         self.assertIn(
