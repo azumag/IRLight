@@ -122,6 +122,18 @@ def _fingerprint(value: str) -> str | None:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _require_nonnegative_finite_number(value: Any, *, error: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise IngestAuthGuardStateError(error)
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise IngestAuthGuardStateError(error) from None
+    if not math.isfinite(number) or number < 0:
+        raise IngestAuthGuardStateError(error)
+    return number
+
+
 class IngestAuthGuard:
     """Persistent failure windows and temporary lockouts for ingest auth.
 
@@ -263,28 +275,18 @@ class IngestAuthGuard:
                 )
             normalized_failures: list[float] = []
             for failure in failures:
-                if isinstance(failure, bool) or not isinstance(failure, (int, float)):
-                    raise IngestAuthGuardStateError(
-                        "ingest authentication guard failure time is invalid"
-                    )
-                timestamp = float(failure)
-                if not math.isfinite(timestamp) or timestamp < 0:
-                    raise IngestAuthGuardStateError(
-                        "ingest authentication guard failure time is invalid"
-                    )
+                timestamp = _require_nonnegative_finite_number(
+                    failure,
+                    error="ingest authentication guard failure time is invalid",
+                )
                 normalized_failures.append(timestamp)
             normalized_bucket: dict[str, Any] = {"failures": normalized_failures}
             for field in ("locked_until", "last_seen_at", "last_blocked_event_at"):
                 value = bucket.get(field, 0.0)
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise IngestAuthGuardStateError(
-                        "ingest authentication guard bucket time is invalid"
-                    )
-                number = float(value)
-                if not math.isfinite(number) or number < 0:
-                    raise IngestAuthGuardStateError(
-                        "ingest authentication guard bucket time is invalid"
-                    )
+                number = _require_nonnegative_finite_number(
+                    value,
+                    error="ingest authentication guard bucket time is invalid",
+                )
                 if field in bucket or field != "last_blocked_event_at":
                     normalized_bucket[field] = number
             validated_buckets[key] = normalized_bucket
@@ -311,15 +313,15 @@ class IngestAuthGuard:
                 or sequence < 1
                 or event_type
                 not in {"ingest.auth_failed", "ingest.auth_locked", "ingest.auth_blocked"}
-                or isinstance(occurred_at, bool)
-                or not isinstance(occurred_at, (int, float))
-                or not math.isfinite(float(occurred_at))
-                or float(occurred_at) < 0
                 or not isinstance(payload, dict)
             ):
                 raise IngestAuthGuardStateError(
                     "ingest authentication guard event is invalid"
                 )
+            _require_nonnegative_finite_number(
+                occurred_at,
+                error="ingest authentication guard event is invalid",
+            )
             maximum_sequence = max(maximum_sequence, sequence)
             validated_events.append(copy.deepcopy(event))
         if next_sequence <= maximum_sequence:
@@ -333,16 +335,22 @@ class IngestAuthGuard:
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "buckets": self._buckets,
-                        "events": self._events[-self.config.event_limit :],
-                        "next_sequence": self._next_sequence,
-                    },
-                    handle,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
+                try:
+                    json.dump(
+                        {
+                            "buckets": self._buckets,
+                            "events": self._events[-self.config.event_limit :],
+                            "next_sequence": self._next_sequence,
+                        },
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise IngestAuthGuardStateError(
+                        "ingest authentication guard state cannot be serialized"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             # Preserve evidence of the first authoritative write even if the
