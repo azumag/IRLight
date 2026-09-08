@@ -13,7 +13,11 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 sys.path.insert(0, str(ROOT))
 
 import fake_provider_for_api as runtime  # noqa: E402
-from provider.fake_provider import FakeProvider, FileFakeProvider  # noqa: E402
+from provider.fake_provider import (  # noqa: E402
+    FakeProvider,
+    FakeProviderStateError,
+    FileFakeProvider,
+)
 
 
 class ProviderRuntimeTest(unittest.TestCase):
@@ -59,6 +63,87 @@ class ProviderRuntimeTest(unittest.TestCase):
                     [resource.provider_id for resource in reloaded.list_managed_resources()],
                     [created.volume_id],
                 )
+
+    def test_file_backed_fake_rejects_non_finite_persisted_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            state_file.write_text(
+                '{"volumes": [], "servers": [], "server_volume_links": {}, "bad": NaN}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(FakeProviderStateError):
+                FileFakeProvider(state_file)
+
+    def test_file_backed_fake_rejects_duplicate_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            state_file.write_text(
+                '{"volumes": [], "volumes": [], "servers": [], "server_volume_links": {}}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(FakeProviderStateError):
+                FileFakeProvider(state_file)
+
+    def test_file_backed_fake_rejects_invalid_record_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            state_file.write_text(
+                '{"volumes": [{"volume_id": "v1", "name": "volume", "size_gb": 1, '
+                '"metadata": {"irlight-managed": 1}}], "servers": [], '
+                '"server_volume_links": {}}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(FakeProviderStateError):
+                FileFakeProvider(state_file)
+
+    def test_file_backed_fake_failed_write_preserves_last_readable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            provider = FileFakeProvider(state_file)
+            created = provider.create_volume(
+                "shared-volume",
+                100,
+                {
+                    "irlight-managed": "true",
+                    "irlight-session-id": "session-1",
+                },
+            )
+            before = state_file.read_bytes()
+
+            provider.volumes[created.volume_id].metadata["invalid"] = float("nan")  # type: ignore[assignment]
+            with self.assertRaises(FakeProviderStateError):
+                provider._save()
+
+            self.assertEqual(state_file.read_bytes(), before)
+            reloaded = FileFakeProvider(state_file)
+            self.assertEqual(reloaded.get_volume(created.volume_id).name, "shared-volume")
+
+    def test_file_backed_fake_serializer_failure_preserves_last_readable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "fake-provider.json"
+            provider = FileFakeProvider(state_file)
+            created = provider.create_volume(
+                "shared-volume",
+                100,
+                {"irlight-managed": "true"},
+            )
+            before = state_file.read_bytes()
+
+            with patch(
+                "provider.fake_provider.json.dump",
+                side_effect=ValueError("synthetic serialization failure"),
+            ):
+                with self.assertRaises(FakeProviderStateError):
+                    provider._save()
+
+            self.assertEqual(state_file.read_bytes(), before)
+            self.assertEqual(
+                FileFakeProvider(state_file).get_volume(created.volume_id).name,
+                "shared-volume",
+            )
 
     def test_rejects_unknown_provider_mode(self) -> None:
         with patch.dict(os.environ, {"IRLIGHT_PROVIDER": "other"}, clear=False):
