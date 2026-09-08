@@ -35,25 +35,37 @@ def _reject_duplicate_json_object_pairs(
     return result
 
 
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value} is not allowed")
+
+
 def load_json_authority(
     handle: TextIO,
     *,
     parse_constant: Callable[[str], Any] | None = None,
 ) -> Any:
-    """Load persisted authority JSON while rejecting ambiguous object keys.
+    """Load persisted authority JSON with fail-closed JSON semantics.
 
     Python's default JSON decoder silently keeps the last value for duplicate
-    object keys. Authority files must instead fail closed: duplicate keys can
-    otherwise make the bytes an operator inspects differ from the object the
-    service validates and acts on. The hook applies recursively to every JSON
-    object, including nested records and event payloads.
+    object keys and accepts the non-standard constants ``NaN``, ``Infinity``,
+    and ``-Infinity``. Authority files reject both classes by default so the
+    bytes an operator inspects cannot be interpreted as ambiguous or
+    non-standard state.
+
+    Callers may provide a stricter/custom ``parse_constant`` hook for their own
+    error type or message. Omitting it never opts authority back into accepting
+    non-finite constants.
     """
+
+    def constant_parser(value: str) -> Any:
+        if parse_constant is not None:
+            parse_constant(value)
+        _reject_non_finite_json_constant(value)
 
     kwargs: dict[str, Any] = {
         "object_pairs_hook": _reject_duplicate_json_object_pairs,
+        "parse_constant": constant_parser,
     }
-    if parse_constant is not None:
-        kwargs["parse_constant"] = parse_constant
     return json.load(handle, **kwargs)
 
 
