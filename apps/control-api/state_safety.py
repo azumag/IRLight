@@ -57,9 +57,11 @@ def load_json_authority(
     non-finite constants.
     """
 
-    constant_parser = (
-        parse_constant if parse_constant is not None else _reject_non_finite_json_constant
-    )
+    def constant_parser(value: str) -> Any:
+        if parse_constant is not None:
+            parse_constant(value)
+        _reject_non_finite_json_constant(value)
+
     kwargs: dict[str, Any] = {
         "object_pairs_hook": _reject_duplicate_json_object_pairs,
         "parse_constant": constant_parser,
