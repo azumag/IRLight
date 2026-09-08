@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -27,6 +28,26 @@ class DependencyUpdatePolicyTest(unittest.TestCase):
         ):
             with self.subTest(directory=directory):
                 self.assertIn(directory, DEPENDABOT)
+
+    def test_external_github_actions_are_pinned_to_full_commit_sha(self) -> None:
+        uses_pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^#\s]+)")
+        sha_pattern = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+        workflow_files = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
+        checked: list[tuple[Path, str]] = []
+
+        for workflow in workflow_files:
+            for line in workflow.read_text(encoding="utf-8").splitlines():
+                match = uses_pattern.match(line)
+                if match is None:
+                    continue
+                reference = match.group(1)
+                if reference.startswith("./") or reference.startswith("docker://"):
+                    continue
+                checked.append((workflow, reference))
+                with self.subTest(workflow=workflow.name, reference=reference):
+                    self.assertRegex(reference, sha_pattern)
+
+        self.assertTrue(checked, "expected at least one external GitHub Action reference")
 
     def test_dependabot_updates_are_weekly_and_bounded(self) -> None:
         self.assertEqual(DEPENDABOT.count('interval: "weekly"'), 4)

@@ -37,7 +37,7 @@ jobs:
     env:
       SRT_DISCONNECT_SECONDS: ${{ github.event.schedule == '17 19 * * 0' && '600' || github.event_name == 'schedule' && '30' || github.event.inputs.disconnect_seconds || '10' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install SRT publisher dependency
         run: |
           sudo apt-get update -qq
