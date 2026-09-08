@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
 import sys
 import tempfile
@@ -37,6 +38,45 @@ class ControlStoreTest(unittest.TestCase):
             store.path.write_text("{broken", encoding="utf-8")
             with self.assertRaises(ControlStateError):
                 store.get()
+
+    def test_invalid_timestamps_fail_closed_without_replacing_readable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            store.update(mode="MUTED", idempotency_key="mute", now=100.0)
+            reader = ControlStateReader(store.path)
+            valid, error = reader.read()
+            self.assertEqual(valid.audio_mode, "MUTED")
+            self.assertIsNone(error)
+            before = store.path.read_bytes()
+
+            for index, now in enumerate(
+                (10**400, float("nan"), float("inf"), float("-inf"))
+            ):
+                with self.subTest(now=now):
+                    with self.assertRaisesRegex(
+                        ControlStateError, "invalid update time"
+                    ):
+                        store.update(
+                            mode="LIVE",
+                            idempotency_key=f"invalid-{index}",
+                            now=now,
+                        )
+                    self.assertEqual(store.path.read_bytes(), before)
+
+            payload = json.loads(before)
+            payload["updated_at"] = 10**400
+            store.path.write_text(
+                json.dumps(payload, allow_nan=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            damaged = store.path.read_bytes()
+            with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                store.get()
+            preserved, error = reader.read()
+            self.assertEqual(preserved.audio_mode, "MUTED")
+            self.assertEqual(error, "CONTROL_STATE_INVALID")
+            self.assertEqual(store.path.read_bytes(), damaged)
 
     def test_processes_increment_version_without_lost_update(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
