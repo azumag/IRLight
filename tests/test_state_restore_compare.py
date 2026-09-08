@@ -134,6 +134,38 @@ class StateRestoreCompareTest(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "SNAPSHOT_ROOT_UNAVAILABLE")
         self.assertEqual(payload["checks"], [])
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink is unavailable")
+    def test_symlinked_candidate_snapshot_parent_is_rejected(self) -> None:
+        linked_parent = self.root / "candidate-parent-link"
+        linked_parent.symlink_to(self.root, target_is_directory=True)
+        candidate_through_parent = linked_parent / "candidate"
+        before = self._snapshot()
+
+        payload = compare_state_snapshots(
+            source_state_dir=self.source,
+            candidate_state_dir=candidate_through_parent,
+        )
+
+        self.assertEqual(payload["status"], "UNAVAILABLE")
+        self.assertEqual(payload["reason_code"], "SNAPSHOT_ROOT_UNAVAILABLE")
+        self.assertEqual(payload["checks"], [])
+        self.assertEqual(self._snapshot(), before)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink is unavailable")
+    def test_symlinked_source_snapshot_parent_is_rejected(self) -> None:
+        linked_parent = self.root / "source-parent-link"
+        linked_parent.symlink_to(self.root, target_is_directory=True)
+        source_through_parent = linked_parent / "source"
+
+        payload = compare_state_snapshots(
+            source_state_dir=source_through_parent,
+            candidate_state_dir=self.candidate,
+        )
+
+        self.assertEqual(payload["status"], "UNAVAILABLE")
+        self.assertEqual(payload["reason_code"], "SNAPSHOT_ROOT_UNAVAILABLE")
+        self.assertEqual(payload["checks"], [])
+
     def test_valid_content_difference_is_redacted_mismatch(self) -> None:
         dummy_secret = "AUDIT_DUMMY_RESTORE_SECRET"
         candidate_catalog = self.candidate / "catalog.json"

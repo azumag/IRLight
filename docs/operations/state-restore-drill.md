@@ -35,7 +35,7 @@ python /app/state_restore_compare_cli.py \
   --candidate-node-state-dir /mnt/restored/node
 ```
 
-Node authority が各 `STATE_DIR` と同じ場所なら `--*-node-state-dir` は省略できる。source / candidate の snapshot root は実ディレクトリを直接指定し、symlink を比較元・restore 先の代用にしない。CLI は root の final symlink を追わず、検査中に directory identity が変わった場合も `SNAPSHOT_ROOT_UNAVAILABLE` で fail-closed する。source / candidate のいずれかの root が同じ directory identity を指す場合は `SOURCE_CANDIDATE_NOT_DISTINCT`、個別 authority が hard link 等で同じ inode を共有する場合は `SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT` として拒否する。bind mount 等の deployment 固有 identity もあるため、運用記録でも mount identity を確認する。
+Node authority が各 `STATE_DIR` と同じ場所なら `--*-node-state-dir` は省略できる。source / candidate の snapshot root は実ディレクトリを直接指定し、symlink を比較元・restore 先の代用にしない。CLI は root 自体に加えて、その直上の parent directory も `O_NOFOLLOW` 付きで検査する。root は検証済み parent directory fd から相対 open するため、final symlink、直上 parent の symlink、検査中の root / parent 差し替えを `SNAPSHOT_ROOT_UNAVAILABLE` で fail-closed する。より上位の deployment 固有 mount / path identity は下記の運用記録でも確認する。source / candidate のいずれかの root が同じ directory identity を指す場合は `SOURCE_CANDIDATE_NOT_DISTINCT`、個別 authority が hard link 等で同じ inode を共有する場合は `SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT` として拒否する。bind mount 等の deployment 固有 identity もあるため、運用記録でも mount identity を確認する。
 
 CLI は `/readyz` と同じ startup authority (`control`, `catalog`, `users`, `auth_sessions`, `nodes`) を検証し、その **検証済み byte snapshot** が一致するかだけを比較する。legacy bootstrap-token ledger は file / initialization marker の存在と内容を別途比較する。digest は内部比較にだけ使い、出力しない。
 

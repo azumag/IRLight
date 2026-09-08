@@ -101,28 +101,67 @@ def _legacy_fuse_fingerprint(
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
-    """Open one snapshot root without following a raced final symlink."""
+    """Open one snapshot root without following its final parent/root symlinks."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise StateReadinessError("snapshot root cannot be inspected safely")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if not path.name:
+        try:
+            before = path.lstat()
+            fd = os.open(path, flags)
+        except (OSError, NotImplementedError) as exc:
+            raise StateReadinessError("snapshot root is unavailable") from exc
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise StateReadinessError("snapshot root is unavailable")
+            return opened.st_dev, opened.st_ino
+        finally:
+            os.close(fd)
+
+    parent = path.parent
     try:
-        before = path.lstat()
+        parent_before = parent.lstat()
     except OSError as exc:
         raise StateReadinessError("snapshot root is unavailable") from exc
-    if not stat.S_ISDIR(before.st_mode):
+    if not stat.S_ISDIR(parent_before.st_mode):
         raise StateReadinessError("snapshot root is unavailable")
 
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags)
-    except OSError as exc:
+        parent_fd = os.open(parent, flags)
+    except (OSError, NotImplementedError) as exc:
         raise StateReadinessError("snapshot root is unavailable") from exc
     try:
-        opened = os.fstat(fd)
-        if not stat.S_ISDIR(opened.st_mode):
+        parent_opened = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_opened.st_mode)
+            or (parent_opened.st_dev, parent_opened.st_ino)
+            != (parent_before.st_dev, parent_before.st_ino)
+        ):
             raise StateReadinessError("snapshot root is unavailable")
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise StateReadinessError("snapshot root changed during inspection")
-        return opened.st_dev, opened.st_ino
+        try:
+            before = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            fd = os.open(path.name, flags, dir_fd=parent_fd)
+        except (OSError, NotImplementedError) as exc:
+            raise StateReadinessError("snapshot root is unavailable") from exc
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise StateReadinessError("snapshot root is unavailable")
+            return opened.st_dev, opened.st_ino
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(parent_fd)
 
 
 def _snapshot_root_reason(
