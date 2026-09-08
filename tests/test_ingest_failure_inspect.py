@@ -167,6 +167,27 @@ class IngestFailureCliTest(unittest.TestCase):
         self.assertNotIn("super-secret", rendered)
         self.assertNotIn("secret-from-api-body", rendered)
 
+    def test_invalid_api_url_is_generic_and_non_secret(self) -> None:
+        output = io.StringIO()
+        with patch.dict(
+            os.environ,
+            {
+                "NODE_MEDIAMTX_API_URL": "://user:super-secret@bad host",
+                "NODE_INGEST_PATH": "live/input",
+            },
+            clear=True,
+        ):
+            with contextlib.redirect_stdout(output):
+                result = ingest_failure_inspect_main([])
+
+        self.assertEqual(result, 3)
+        rendered = output.getvalue()
+        self.assertEqual(
+            json.loads(rendered),
+            {"status": "UNAVAILABLE", "reason": "INGEST_INSPECTION_UNAVAILABLE"},
+        )
+        self.assertNotIn("super-secret", rendered)
+
     def test_timeout_is_strictly_bounded(self) -> None:
         for value in ("0.1", "11", "nan", "inf"):
             with self.subTest(value=value):
