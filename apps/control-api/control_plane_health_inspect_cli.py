@@ -1,9 +1,10 @@
 """Read-only local Control Plane liveness/readiness inspection for operators.
 
-The inspector only issues GET requests to loopback addresses. It intentionally
-rejects credentials, non-loopback hosts, redirects, query strings and fragments
-so an operator diagnostic cannot become an SSRF or credential exfiltration path.
-Response bodies are never printed.
+The inspector only issues GET requests to literal loopback addresses. It
+intentionally rejects credentials, non-loopback hosts, redirects, query strings
+and fragments, and ignores proxy environment variables so an operator
+diagnostic cannot become an SSRF or credential exfiltration path. Response
+bodies are never printed.
 """
 
 from __future__ import annotations
@@ -63,6 +64,14 @@ def _bounded_timeout(value: str) -> float:
     return numeric
 
 
+def _build_local_opener() -> urllib.request.OpenerDirector:
+    """Build a redirect-free HTTP client that never consults proxy settings."""
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirect(),
+    )
+
+
 def _probe_http_status(
     opener: urllib.request.OpenerDirector,
     url: str,
@@ -92,7 +101,7 @@ def inspect_control_plane(
     opener: urllib.request.OpenerDirector | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Classify local process liveness and application readiness without mutation."""
-    client = opener or urllib.request.build_opener(_NoRedirect())
+    client = opener or _build_local_opener()
 
     try:
         liveness_status = _probe_http_status(
