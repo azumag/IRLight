@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ if str(CONTROL_API) not in sys.path:
 from control_plane_health_inspect_cli import (  # noqa: E402
     ControlPlaneProbeError,
     _bounded_timeout,
+    _build_local_opener,
     _local_base_url,
     inspect_control_plane,
     main as health_inspect_main,
@@ -54,6 +56,19 @@ class ControlPlaneHealthInspectTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(argparse.ArgumentTypeError):
                     _bounded_timeout(value)
+
+    def test_local_opener_disables_environment_proxies(self) -> None:
+        with patch("control_plane_health_inspect_cli.urllib.request.build_opener") as build:
+            _build_local_opener()
+
+        handlers = build.call_args.args
+        proxy_handlers = [
+            handler
+            for handler in handlers
+            if isinstance(handler, urllib.request.ProxyHandler)
+        ]
+        self.assertEqual(len(proxy_handlers), 1)
+        self.assertEqual(proxy_handlers[0].proxies, {})
 
     def test_ready_when_liveness_and_readiness_are_successful(self) -> None:
         with patch(
