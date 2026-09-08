@@ -127,7 +127,18 @@ class ControlStore:
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(validated, handle, ensure_ascii=False, sort_keys=True)
+                try:
+                    json.dump(
+                        validated,
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ControlStateError(
+                        "control state cannot be serialized"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             # Arm the durable fuse before publishing the first authoritative
