@@ -107,6 +107,12 @@ For emergency key compromise, drain/stop affected Sessions and recreate their
 Media Nodes with the replacement certificate. That disruptive path belongs in
 the operations/security runbook.
 
+For a non-mutating expiry/parse check and a failure/recovery checklist, use
+`scripts/check-rtmps-certificate.sh` and
+`docs/operations/rtmps-certificate-update-failure.md`. The checker reads only
+the public certificate and intentionally does not choose a production warning
+threshold, restart MediaMTX, modify DNS, or renew a certificate.
+
 ## Verification
 
 `scripts/smoke-rtmps.sh` creates an ephemeral self-signed certificate whose SAN
