@@ -101,13 +101,28 @@ def _legacy_fuse_fingerprint(
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
+    """Open one snapshot root without following a raced final symlink."""
     try:
-        item = path.stat()
+        before = path.lstat()
     except OSError as exc:
         raise StateReadinessError("snapshot root is unavailable") from exc
-    if not stat.S_ISDIR(item.st_mode):
+    if not stat.S_ISDIR(before.st_mode):
         raise StateReadinessError("snapshot root is unavailable")
-    return item.st_dev, item.st_ino
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise StateReadinessError("snapshot root is unavailable") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise StateReadinessError("snapshot root is unavailable")
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise StateReadinessError("snapshot root changed during inspection")
+        return opened.st_dev, opened.st_ino
+    finally:
+        os.close(fd)
 
 
 def _snapshot_root_reason(
