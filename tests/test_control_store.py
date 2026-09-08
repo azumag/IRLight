@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +81,39 @@ class ControlStoreTest(unittest.TestCase):
             preserved, error = reader.read()
             self.assertEqual(preserved.audio_mode, "MUTED")
             self.assertEqual(error, "CONTROL_STATE_INVALID")
+
+    def test_non_finite_update_does_not_replace_existing_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            before = store.path.read_bytes()
+
+            with self.assertRaises(ControlStateError):
+                store.update(
+                    mode="MUTED",
+                    idempotency_key="non-finite",
+                    now=float("nan"),
+                )
+
+            self.assertEqual(store.path.read_bytes(), before)
+            self.assertEqual(store.get()["audio_mode"], "LIVE")
+
+    def test_serialization_failure_is_controlled_and_preserves_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            before = store.path.read_bytes()
+
+            with mock.patch(
+                "control_store.json.dump", side_effect=ValueError("synthetic failure")
+            ):
+                with self.assertRaisesRegex(
+                    ControlStateError, "control state cannot be serialized"
+                ):
+                    store.update(mode="MUTED", idempotency_key="serialize-failure")
+
+            self.assertEqual(store.path.read_bytes(), before)
+            self.assertEqual(store.get()["audio_mode"], "LIVE")
 
 
 if __name__ == "__main__":
