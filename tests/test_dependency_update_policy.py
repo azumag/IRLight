@@ -76,6 +76,9 @@ class DependencyUpdatePolicyTest(unittest.TestCase):
 
     def test_vulnerability_issue_template_records_actionable_exception_context(self) -> None:
         for expected in (
+            "about: Dependency audit / advisory",
+            'labels: ""',
+            'assignees: ""',
             "Advisory ID",
             "Current version",
             "Fix version",
