@@ -151,13 +151,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--base-url",
         type=_local_base_url,
-        default=_local_base_url(os.getenv("CONTROL_PLANE_LOCAL_URL", DEFAULT_BASE_URL)),
+        default=os.getenv("CONTROL_PLANE_LOCAL_URL", DEFAULT_BASE_URL),
         help="loopback Control Plane base URL (default: env or http://127.0.0.1:8080)",
     )
     parser.add_argument(
         "--timeout-seconds",
         type=_bounded_timeout,
-        default=_bounded_timeout(os.getenv("CONTROL_PLANE_HEALTH_TIMEOUT_SECONDS", "3")),
+        default=os.getenv("CONTROL_PLANE_HEALTH_TIMEOUT_SECONDS", "3"),
         help="per-request timeout, capped at 10 seconds (default: env or 3)",
     )
     args = parser.parse_args(argv)
