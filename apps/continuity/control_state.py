@@ -16,6 +16,18 @@ class ControlCommandState:
     command_id: str | None
 
 
+def _finite_timestamp(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("invalid control update time")
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("invalid control update time") from exc
+    if not math.isfinite(normalized):
+        raise ValueError("invalid control update time")
+    return normalized
+
+
 class ControlStateReader:
     """Preserve the last valid command; start MUTED if no authority is readable."""
 
@@ -30,19 +42,13 @@ class ControlStateReader:
         mode = value.get("audio_mode")
         version = value.get("version")
         command_id = value.get("command_id")
-        updated_at = value.get("updated_at")
+        _finite_timestamp(value.get("updated_at"))
         if mode not in {"LIVE", "MUTED"}:
             raise ValueError("invalid audio mode")
         if isinstance(version, bool) or not isinstance(version, int) or version < 0:
             raise ValueError("invalid control version")
         if command_id is not None and not isinstance(command_id, str):
             raise ValueError("invalid command id")
-        if (
-            isinstance(updated_at, bool)
-            or not isinstance(updated_at, (int, float))
-            or not math.isfinite(float(updated_at))
-        ):
-            raise ValueError("invalid control update time")
         return ControlCommandState(mode, version, command_id)
 
     def read(self) -> tuple[ControlCommandState, str | None]:
