@@ -44,6 +44,18 @@ def default_control(*, now: float | None = None) -> dict[str, object]:
     }
 
 
+def _finite_timestamp(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ControlStateError("control state has invalid update time")
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ControlStateError("control state has invalid update time") from exc
+    if not math.isfinite(normalized):
+        raise ControlStateError("control state has invalid update time")
+    return normalized
+
+
 def _validate_control(value: Any) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ControlStateError("control state has invalid structure")
@@ -51,7 +63,7 @@ def _validate_control(value: Any) -> dict[str, object]:
     version = value.get("version")
     command_id = value.get("command_id")
     idempotency_key = value.get("idempotency_key")
-    updated_at = value.get("updated_at")
+    updated_at = _finite_timestamp(value.get("updated_at"))
     if mode not in {"LIVE", "MUTED"}:
         raise ControlStateError("control state has invalid audio mode")
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
@@ -67,18 +79,12 @@ def _validate_control(value: Any) -> dict[str, object]:
         not isinstance(idempotency_key, str) or len(idempotency_key) > 200
     ):
         raise ControlStateError("control state has invalid idempotency key")
-    if (
-        isinstance(updated_at, bool)
-        or not isinstance(updated_at, (int, float))
-        or not math.isfinite(float(updated_at))
-    ):
-        raise ControlStateError("control state has invalid update time")
     return {
         "audio_mode": mode,
         "version": version,
         "command_id": command_id,
         "idempotency_key": idempotency_key,
-        "updated_at": float(updated_at),
+        "updated_at": updated_at,
     }
 
 
@@ -127,7 +133,18 @@ class ControlStore:
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(validated, handle, ensure_ascii=False, sort_keys=True)
+                try:
+                    json.dump(
+                        validated,
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ControlStateError(
+                        "control state cannot be encoded"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             # Arm the durable fuse before publishing the first authoritative
