@@ -157,11 +157,15 @@ class NodeHeartbeatInspectCliTest(unittest.TestCase):
         self.assertEqual(result, 3)
         self.assertEqual(json.loads(output.getvalue())["status"], "UNAVAILABLE")
 
-    def test_control_api_image_packages_inspector(self) -> None:
-        dockerfile = (ROOT / "apps" / "control-api" / "Dockerfile").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("apps/control-api/node_heartbeat_inspect_cli.py", dockerfile)
+    def test_invalid_env_grace_is_reported_as_argument_error(self) -> None:
+        stderr = io.StringIO()
+        with patch.dict(os.environ, {"NODE_HEARTBEAT_GRACE_SECONDS": "nan"}):
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    heartbeat_inspect_main(["--node-state-dir", str(self.root)])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("finite positive number", stderr.getvalue())
 
 
 if __name__ == "__main__":
