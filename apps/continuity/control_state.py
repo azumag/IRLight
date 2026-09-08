@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,13 +44,23 @@ class ControlStateReader:
         mode = value.get("audio_mode")
         version = value.get("version")
         command_id = value.get("command_id")
+        idempotency_key = value.get("idempotency_key")
         updated_at = value.get("updated_at")
         if mode not in {"LIVE", "MUTED"}:
             raise ValueError("invalid audio mode")
         if isinstance(version, bool) or not isinstance(version, int) or version < 0:
             raise ValueError("invalid control version")
-        if command_id is not None and not isinstance(command_id, str):
-            raise ValueError("invalid command id")
+        if command_id is not None:
+            if not isinstance(command_id, str):
+                raise ValueError("invalid command id")
+            try:
+                uuid.UUID(command_id)
+            except ValueError as exc:
+                raise ValueError("invalid command id") from exc
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or len(idempotency_key) > 200
+        ):
+            raise ValueError("invalid idempotency key")
         if (
             isinstance(updated_at, bool)
             or not isinstance(updated_at, (int, float))
