@@ -124,6 +124,22 @@ class ControlStoreTest(unittest.TestCase):
             self.assertEqual(store.path.read_bytes(), before)
             self.assertEqual(store.get()["audio_mode"], "LIVE")
 
+    def test_timestamp_overflow_is_controlled_and_preserves_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            before = store.path.read_bytes()
+
+            with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                store.update(
+                    mode="MUTED",
+                    idempotency_key="overflow",
+                    now=10**400,
+                )
+
+            self.assertEqual(store.path.read_bytes(), before)
+            self.assertEqual(store.get()["audio_mode"], "LIVE")
+
     def test_serialization_failure_is_controlled_and_preserves_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
