@@ -87,7 +87,16 @@ def _atomic_write_json(path: Path, value: dict[str, object]) -> None:
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, sort_keys=True)
+            try:
+                json.dump(
+                    value,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("control state cannot be serialized") from exc
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -344,15 +353,46 @@ class NodeAgent:
         """
         if self.control_state_path is None or self.control_state_path.exists():
             return
-        mode = str(response.get("audio_mode", "LIVE"))
+        mode = response.get("audio_mode", "LIVE")
         if mode not in {"LIVE", "MUTED"}:
             raise RuntimeError("bootstrap response has unsupported audio mode")
+        version = response.get("audio_version", 0)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise RuntimeError("bootstrap response has invalid audio version")
+        command_id = response.get("audio_command_id")
+        if command_id is not None:
+            if not isinstance(command_id, str):
+                raise RuntimeError("bootstrap response has invalid audio command id")
+            try:
+                uuid.UUID(command_id)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "bootstrap response has invalid audio command id"
+                ) from exc
+        idempotency_key = response.get("audio_idempotency_key")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or len(idempotency_key) > 200
+        ):
+            raise RuntimeError("bootstrap response has invalid audio idempotency key")
+        updated_at_raw = response.get("audio_updated_at", time.time())
+        if isinstance(updated_at_raw, bool) or not isinstance(
+            updated_at_raw, (int, float)
+        ):
+            raise RuntimeError("bootstrap response has invalid audio update time")
+        try:
+            updated_at = float(updated_at_raw)
+        except (OverflowError, TypeError, ValueError):
+            raise RuntimeError(
+                "bootstrap response has invalid audio update time"
+            ) from None
+        if not math.isfinite(updated_at):
+            raise RuntimeError("bootstrap response has invalid audio update time")
         payload = {
             "audio_mode": mode,
-            "version": int(response.get("audio_version", 0) or 0),
-            "command_id": response.get("audio_command_id"),
-            "idempotency_key": response.get("audio_idempotency_key"),
-            "updated_at": float(response.get("audio_updated_at", time.time())),
+            "version": version,
+            "command_id": command_id,
+            "idempotency_key": idempotency_key,
+            "updated_at": updated_at,
         }
         self.control_state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         _atomic_write_json(self.control_state_path, payload)
