@@ -19,7 +19,6 @@ from typing import Any, Callable
 from state_readiness import (
     StateReadinessError,
     _authority_specs,
-    _open_regular_readonly,
     _reject_json_constant,
 )
 from node_internal import _validate_tokens
@@ -29,15 +28,52 @@ from state_safety import initialization_marker, load_json_authority
 Validator = Callable[[dict[str, Any]], object]
 
 
-def _validated_fingerprint(
-    path: Path, validator: Validator, *, require_marker: bool = True
+def _entry_name(path: Path) -> str:
+    name = path.name
+    if not name or name in {".", ".."} or Path(name).name != name:
+        raise StateReadinessError("required state entry is unavailable")
+    return name
+
+
+def _open_regular_readonly_at(directory_fd: int, name: str) -> int:
+    """Open one regular entry relative to an already verified root directory."""
+    if not name or name in {".", ".."} or Path(name).name != name:
+        raise StateReadinessError("required state entry is unavailable")
+    try:
+        before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except (OSError, NotImplementedError) as exc:
+        raise StateReadinessError("required state entry is unavailable") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise StateReadinessError("required state entry is not a regular file")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=directory_fd)
+    except (OSError, NotImplementedError) as exc:
+        raise StateReadinessError("required state entry cannot be opened") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise StateReadinessError("required state entry is not a regular file")
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise StateReadinessError("required state entry changed during inspection")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _validated_fingerprint_at(
+    directory_fd: int, path: Path, validator: Validator, *, require_marker: bool = True
 ) -> tuple[bytes, tuple[int, int]]:
-    """Validate and fingerprint one authority from the same read-only snapshot."""
+    """Validate/fingerprint one authority without re-resolving its snapshot root."""
+    name = _entry_name(path)
     if require_marker:
-        marker_fd = _open_regular_readonly(initialization_marker(path))
+        marker_name = initialization_marker(Path(name)).name
+        marker_fd = _open_regular_readonly_at(directory_fd, marker_name)
         os.close(marker_fd)
 
-    fd = _open_regular_readonly(path)
+    fd = _open_regular_readonly_at(directory_fd, name)
     opened = os.fstat(fd)
     identity = (opened.st_dev, opened.st_ino)
     try:
@@ -67,24 +103,24 @@ def _validated_fingerprint(
     return hashlib.sha256(raw).digest(), identity
 
 
-def _entry_exists(path: Path) -> bool:
+def _entry_exists_at(directory_fd: int, name: str) -> bool:
     try:
-        path.lstat()
+        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
         return False
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         raise StateReadinessError("required state entry cannot be inspected") from exc
     return True
 
 
-def _legacy_fuse_fingerprint(
-    node_state_dir: Path,
+def _legacy_fuse_fingerprint_at(
+    node_directory_fd: int,
 ) -> tuple[bool, bool, bytes | None, tuple[int, int] | None]:
     """Return only presence flags and a validated digest for the legacy ledger."""
-    path = node_state_dir / "bootstrap_tokens.json"
-    marker = initialization_marker(path)
-    file_present = _entry_exists(path)
-    marker_present = _entry_exists(marker)
+    name = "bootstrap_tokens.json"
+    marker_name = initialization_marker(Path(name)).name
+    file_present = _entry_exists_at(node_directory_fd, name)
+    marker_present = _entry_exists_at(node_directory_fd, marker_name)
 
     if not file_present:
         if marker_present:
@@ -92,16 +128,16 @@ def _legacy_fuse_fingerprint(
         return False, False, None, None
 
     if marker_present:
-        marker_fd = _open_regular_readonly(marker)
+        marker_fd = _open_regular_readonly_at(node_directory_fd, marker_name)
         os.close(marker_fd)
-    digest, identity = _validated_fingerprint(
-        path, _validate_tokens, require_marker=False
+    digest, identity = _validated_fingerprint_at(
+        node_directory_fd, Path(name), _validate_tokens, require_marker=False
     )
     return True, marker_present, digest, identity
 
 
-def _directory_identity(path: Path) -> tuple[int, int]:
-    """Open one snapshot root without following its final parent/root symlinks."""
+def _open_snapshot_root(path: Path) -> tuple[int, tuple[int, int]]:
+    """Open and retain one snapshot root without following final symlinks."""
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
         raise StateReadinessError("snapshot root cannot be inspected safely")
 
@@ -120,9 +156,10 @@ def _directory_identity(path: Path) -> tuple[int, int]:
                 or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
             ):
                 raise StateReadinessError("snapshot root is unavailable")
-            return opened.st_dev, opened.st_ino
-        finally:
+            return fd, (opened.st_dev, opened.st_ino)
+        except Exception:
             os.close(fd)
+            raise
 
     parent = path.parent
     try:
@@ -157,35 +194,37 @@ def _directory_identity(path: Path) -> tuple[int, int]:
                 or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
             ):
                 raise StateReadinessError("snapshot root is unavailable")
-            return opened.st_dev, opened.st_ino
-        finally:
+            return fd, (opened.st_dev, opened.st_ino)
+        except Exception:
             os.close(fd)
+            raise
     finally:
         os.close(parent_fd)
 
 
-def _snapshot_root_reason(
-    *,
-    source_state_dir: Path,
-    source_node_state_dir: Path,
-    candidate_state_dir: Path,
-    candidate_node_state_dir: Path,
-) -> str | None:
-    """Reject comparisons where any source and candidate root is the same directory."""
-    try:
-        source_ids = {
-            _directory_identity(source_state_dir),
-            _directory_identity(source_node_state_dir),
-        }
-        candidate_ids = {
-            _directory_identity(candidate_state_dir),
-            _directory_identity(candidate_node_state_dir),
-        }
-    except StateReadinessError:
-        return "SNAPSHOT_ROOT_UNAVAILABLE"
-    if source_ids & candidate_ids:
-        return "SOURCE_CANDIDATE_NOT_DISTINCT"
-    return None
+def _root_fd_for_authority(
+    path: Path, *, state_dir: Path, state_fd: int, node_state_dir: Path, node_fd: int
+) -> int:
+    if node_state_dir != state_dir and path.parent == node_state_dir:
+        return node_fd
+    return state_fd
+
+
+def _snapshot_roots_still_current(
+    roots: list[tuple[Path, tuple[int, int]]],
+) -> bool:
+    """Fail closed if a pathname no longer resolves to the root opened at start."""
+    for path, expected_identity in roots:
+        try:
+            fd, current_identity = _open_snapshot_root(path)
+        except StateReadinessError:
+            return False
+        try:
+            if current_identity != expected_identity:
+                return False
+        finally:
+            os.close(fd)
+    return True
 
 
 def _unavailable(authority: str, side: str) -> dict[str, str]:
@@ -206,113 +245,172 @@ def compare_state_snapshots(
     """Compare validated startup authority without exposing authority contents."""
     source_node_dir = source_node_state_dir or source_state_dir
     candidate_node_dir = candidate_node_state_dir or candidate_state_dir
-    root_reason = _snapshot_root_reason(
-        source_state_dir=source_state_dir,
-        source_node_state_dir=source_node_dir,
-        candidate_state_dir=candidate_state_dir,
-        candidate_node_state_dir=candidate_node_dir,
-    )
-    if root_reason is not None:
-        return {"status": "UNAVAILABLE", "reason_code": root_reason, "checks": []}
 
-    source_specs = _authority_specs(
-        state_dir=source_state_dir, node_state_dir=source_node_dir
-    )
-    candidate_specs = _authority_specs(
-        state_dir=candidate_state_dir, node_state_dir=candidate_node_dir
-    )
-
-    checks: list[dict[str, str | None]] = []
-    for source_spec, candidate_spec in zip(source_specs, candidate_specs, strict=True):
-        authority, source_path, source_validator = source_spec
-        candidate_authority, candidate_path, candidate_validator = candidate_spec
-        if authority != candidate_authority:
-            raise RuntimeError("authority specification mismatch")
-
-        try:
-            source_digest, source_identity = _validated_fingerprint(
-                source_path, source_validator
-            )
-        except StateReadinessError:
-            checks.append(_unavailable(authority, "SOURCE"))
-            continue
-        try:
-            candidate_digest, candidate_identity = _validated_fingerprint(
-                candidate_path, candidate_validator
-            )
-        except StateReadinessError:
-            checks.append(_unavailable(authority, "CANDIDATE"))
-            continue
-
-        if source_identity == candidate_identity:
-            checks.append(
-                {
-                    "authority": authority,
-                    "status": "UNAVAILABLE",
-                    "reason_code": "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT",
-                }
-            )
-        elif source_digest == candidate_digest:
-            checks.append({"authority": authority, "status": "MATCH", "reason_code": None})
-        else:
-            checks.append(
-                {
-                    "authority": authority,
-                    "status": "MISMATCH",
-                    "reason_code": "AUTHORITY_CONTENT_MISMATCH",
-                }
-            )
-
-    legacy_authority = "legacy_bootstrap_tokens"
+    root_fds: list[int] = []
+    root_expectations: list[tuple[Path, tuple[int, int]]] = []
     try:
-        source_legacy = _legacy_fuse_fingerprint(source_node_dir)
-    except StateReadinessError:
-        checks.append(_unavailable(legacy_authority, "SOURCE"))
-    else:
         try:
-            candidate_legacy = _legacy_fuse_fingerprint(candidate_node_dir)
-        except StateReadinessError:
-            checks.append(_unavailable(legacy_authority, "CANDIDATE"))
-        else:
-            source_file, source_marker, source_digest, source_identity = source_legacy
-            candidate_file, candidate_marker, candidate_digest, candidate_identity = (
-                candidate_legacy
-            )
-            if (
-                source_file
-                and candidate_file
-                and source_identity == candidate_identity
-            ):
-                reason = "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT"
-            elif source_file != candidate_file:
-                reason = "LEGACY_FUSE_PRESENCE_MISMATCH"
-            elif source_marker != candidate_marker:
-                reason = "LEGACY_FUSE_MARKER_MISMATCH"
-            elif source_digest != candidate_digest:
-                reason = "AUTHORITY_CONTENT_MISMATCH"
+            source_state_fd, source_state_id = _open_snapshot_root(source_state_dir)
+            root_fds.append(source_state_fd)
+            root_expectations.append((source_state_dir, source_state_id))
+            if source_node_dir == source_state_dir:
+                source_node_fd, source_node_id = source_state_fd, source_state_id
             else:
-                reason = None
-            checks.append(
-                {
-                    "authority": legacy_authority,
-                    "status": (
-                        "MATCH"
-                        if reason is None
-                        else "UNAVAILABLE"
-                        if reason == "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT"
-                        else "MISMATCH"
-                    ),
-                    "reason_code": reason,
-                }
-            )
+                source_node_fd, source_node_id = _open_snapshot_root(source_node_dir)
+                root_fds.append(source_node_fd)
+                root_expectations.append((source_node_dir, source_node_id))
 
-    if any(check["status"] == "UNAVAILABLE" for check in checks):
-        status = "UNAVAILABLE"
-    elif any(check["status"] == "MISMATCH" for check in checks):
-        status = "MISMATCH"
-    else:
-        status = "MATCH"
-    return {"status": status, "reason_code": None, "checks": checks}
+            candidate_state_fd, candidate_state_id = _open_snapshot_root(candidate_state_dir)
+            root_fds.append(candidate_state_fd)
+            root_expectations.append((candidate_state_dir, candidate_state_id))
+            if candidate_node_dir == candidate_state_dir:
+                candidate_node_fd, candidate_node_id = candidate_state_fd, candidate_state_id
+            else:
+                candidate_node_fd, candidate_node_id = _open_snapshot_root(
+                    candidate_node_dir
+                )
+                root_fds.append(candidate_node_fd)
+                root_expectations.append((candidate_node_dir, candidate_node_id))
+        except StateReadinessError:
+            return {
+                "status": "UNAVAILABLE",
+                "reason_code": "SNAPSHOT_ROOT_UNAVAILABLE",
+                "checks": [],
+            }
+
+        source_ids = {source_state_id, source_node_id}
+        candidate_ids = {candidate_state_id, candidate_node_id}
+        if source_ids & candidate_ids:
+            return {
+                "status": "UNAVAILABLE",
+                "reason_code": "SOURCE_CANDIDATE_NOT_DISTINCT",
+                "checks": [],
+            }
+
+        source_specs = _authority_specs(
+            state_dir=source_state_dir, node_state_dir=source_node_dir
+        )
+        candidate_specs = _authority_specs(
+            state_dir=candidate_state_dir, node_state_dir=candidate_node_dir
+        )
+
+        checks: list[dict[str, str | None]] = []
+        for source_spec, candidate_spec in zip(source_specs, candidate_specs, strict=True):
+            authority, source_path, source_validator = source_spec
+            candidate_authority, candidate_path, candidate_validator = candidate_spec
+            if authority != candidate_authority:
+                raise RuntimeError("authority specification mismatch")
+
+            source_root_fd = _root_fd_for_authority(
+                source_path,
+                state_dir=source_state_dir,
+                state_fd=source_state_fd,
+                node_state_dir=source_node_dir,
+                node_fd=source_node_fd,
+            )
+            candidate_root_fd = _root_fd_for_authority(
+                candidate_path,
+                state_dir=candidate_state_dir,
+                state_fd=candidate_state_fd,
+                node_state_dir=candidate_node_dir,
+                node_fd=candidate_node_fd,
+            )
+            try:
+                source_digest, source_identity = _validated_fingerprint_at(
+                    source_root_fd, source_path, source_validator
+                )
+            except StateReadinessError:
+                checks.append(_unavailable(authority, "SOURCE"))
+                continue
+            try:
+                candidate_digest, candidate_identity = _validated_fingerprint_at(
+                    candidate_root_fd, candidate_path, candidate_validator
+                )
+            except StateReadinessError:
+                checks.append(_unavailable(authority, "CANDIDATE"))
+                continue
+
+            if source_identity == candidate_identity:
+                checks.append(
+                    {
+                        "authority": authority,
+                        "status": "UNAVAILABLE",
+                        "reason_code": "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT",
+                    }
+                )
+            elif source_digest == candidate_digest:
+                checks.append(
+                    {"authority": authority, "status": "MATCH", "reason_code": None}
+                )
+            else:
+                checks.append(
+                    {
+                        "authority": authority,
+                        "status": "MISMATCH",
+                        "reason_code": "AUTHORITY_CONTENT_MISMATCH",
+                    }
+                )
+
+        legacy_authority = "legacy_bootstrap_tokens"
+        try:
+            source_legacy = _legacy_fuse_fingerprint_at(source_node_fd)
+        except StateReadinessError:
+            checks.append(_unavailable(legacy_authority, "SOURCE"))
+        else:
+            try:
+                candidate_legacy = _legacy_fuse_fingerprint_at(candidate_node_fd)
+            except StateReadinessError:
+                checks.append(_unavailable(legacy_authority, "CANDIDATE"))
+            else:
+                source_file, source_marker, source_digest, source_identity = source_legacy
+                candidate_file, candidate_marker, candidate_digest, candidate_identity = (
+                    candidate_legacy
+                )
+                if (
+                    source_file
+                    and candidate_file
+                    and source_identity == candidate_identity
+                ):
+                    reason = "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT"
+                elif source_file != candidate_file:
+                    reason = "LEGACY_FUSE_PRESENCE_MISMATCH"
+                elif source_marker != candidate_marker:
+                    reason = "LEGACY_FUSE_MARKER_MISMATCH"
+                elif source_digest != candidate_digest:
+                    reason = "AUTHORITY_CONTENT_MISMATCH"
+                else:
+                    reason = None
+                checks.append(
+                    {
+                        "authority": legacy_authority,
+                        "status": (
+                            "MATCH"
+                            if reason is None
+                            else "UNAVAILABLE"
+                            if reason == "SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT"
+                            else "MISMATCH"
+                        ),
+                        "reason_code": reason,
+                    }
+                )
+
+        if not _snapshot_roots_still_current(root_expectations):
+            return {
+                "status": "UNAVAILABLE",
+                "reason_code": "SNAPSHOT_ROOT_UNAVAILABLE",
+                "checks": [],
+            }
+
+        if any(check["status"] == "UNAVAILABLE" for check in checks):
+            status = "UNAVAILABLE"
+        elif any(check["status"] == "MISMATCH" for check in checks):
+            status = "MISMATCH"
+        else:
+            status = "MATCH"
+        return {"status": status, "reason_code": None, "checks": checks}
+    finally:
+        for fd in reversed(root_fds):
+            os.close(fd)
 
 
 def main(argv: list[str] | None = None) -> int:

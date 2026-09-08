@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from auth_store import _default_sessions, _default_users  # noqa: E402
 from control_store import default_control  # noqa: E402
+import state_restore_compare_cli as restore_compare  # noqa: E402
 from state_restore_compare_cli import (  # noqa: E402
     compare_state_snapshots,
     main as compare_main,
@@ -80,6 +82,77 @@ class StateRestoreCompareTest(unittest.TestCase):
         self.assertFalse((self.source / ".control-state.lock").exists())
         self.assertFalse((self.candidate / ".control-state.lock").exists())
 
+
+    def test_separate_node_roots_use_their_verified_directory_fds(self) -> None:
+        source_node = self.root / "source-node"
+        candidate_node = self.root / "candidate-node"
+        source_node.mkdir()
+        candidate_node.mkdir()
+        for state_dir, node_dir in (
+            (self.source, source_node),
+            (self.candidate, candidate_node),
+        ):
+            nodes = state_dir / "nodes.json"
+            marker = initialization_marker(nodes)
+            nodes.rename(node_dir / nodes.name)
+            marker.rename(node_dir / marker.name)
+
+        payload = compare_state_snapshots(
+            source_state_dir=self.source,
+            candidate_state_dir=self.candidate,
+            source_node_state_dir=source_node,
+            candidate_node_state_dir=candidate_node,
+        )
+
+        self.assertEqual(payload["status"], "MATCH")
+        self.assertTrue(all(item["status"] == "MATCH" for item in payload["checks"]))
+
+    def test_shared_state_and_node_root_is_opened_once_per_side(self) -> None:
+        original = restore_compare._open_snapshot_root
+        with mock.patch.object(
+            restore_compare, "_open_snapshot_root", wraps=original
+        ) as open_root:
+            payload = self._compare()
+
+        self.assertEqual(payload["status"], "MATCH")
+        self.assertEqual(open_root.call_count, 4)
+        self.assertEqual(
+            [call.args[0] for call in open_root.call_args_list],
+            [self.source, self.candidate, self.source, self.candidate],
+        )
+
+    def test_root_replacement_after_open_fails_closed_without_retargeting(self) -> None:
+        opened_candidate = self.root / "candidate-opened"
+        original = restore_compare._validated_fingerprint_at
+        swapped = False
+
+        def fingerprint_with_replacement(*args: object, **kwargs: object):
+            nonlocal swapped
+            result = original(*args, **kwargs)
+            if not swapped:
+                self.candidate.rename(opened_candidate)
+                shutil.copytree(self.source, self.candidate)
+                self._write_authority(
+                    self.candidate / "control.json", default_control(now=2.0)
+                )
+                swapped = True
+            return result
+
+        with mock.patch.object(
+            restore_compare,
+            "_validated_fingerprint_at",
+            side_effect=fingerprint_with_replacement,
+        ):
+            payload = self._compare()
+
+        self.assertTrue(swapped)
+        self.assertEqual(payload["status"], "UNAVAILABLE")
+        self.assertEqual(payload["reason_code"], "SNAPSHOT_ROOT_UNAVAILABLE")
+        self.assertEqual(payload["checks"], [])
+        self.assertNotEqual(
+            (opened_candidate / "control.json").read_bytes(),
+            (self.candidate / "control.json").read_bytes(),
+        )
 
     def test_same_snapshot_root_is_rejected_as_not_distinct(self) -> None:
         before = self._snapshot()
