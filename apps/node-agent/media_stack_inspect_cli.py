@@ -45,9 +45,10 @@ def _gateway_enabled() -> bool:
     return configured not in {"0", "false", "no", "off"}
 
 
-def expected_services() -> tuple[str, ...]:
+def expected_services(egress_mode: str) -> tuple[str, ...]:
+    if egress_mode not in {"DIRECT_PUSH", "RELAY_ONLY"}:
+        raise ValueError("unsupported egress mode")
     services = ["mediamtx", "continuity"]
-    egress_mode = os.getenv("NODE_EGRESS_MODE", "DIRECT_PUSH").strip().upper()
     if egress_mode != "RELAY_ONLY" and _gateway_enabled():
         services.append("egress-gateway")
     return tuple(services)
@@ -113,12 +114,14 @@ def inspect_media_stack(
     *,
     compose_file: Path,
     project_name: str,
+    egress_mode: str,
     timeout_seconds: float,
     restart_warning_count: int,
 ) -> dict[str, Any]:
     if not compose_file.is_file():
         raise MediaStackInspectError("compose control file is unavailable")
 
+    services = expected_services(egress_mode)
     env = dict(os.environ)
     env["COMPOSE_PROJECT_NAME"] = project_name
     ps = _run_readonly(
@@ -131,7 +134,7 @@ def inspect_media_stack(
             "--all",
             "--format",
             "json",
-            *expected_services(),
+            *services,
         ],
         timeout_seconds=timeout_seconds,
         env=env,
@@ -150,7 +153,7 @@ def inspect_media_stack(
     problem_count = 0
     warning_count = 0
 
-    for service in expected_services():
+    for service in services:
         row = by_service.get(service)
         if row is None:
             problem_count += 1
@@ -226,6 +229,7 @@ def inspect_media_stack(
     status = "PROBLEM" if problem_count else "WARNING" if warning_count else "OK"
     return {
         "status": status,
+        "egress_mode": egress_mode,
         "problem_count": problem_count,
         "warning_count": warning_count,
         "restart_warning_count": restart_warning_count,
@@ -246,6 +250,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Compose project name (default: NODE_COMPOSE_PROJECT or irlight-node)",
     )
     parser.add_argument(
+        "--egress-mode",
+        choices=("DIRECT_PUSH", "RELAY_ONLY"),
+        default=os.getenv("NODE_EGRESS_MODE"),
+        help="Current Session egress mode; required unless NODE_EGRESS_MODE is set",
+    )
+    parser.add_argument(
         "--command-timeout-seconds",
         type=_positive_finite,
         default=os.getenv("NODE_DOCKER_COMMAND_TIMEOUT_SECONDS", "15"),
@@ -258,11 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Lifetime restart count that warrants operator correlation (default: env or 3)",
     )
     args = parser.parse_args(argv)
+    if args.egress_mode is None:
+        parser.error("--egress-mode is required unless NODE_EGRESS_MODE is set")
 
     try:
         payload = inspect_media_stack(
             compose_file=Path(args.compose_file),
             project_name=args.project_name,
+            egress_mode=args.egress_mode,
             timeout_seconds=args.command_timeout_seconds,
             restart_warning_count=args.restart_warning_count,
         )
