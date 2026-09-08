@@ -48,7 +48,7 @@ class ComposePsParsingTest(unittest.TestCase):
 
     def test_rejects_invalid_json_shape(self) -> None:
         with self.assertRaises(MediaStackInspectError):
-            parse_compose_ps('{"Service":"mediamtx"}')
+            parse_compose_ps("[1]")
         with self.assertRaises(MediaStackInspectError):
             parse_compose_ps("not-json")
 
