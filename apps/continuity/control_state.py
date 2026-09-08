@@ -16,6 +16,19 @@ class ControlCommandState:
     command_id: str | None
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate control key: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_non_finite_constant(value: str) -> None:
+    raise ValueError(f"non-finite control number is not allowed: {value}")
+
+
 class ControlStateReader:
     """Preserve the last valid command; start MUTED if no authority is readable."""
 
@@ -40,15 +53,26 @@ class ControlStateReader:
         if (
             isinstance(updated_at, bool)
             or not isinstance(updated_at, (int, float))
-            or not math.isfinite(float(updated_at))
         ):
+            raise ValueError("invalid control update time")
+        try:
+            normalized_updated_at = float(updated_at)
+        except (OverflowError, ValueError):
+            raise ValueError("invalid control update time") from None
+        if not math.isfinite(normalized_updated_at):
             raise ValueError("invalid control update time")
         return ControlCommandState(mode, version, command_id)
 
     def read(self) -> tuple[ControlCommandState, str | None]:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
-                current = self._validate(json.load(handle))
+                current = self._validate(
+                    json.load(
+                        handle,
+                        object_pairs_hook=_reject_duplicate_keys,
+                        parse_constant=_reject_non_finite_constant,
+                    )
+                )
         except FileNotFoundError:
             return self._fallback(), "CONTROL_STATE_UNAVAILABLE"
         except (json.JSONDecodeError, OSError, ValueError):
