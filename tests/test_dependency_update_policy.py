@@ -7,6 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEPENDABOT = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
 POLICY = (ROOT / "docs" / "dependency-update-policy.md").read_text(encoding="utf-8")
+VULNERABILITY_RUNBOOK = (
+    ROOT / "docs" / "dependency-vulnerability-response.md"
+).read_text(encoding="utf-8")
+VULNERABILITY_TEMPLATE = (
+    ROOT / ".github" / "ISSUE_TEMPLATE" / "dependency-vulnerability.md"
+).read_text(encoding="utf-8")
 
 
 class DependencyUpdatePolicyTest(unittest.TestCase):
@@ -44,6 +50,44 @@ class DependencyUpdatePolicyTest(unittest.TestCase):
             with self.subTest(gate=gate):
                 self.assertIn(gate, POLICY)
         self.assertIn("自動マージはしない", POLICY)
+
+    def test_policy_tracks_sbom_as_active_artifact_and_links_response_runbook(self) -> None:
+        self.assertIn("CycloneDX JSON SBOM", POLICY)
+        self.assertIn("docs/dependency-vulnerability-response.md", POLICY)
+        self.assertIn("container image digest pinning と release artifact signing", POLICY)
+
+    def test_vulnerability_runbook_is_reproducible_and_keeps_merge_gates(self) -> None:
+        for expected in (
+            "runtime-dependency-audit",
+            "runtime-dependency-sbom",
+            "python -m pip check",
+            "python -m pip_audit",
+            "--strict",
+            "--requirement apps/control-api/requirements.txt",
+            "Dependency audit",
+            "Disconnect recovery E2E",
+            "RTMPS ingest recovery E2E",
+            "SRT ingest recovery E2E",
+            "--ignore-vuln",
+            "有効期限",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, VULNERABILITY_RUNBOOK)
+
+    def test_vulnerability_issue_template_records_actionable_exception_context(self) -> None:
+        for expected in (
+            "about: Dependency audit / advisory",
+            'labels: ""',
+            'assignees: ""',
+            "Advisory ID",
+            "Current version",
+            "Fix version",
+            "Compensating control",
+            "有効期限",
+            "docs/dependency-vulnerability-response.md",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, VULNERABILITY_TEMPLATE)
 
 
 if __name__ == "__main__":
