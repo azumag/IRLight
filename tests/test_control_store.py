@@ -82,6 +82,36 @@ class ControlStoreTest(unittest.TestCase):
             self.assertEqual(preserved.audio_mode, "MUTED")
             self.assertEqual(error, "CONTROL_STATE_INVALID")
 
+    def test_continuity_reader_rejects_ambiguous_and_overflowing_json(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            path = store.path
+            reader = ControlStateReader(path)
+
+            valid, error = reader.read()
+            self.assertEqual(valid.audio_mode, "LIVE")
+            self.assertIsNone(error)
+
+            invalid_payloads = (
+                '{"audio_mode":"MUTED","audio_mode":"LIVE","version":1,'
+                '"command_id":null,"updated_at":1}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                '"updated_at":NaN}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                f'"updated_at":1{"0" * 400}}}',
+                '{"audio_mode":"MUTED","version":1,"command_id":"not-a-uuid",'
+                '"idempotency_key":"key","updated_at":1}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                '"idempotency_key":[],"updated_at":1}',
+            )
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload[:80]):
+                    path.write_text(payload, encoding="utf-8")
+                    preserved, error = reader.read()
+                    self.assertEqual(preserved.audio_mode, "LIVE")
+                    self.assertEqual(error, "CONTROL_STATE_INVALID")
+
     def test_non_finite_update_does_not_replace_existing_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
@@ -97,6 +127,32 @@ class ControlStoreTest(unittest.TestCase):
 
             self.assertEqual(store.path.read_bytes(), before)
             self.assertEqual(store.get()["audio_mode"], "LIVE")
+
+    def test_timestamp_overflow_is_controlled_and_preserves_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            before = store.path.read_bytes()
+
+            with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                store.update(
+                    mode="MUTED",
+                    idempotency_key="overflow",
+                    now=10**400,
+                )
+
+            self.assertEqual(store.path.read_bytes(), before)
+            self.assertEqual(store.get()["audio_mode"], "LIVE")
+
+            corrupt = (
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":null,'
+                f'"updated_at":1{"0" * 400}}}'
+            )
+            store.path.write_text(corrupt, encoding="utf-8")
+            with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                store.get()
+            self.assertEqual(store.path.read_text(encoding="utf-8"), corrupt)
 
     def test_serialization_failure_is_controlled_and_preserves_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
