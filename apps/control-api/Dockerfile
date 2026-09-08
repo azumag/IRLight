@@ -26,6 +26,7 @@ COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/session_store.py \
      apps/control-api/session_workflow.py apps/control-api/state_safety.py \
      apps/control-api/state_readiness.py apps/control-api/state_inspect_cli.py \
+     apps/control-api/node_heartbeat_inspect_cli.py \
      apps/control-api/reaper.py \
      apps/control-api/reaper_cli.py apps/control-api/fake_provider_for_api.py ./
 COPY provider ./provider
