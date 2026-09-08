@@ -22,4 +22,6 @@ The destination secret authority follows the same writer rule and also validates
 
 The legacy audio control authority also follows the writer rule. `control.json` is serialized with `allow_nan=False`, and encoder `TypeError` / `ValueError` failures are converted to `ControlStateError` before `os.replace()`. Its existing record validator remains authoritative for the fixed control schema, including finite `updated_at`; this change does not alter audio-mode, version, idempotency, or command semantics.
 
+The ingest authentication guard authority follows the same fail-closed boundary. Bucket and event timestamps are non-negative finite numbers; integers too large to convert to a finite runtime timestamp are rejected as `IngestAuthGuardStateError` rather than escaping as an uncontrolled `OverflowError`. Its writer uses `allow_nan=False` and converts encoder `TypeError` / `ValueError` failures before publishing the temporary file, preserving the last readable `ingest_auth_guard.json`. Lockout thresholds, failure-window semantics, and attacker-facing reason behavior are unchanged.
+
 Refs #87 #90
