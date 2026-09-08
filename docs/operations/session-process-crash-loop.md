@@ -10,9 +10,13 @@ heartbeat 自体が止まっている場合は先に [Media Node heartbeat 停�
 
 heartbeat が継続しているのに `media_stack` が `stopped` / `starting` へ落ちる、または Session が `DEGRADED` を繰り返す場合に本 runbook を使う。
 
+この段階で対象 Session の `egress_mode` が `DIRECT_PUSH` / `RELAY_ONLY` のどちらかも確認する。Node Agent の Compose 環境には現在 Session の egress mode が永続的に export される保証がないため、inspector へ明示して誤判定を避ける。
+
 ## 2. read-only inspector
 
-Node Agent image には `/opt/irlight/media_stack_inspect_cli.py` を含める。Node Agent が使う media-only Compose control file と read-only Docker socket を利用し、次の情報だけを JSON で出力する。
+Node Agent image には `/opt/irlight/media_stack_inspect_cli.py` を含める。Node Agent に mount された Docker socket を利用するが、socket 自体が read-only API になるわけではない。安全境界は inspector が `docker compose ... ps` と field 限定の `docker inspect` しか呼ばないことによって保つ。
+
+inspector は次の情報だけを JSON で出力する。
 
 - service 名
 - container state
@@ -22,19 +26,22 @@ Node Agent image には `/opt/irlight/media_stack_inspect_cli.py` を含める�
 - lifetime restart count
 - 判定済みの `problems` / `warnings`
 
-container の environment、command line、mount、secret file、外部配信 URL は出力しない。内部では `docker compose ... ps --all --format json` と、明示的に field を限定した `docker inspect --format` だけを使う。`docker inspect` の完全な JSON は secret を含み得るため runbook でも使用しない。
+container の environment、command line、mount、secret file、外部配信 URL は出力しない。`docker inspect` の完全な JSON は secret を含み得るため runbook でも使用しない。
 
-運用シェルから Node Agent の診断プロセスを起動できる場合の例:
+運用シェルから Node Agent の診断プロセスを起動できる場合の例。`DIRECT_PUSH` は対象 Session の実際の値に合わせる。
 
 ```sh
 docker compose \
   -f docker-compose.node.yml \
   -f docker-compose.node.public.yml \
   exec -T node-agent \
-  python3 /opt/irlight/media_stack_inspect_cli.py
+  python3 /opt/irlight/media_stack_inspect_cli.py \
+    --egress-mode DIRECT_PUSH
 ```
 
 RTMPS overlay を使っている構成では、実 deployment と同じ compose file の組を指定する。上記コマンドは診断プロセスを追加で実行するだけで、service の start / stop / recreate は行わない。
+
+`--egress-mode` は `NODE_EGRESS_MODE` が明示されていない限り必須である。推測による既定値を使わない。`RELAY_ONLY` を指定した場合、`egress-gateway` は expected service から外れる。
 
 exit code は次の意味を持つ。
 
@@ -65,7 +72,7 @@ restart count を比較するために同 inspector を時間を空けて再実�
 
 まず `/state/egress.json` の既存 redacted status と Session event を照合し、terminal failure なら配信先 credential / concurrent publisher / destination policy を直す。terminal failure を Docker restart loop に変換しない。
 
-`NODE_EGRESS_MODE=RELAY_ONLY` または `EGRESS_GATEWAY_ENABLED=0` では inspector は `egress-gateway` を expected service に含めない。
+`--egress-mode RELAY_ONLY` または `EGRESS_GATEWAY_ENABLED=0` では inspector は `egress-gateway` を expected service に含めない。
 
 ### `node-agent`
 
@@ -101,6 +108,7 @@ Issue / incident note には secret を含めず、最低限次を残す。
 
 - 対象 Session / Node の ID
 - inspector の `status` と各 service の redacted state
+- inspector に指定した `egress_mode`
 - restart count を比較した場合は観測時刻と差分
 - OOM / unhealthy / terminal egress failure の有無
 - 直近 deploy / config 変更の有無
