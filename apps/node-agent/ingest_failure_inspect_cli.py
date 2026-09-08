@@ -9,6 +9,7 @@ bodies/URLs that could contain deployment details.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import math
 import os
@@ -40,15 +41,22 @@ def _bounded_timeout(value: str) -> float:
 
 
 def _request_paths(*, api_url: str, timeout_seconds: float) -> dict[str, Any]:
-    request = urllib.request.Request(
-        api_url.rstrip("/") + "/v3/paths/list?itemsPerPage=100",
-        headers={"Accept": "application/json"},
-        method="GET",
-    )
     try:
+        request = urllib.request.Request(
+            api_url.rstrip("/") + "/v3/paths/list?itemsPerPage=100",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (
+        ValueError,
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+    ) as exc:
         raise IngestFailureInspectError("MediaMTX path API is unavailable") from exc
 
     if len(raw) > MAX_RESPONSE_BYTES:
