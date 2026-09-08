@@ -15,6 +15,8 @@ IRLight の依存更新は、脆弱性監査と更新追随を分けて扱う。
 
 Dependabot は更新候補を PR にするだけで、自動マージはしない。通常の変更と同様に差分をレビューし、互換性・セキュリティ境界・テストへの影響を確認する。
 
+GitHub-hosted workflow で外部 Action を参照する場合は、major tag のような可変 ref ではなく review 済みの 40 桁 commit SHA に固定する。可読性のため `# vN` の version comment は併記してよいが、実際の実行対象は SHA で固定する。`github-actions` ecosystem の Dependabot はこの固定 ref の更新候補を通常の PR として追跡し、上記 merge gate を通して更新する。repository-local Action (`./...`) と `docker://...` はこの GitHub Action SHA 規則の対象外とし、container image の digest 方針は別途扱う。
+
 ## Merge gate
 
 依存更新 PR も既存の merge gate を弱めない。
