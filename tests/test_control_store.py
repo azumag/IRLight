@@ -100,6 +100,10 @@ class ControlStoreTest(unittest.TestCase):
                 '"updated_at":NaN}',
                 '{"audio_mode":"MUTED","version":1,"command_id":null,'
                 f'"updated_at":1{"0" * 400}}}',
+                '{"audio_mode":"MUTED","version":1,"command_id":"not-a-uuid",'
+                '"idempotency_key":"key","updated_at":1}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                '"idempotency_key":[],"updated_at":1}',
             )
             for payload in invalid_payloads:
                 with self.subTest(payload=payload[:80]):
