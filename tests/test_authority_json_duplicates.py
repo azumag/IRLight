@@ -35,6 +35,13 @@ class AuthorityJsonDuplicateKeyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "constant rejected: NaN"):
             load_json_authority(io.StringIO('{"value":NaN}'), parse_constant=reject)
 
+    def test_returning_parse_constant_cannot_opt_back_into_non_finite_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-finite JSON number NaN"):
+            load_json_authority(
+                io.StringIO('{"value":NaN}'),
+                parse_constant=lambda _value: float("nan"),
+            )
+
     def test_control_plane_state_readers_use_shared_authority_loader(self) -> None:
         direct_json_loaders = set()
         for path in CONTROL_API.glob("*.py"):
