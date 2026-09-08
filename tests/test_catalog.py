@@ -207,6 +207,30 @@ class CatalogStoreTest(unittest.TestCase):
         self.assertEqual(verified["verification_transport"]["protocol"], "rtmp")
         self.assertEqual(verified["verification_transport"]["peer_port"], 1935)
 
+    def test_verify_destination_rejects_non_finite_probe_data_without_replacing_catalog(
+        self,
+    ) -> None:
+        item = self._create_destination()
+        before = CATALOG_PATH.read_bytes()
+
+        for elapsed_ms in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(elapsed_ms=elapsed_ms):
+                with self.assertRaisesRegex(CatalogStateError, "cannot be encoded"):
+                    verify_destination(
+                        str(item["id"]),
+                        "deadbeef",
+                        probe=lambda _url, value=elapsed_ms: {
+                            "protocol": "rtmp",
+                            "peer_ip": "203.0.113.10",
+                            "peer_port": 1935,
+                            "elapsed_ms": value,
+                        },
+                    )
+                self.assertEqual(CATALOG_PATH.read_bytes(), before)
+                fetched = get_destination(str(item["id"]), "deadbeef")
+                self.assertEqual(fetched["verification_status"], "UNVERIFIED")
+                self.assertIsNone(fetched["verification_transport"])
+
     def test_verify_destination_records_probe_failure(self) -> None:
         item = self._create_destination()
 
