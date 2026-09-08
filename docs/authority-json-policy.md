@@ -12,6 +12,8 @@ This matters for stores that previously relied only on the duplicate-key protect
 
 Reader rejection does not repair, normalize, truncate, or overwrite the rejected file. Operators should preserve the state file together with its initialization marker and use the explicit recovery workflow tracked in #90. Deleting a marker, replacing the file with an empty object, or recreating the state volume is not a valid recovery shortcut.
 
+Session capacity is part of this authority boundary. `SessionStore` reloads and validates the complete persisted Session set under its process-safe lock before a prepare transaction reserves concurrent-session capacity. Corruption already present on the initial prepare read returns the fixed `SESSION_STATE_UNAVAILABLE` response before Destination validation, entitlement lookup, or provider selection. If the authority becomes corrupt after that replay read, `begin_prepare()` reloads it again before the capacity decision and still fails before provider selection. Rejection does not rewrite `sessions.json`. These checks prevent a damaged record from disappearing from the capacity count and indirectly allowing a new billable Media Node to be created. Provider reconciliation for resources that already exist remains a separate recovery concern under #90.
+
 ## Writer follow-up
 
 Reader strictness is only one side of the boundary. Individual authority writers should also serialize with `allow_nan=False` and convert serialization failures to their controlled store error before replacing the existing authority file. Stores already audited under #87 keep those guarantees; remaining writers should be migrated independently so a serialization-policy change cannot accidentally alter unrelated record semantics.
