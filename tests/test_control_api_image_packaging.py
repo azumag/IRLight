@@ -15,6 +15,7 @@ RUNTIME_ENTRYPOINTS = (
     "node_heartbeat_inspect_cli.py",
     "reaper_cli.py",
     "state_inspect_cli.py",
+    "state_restore_compare_cli.py",
 )
 
 
