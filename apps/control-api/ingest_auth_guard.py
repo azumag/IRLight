@@ -134,6 +134,13 @@ def _require_nonnegative_finite_number(value: Any, *, error: str) -> float:
     return number
 
 
+def _runtime_timestamp(value: float | None) -> float:
+    return _require_nonnegative_finite_number(
+        time.time() if value is None else value,
+        error="ingest authentication guard runtime timestamp is invalid",
+    )
+
+
 class IngestAuthGuard:
     """Persistent failure windows and temporary lockouts for ingest auth.
 
@@ -331,17 +338,19 @@ class IngestAuthGuard:
         return validated_buckets, validated_events, next_sequence
 
     def _persist(self) -> None:
+        payload = {
+            "buckets": self._buckets,
+            "events": self._events[-self.config.event_limit :],
+            "next_sequence": self._next_sequence,
+        }
+        self._validate_state(payload)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 try:
                     json.dump(
-                        {
-                            "buckets": self._buckets,
-                            "events": self._events[-self.config.event_limit :],
-                            "next_sequence": self._next_sequence,
-                        },
+                        payload,
                         handle,
                         ensure_ascii=False,
                         sort_keys=True,
@@ -464,7 +473,7 @@ class IngestAuthGuard:
     ) -> AuthGuardDecision:
         if not self.config.enabled:
             return AuthGuardDecision(False)
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now)
         specs = self._scope_specs(source_ip, username)
         with self._state_lock(exclusive=False):
             self._reload()
@@ -482,7 +491,7 @@ class IngestAuthGuard:
     ) -> AuthGuardDecision:
         if not self.config.enabled:
             return AuthGuardDecision(False)
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now)
         specs = self._scope_specs(source_ip, username)
         with self._state_lock(exclusive=True):
             self._reload()
@@ -534,7 +543,7 @@ class IngestAuthGuard:
     ) -> AuthGuardDecision:
         if not self.config.enabled:
             return AuthGuardDecision(False)
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now)
         specs = self._scope_specs(source_ip, username)
         with self._state_lock(exclusive=True):
             self._reload()
@@ -586,7 +595,7 @@ class IngestAuthGuard:
         normalized = _safe_text(username, 256)
         if normalized is None:
             return
-        current = time.time() if now is None else now
+        current = _runtime_timestamp(now)
         key = self._bucket_key("credential", normalized)
         with self._state_lock(exclusive=True):
             self._reload()
