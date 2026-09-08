@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate shell syntax
         run: bash -n ./scripts/netem-container.sh
       - name: Exercise netem apply/show/clear in a container namespace

@@ -32,7 +32,7 @@ jobs:
     env:
       RTMPS_DISCONNECT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.disconnect_seconds || '10' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install RTMPS publisher dependency
         run: |
           sudo apt-get update -qq
