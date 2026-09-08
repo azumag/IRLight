@@ -22,6 +22,12 @@ class AuthorityJsonDuplicateKeyTest(unittest.TestCase):
         value = load_json_authority(io.StringIO('{"outer":{"first":1,"second":2}}'))
         self.assertEqual(value, {"outer": {"first": 1, "second": 2}})
 
+    def test_non_finite_constants_are_rejected_by_default(self) -> None:
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+                    load_json_authority(io.StringIO(f'{{"value":{constant}}}'))
+
     def test_parse_constant_policy_is_preserved(self) -> None:
         def reject(value: str) -> None:
             raise ValueError(f"constant rejected: {value}")
