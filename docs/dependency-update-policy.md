@@ -25,7 +25,7 @@ Dependabot は更新候補を PR にするだけで、自動マージはしな�
 - RTMPS ingest recovery E2E
 - SRT ingest recovery E2E
 
-必要な gate が green になり、必須レビュー指摘が解消されてから merge する。監査で advisory が検出された場合は ignore して green にすることを既定対応とせず、修正版への更新または影響範囲を確認した follow-up issue で扱う。
+必要な gate が green になり、必須レビュー指摘が解消されてから merge する。監査で advisory が検出された場合は ignore して green にすることを既定対応とせず、`docs/dependency-vulnerability-response.md` の runbook に従って修正版への更新または期限付きの判断記録として扱う。
 
 ## Security boundary
 
@@ -33,6 +33,12 @@ Dependabot は更新候補を PR にするだけで、自動マージはしな�
 
 major version や挙動変更を伴う更新は、Dependabot PR が作成されたことだけを理由に採用しない。互換性や migration 方針に判断が必要なら PR を保留し、Issue に判断事項を分離する。
 
+## Supply-chain artifacts
+
+`Dependency audit` は runtime dependency の脆弱性監査に加えて CycloneDX JSON SBOM を生成・検証し、監査結果と SBOM を GitHub Actions artifact として7日保持する。artifact は短期の検証証跡であり、永続的な incident record の代わりにはしない。
+
+critical vulnerability を含む既知脆弱性への対応は `docs/dependency-vulnerability-response.md` を使用し、必要に応じて `.github/ISSUE_TEMPLATE/dependency-vulnerability.md` の checklist で追跡する。
+
 ## Remaining supply-chain work
 
-Issue #12 の supply-chain 項目のうち、SBOM、container image digest pinning、release artifact signing はこの設定では決めない。方式・運用コスト・release flow への影響を確認して別 slice として進める。
+Issue #12 の supply-chain 項目のうち、container image digest pinning と release artifact signing はまだ方式を決めていない。方式・運用コスト・release flow への影響を確認して別 slice として進める。
