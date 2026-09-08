@@ -12,6 +12,7 @@ DOCKERFILE = CONTROL_API_DIR / "Dockerfile"
 RUNTIME_ENTRYPOINTS = (
     "app.py",
     "auth_session_gc.py",
+    "control_plane_health_inspect_cli.py",
     "node_heartbeat_inspect_cli.py",
     "reaper_cli.py",
     "state_inspect_cli.py",
