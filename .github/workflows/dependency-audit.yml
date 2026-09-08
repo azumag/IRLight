@@ -105,11 +105,52 @@ jobs:
             --format json \
             --output /tmp/runtime-dependency-audit.json \
             --requirement apps/control-api/requirements.txt
+      - name: Generate runtime dependency SBOM
+        run: |
+          python -m pip_audit \
+            --strict \
+            --progress-spinner off \
+            --format cyclonedx-json \
+            --output /tmp/runtime-dependency-sbom.cdx.json \
+            --requirement apps/control-api/requirements.txt
+      - name: Validate runtime dependency SBOM
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          sbom_path = Path("/tmp/runtime-dependency-sbom.cdx.json")
+          sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+
+          if sbom.get("bomFormat") != "CycloneDX":
+              raise SystemExit("Runtime dependency SBOM is not CycloneDX JSON")
+
+          components = sbom.get("components")
+          if not isinstance(components, list) or not components:
+              raise SystemExit("Runtime dependency SBOM contains no components")
+
+          component_names = {
+              str(component.get("name", "")).lower()
+              for component in components
+              if isinstance(component, dict)
+          }
+          required_components = {"fastapi", "starlette", "uvicorn", "cryptography"}
+          missing = sorted(required_components - component_names)
+          if missing:
+              raise SystemExit(f"Runtime dependency SBOM is missing direct requirements: {missing}")
+          PY
       - name: Retain runtime audit report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: runtime-dependency-audit
           path: /tmp/runtime-dependency-audit.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain runtime dependency SBOM
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-dependency-sbom
+          path: /tmp/runtime-dependency-sbom.cdx.json
           if-no-files-found: error
           retention-days: 7

@@ -13,6 +13,10 @@ IRLight の Control API は `apps/control-api/Dockerfile` と同じ Python 3.14 
 
 runtime audit は JSON report を `runtime-dependency-audit` artifact として7日間保持する。内容は解決済み dependency の名称・version と advisory metadata であり、secret や production credential を収集しない。監査が赤になった場合は report を根拠に対象 package と advisory を特定し、監査を無効化せず依存更新または明示的な時限例外を別 PR で扱う。
 
+同じ解決済み runtime dependency set から CycloneDX JSON SBOM も生成し、`runtime-dependency-sbom` artifact として7日間保持する。CI は `bomFormat` が `CycloneDX` であること、component 一覧が空でないこと、少なくとも `fastapi`、`starlette`、`uvicorn`、`cryptography` の直接依存が含まれることを検証する。SBOM は package 名・version・dependency metadata を記録するためのもので、secret、production credential、stream key、配信内容は収集しない。
+
+SBOM は現時点では CI artifact としての追跡用であり、release artifact への署名や公開配布、container image の digest pinning を自動的に意味しない。それらは互換性・運用方式を決めたうえで別 PR として扱う。
+
 ## Audit contract fixtures
 
 監査経路そのものが壊れていないことを確認するため、CI は次の fixture も検査する。
