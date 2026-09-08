@@ -19,7 +19,7 @@ from typing import Any
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
-LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+LOOPBACK_HOSTS = {"127.0.0.1", "::1"}
 
 
 class ControlPlaneProbeError(RuntimeError):
