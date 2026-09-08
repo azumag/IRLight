@@ -109,6 +109,8 @@ def summarize_paths(payload: dict[str, Any], *, ingest_path: str) -> dict[str, A
     if not isinstance(source, dict) or not isinstance(tracks, list):
         raise IngestFailureInspectError("MediaMTX online path state is incomplete")
     source_type = source.get("type")
+    if not isinstance(source_type, str) or not source_type:
+        raise IngestFailureInspectError("MediaMTX online path has invalid source type")
     source_protocol = SOURCE_PROTOCOLS.get(source_type, "OTHER")
 
     return {
