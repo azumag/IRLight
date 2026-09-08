@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -100,6 +101,76 @@ class DestinationSecretStoreTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(DestinationSecretError, "mismatched record key"):
                 DestinationSecretStore(tmp, master_key=Fernet.generate_key())
+
+    def test_invalid_persisted_timestamps_fail_closed_without_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Fernet.generate_key()
+            store = DestinationSecretStore(tmp, master_key=key)
+            store.put(
+                user_id="user-a",
+                secret_ref="primary",
+                value="secret-value",
+                now=100.0,
+            )
+            path = Path(tmp, "destination_secrets.json")
+            original = path.read_text(encoding="utf-8")
+
+            cases = (
+                ("created_at", True, False),
+                ("updated_at", None, False),
+                ("created_at", "100.0", False),
+                ("updated_at", 10**400, False),
+                ("created_at", None, True),
+            )
+            for field, value, remove in cases:
+                with self.subTest(field=field, value=value, remove=remove):
+                    payload = json.loads(original)
+                    record = next(iter(payload["secrets"].values()))
+                    if remove:
+                        record.pop(field)
+                    else:
+                        record[field] = value
+                    path.write_text(
+                        json.dumps(payload, allow_nan=False, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                    damaged = path.read_bytes()
+                    with self.assertRaisesRegex(
+                        DestinationSecretError, "invalid timestamp"
+                    ):
+                        DestinationSecretStore(tmp, master_key=key)
+                    self.assertEqual(path.read_bytes(), damaged)
+
+    def test_non_finite_put_timestamp_does_not_replace_readable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Fernet.generate_key()
+            store = DestinationSecretStore(tmp, master_key=key)
+            store.put(
+                user_id="user-a",
+                secret_ref="primary",
+                value="original",
+                now=100.0,
+            )
+            path = Path(tmp, "destination_secrets.json")
+            before = path.read_bytes()
+
+            for now in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(now=now):
+                    with self.assertRaisesRegex(
+                        DestinationSecretError, "invalid timestamp"
+                    ):
+                        store.put(
+                            user_id="user-a",
+                            secret_ref="primary",
+                            value="replacement",
+                            now=now,
+                        )
+                    self.assertEqual(path.read_bytes(), before)
+                    reloaded = DestinationSecretStore(tmp, master_key=key)
+                    self.assertEqual(
+                        reloaded.resolve(user_id="user-a", secret_ref="primary"),
+                        "original",
+                    )
 
     def test_delete_and_missing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
