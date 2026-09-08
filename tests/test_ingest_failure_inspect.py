@@ -103,6 +103,16 @@ class IngestFailureSummaryTest(unittest.TestCase):
                     {
                         "name": "live/input",
                         "online": True,
+                        "source": {"type": {}},
+                        "tracks2": [],
+                    }
+                ]
+            },
+            {
+                "items": [
+                    {
+                        "name": "live/input",
+                        "online": True,
                         "source": {"type": "rtmpConn"},
                         "tracks2": {},
                     }
