@@ -70,15 +70,20 @@ def _validate_control(value: Any) -> dict[str, object]:
     if (
         isinstance(updated_at, bool)
         or not isinstance(updated_at, (int, float))
-        or not math.isfinite(float(updated_at))
     ):
+        raise ControlStateError("control state has invalid update time")
+    try:
+        normalized_updated_at = float(updated_at)
+    except (OverflowError, ValueError):
+        raise ControlStateError("control state has invalid update time") from None
+    if not math.isfinite(normalized_updated_at):
         raise ControlStateError("control state has invalid update time")
     return {
         "audio_mode": mode,
         "version": version,
         "command_id": command_id,
         "idempotency_key": idempotency_key,
-        "updated_at": float(updated_at),
+        "updated_at": normalized_updated_at,
     }
 
 
