@@ -186,6 +186,21 @@ def summarize_session_capacity(
     }
 
 
+def _print_unavailable(authority: str) -> int:
+    print(
+        json.dumps(
+            {
+                "status": "CAPACITY_UNAVAILABLE",
+                "authority": authority,
+                "reason": "capacity authority unavailable",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 3
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="session_capacity_inspect_cli")
     parser.add_argument(
@@ -200,29 +215,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    state_dir = Path(args.state_dir)
     try:
-        state_dir = Path(args.state_dir)
         sessions = _read_sessions(state_dir)
-        entitlements = _read_entitlements(state_dir)
-        payload = summarize_session_capacity(
-            sessions,
-            entitlements,
-            user_id=args.user_id,
-            default_limit=_default_limit(),
-        )
     except SessionCapacityInspectError:
-        print(
-            json.dumps(
-                {
-                    "status": "CAPACITY_UNAVAILABLE",
-                    "reason": "capacity authority unavailable",
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
-        return 3
+        return _print_unavailable("sessions")
 
+    try:
+        entitlements = _read_entitlements(state_dir)
+    except SessionCapacityInspectError:
+        return _print_unavailable("entitlements")
+
+    payload = summarize_session_capacity(
+        sessions,
+        entitlements,
+        user_id=args.user_id,
+        default_limit=_default_limit(),
+    )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 2 if payload["status"] != "CAPACITY_AVAILABLE" else 0
 
