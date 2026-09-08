@@ -19,6 +19,10 @@ class SecretFileInspectError(RuntimeError):
     """Raised when the requested inspection cannot be performed safely."""
 
 
+def _identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
 def inspect_secret_path(path: Path) -> dict[str, Any]:
     """Inspect one secret path without following symlinks or reading content."""
 
@@ -30,43 +34,76 @@ def inspect_secret_path(path: Path) -> dict[str, Any]:
     problems: list[str] = result["problems"]
 
     try:
-        parent_state = path.parent.lstat()
+        parent_before = path.parent.lstat()
     except OSError:
         problems.append("parent_unavailable")
         return result
 
-    if stat.S_ISLNK(parent_state.st_mode):
+    if stat.S_ISLNK(parent_before.st_mode):
         problems.append("parent_symlink")
         return result
-    if not stat.S_ISDIR(parent_state.st_mode):
+    if not stat.S_ISDIR(parent_before.st_mode):
         problems.append("parent_not_directory")
         return result
 
-    parent_mode = stat.S_IMODE(parent_state.st_mode)
+    parent_mode = stat.S_IMODE(parent_before.st_mode)
     result["parent_mode"] = f"{parent_mode:04o}"
     if parent_mode & 0o077:
         problems.append("parent_permissions_too_open")
 
+    open_flags = os.O_RDONLY
+    open_flags |= getattr(os, "O_DIRECTORY", 0)
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        file_state = path.lstat()
-    except FileNotFoundError:
-        problems.append("missing")
-        return result
+        parent_fd = os.open(path.parent, open_flags)
     except OSError:
-        problems.append("file_unavailable")
+        problems.append("parent_unavailable")
         return result
 
-    if stat.S_ISLNK(file_state.st_mode):
-        problems.append("symlink")
-        return result
-    if not stat.S_ISREG(file_state.st_mode):
-        problems.append("not_regular_file")
-        return result
+    try:
+        parent_open = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_open.st_mode)
+            or _identity(parent_open) != _identity(parent_before)
+        ):
+            problems.append("parent_changed")
+            return result
 
-    file_mode = stat.S_IMODE(file_state.st_mode)
-    result["file_mode"] = f"{file_mode:04o}"
-    if file_mode & 0o077:
-        problems.append("permissions_too_open")
+        try:
+            file_state = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            problems.append("missing")
+            return result
+        except OSError:
+            problems.append("file_unavailable")
+            return result
+
+        if stat.S_ISLNK(file_state.st_mode):
+            problems.append("symlink")
+            return result
+        if not stat.S_ISREG(file_state.st_mode):
+            problems.append("not_regular_file")
+            return result
+
+        file_mode = stat.S_IMODE(file_state.st_mode)
+        result["file_mode"] = f"{file_mode:04o}"
+        if file_mode & 0o077:
+            problems.append("permissions_too_open")
+
+        try:
+            parent_after = path.parent.lstat()
+        except OSError:
+            problems.append("parent_changed")
+            return result
+        if (
+            stat.S_ISLNK(parent_after.st_mode)
+            or not stat.S_ISDIR(parent_after.st_mode)
+            or _identity(parent_after) != _identity(parent_open)
+        ):
+            problems.append("parent_changed")
+            return result
+    finally:
+        os.close(parent_fd)
 
     result["status"] = "OK" if not problems else "PROBLEM"
     return result
