@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import fcntl
 import json
+import math
 import os
 import tempfile
 import threading
@@ -51,6 +52,20 @@ def _read_master_key() -> bytes:
             "destination secret master key is invalid"
         ) from exc
     return value
+
+
+def _finite_timestamp(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DestinationSecretError("destination secret state has invalid timestamp")
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise DestinationSecretError(
+            "destination secret state has invalid timestamp"
+        ) from exc
+    if not math.isfinite(normalized):
+        raise DestinationSecretError("destination secret state has invalid timestamp")
+    return normalized
 
 
 class DestinationSecretStore:
@@ -164,7 +179,11 @@ class DestinationSecretStore:
                 raise DestinationSecretError(
                     "destination secret state has mismatched record key"
                 )
-            validated[record_key] = record
+            validated[record_key] = {
+                **record,
+                "created_at": _finite_timestamp(record.get("created_at")),
+                "updated_at": _finite_timestamp(record.get("updated_at")),
+            }
         self._records = validated
         mark_initialized(self.path)
 
@@ -173,12 +192,18 @@ class DestinationSecretStore:
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {"secrets": self._records},
-                    handle,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
+                try:
+                    json.dump(
+                        {"secrets": self._records},
+                        handle,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise DestinationSecretError(
+                        "destination secret state cannot be encoded"
+                    ) from exc
                 handle.flush()
                 os.fsync(handle.fileno())
             mark_initialized(self.path)
@@ -208,13 +233,13 @@ class DestinationSecretStore:
     ) -> dict[str, Any]:
         if not user_id or not secret_ref or not value:
             raise ValueError("user_id, secret_ref and secret value are required")
-        current = time.time() if now is None else now
+        current = _finite_timestamp(time.time() if now is None else now)
         record_key = self._key(user_id, secret_ref)
         ciphertext = self.fernet.encrypt(value.encode("utf-8")).decode("ascii")
         with self._state_lock(exclusive=True):
             existing = self._records.get(record_key)
             created_at = (
-                float(existing.get("created_at", current))
+                _finite_timestamp(existing.get("created_at"))
                 if isinstance(existing, dict)
                 else current
             )
