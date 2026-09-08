@@ -82,6 +82,32 @@ class ControlStoreTest(unittest.TestCase):
             self.assertEqual(preserved.audio_mode, "MUTED")
             self.assertEqual(error, "CONTROL_STATE_INVALID")
 
+    def test_continuity_reader_rejects_ambiguous_and_overflowing_json(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            path = store.path
+            reader = ControlStateReader(path)
+
+            valid, error = reader.read()
+            self.assertEqual(valid.audio_mode, "LIVE")
+            self.assertIsNone(error)
+
+            invalid_payloads = (
+                '{"audio_mode":"MUTED","audio_mode":"LIVE","version":1,'
+                '"command_id":null,"updated_at":1}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                '"updated_at":NaN}',
+                '{"audio_mode":"MUTED","version":1,"command_id":null,'
+                f'"updated_at":1{"0" * 400}}}',
+            )
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload[:80]):
+                    path.write_text(payload, encoding="utf-8")
+                    preserved, error = reader.read()
+                    self.assertEqual(preserved.audio_mode, "LIVE")
+                    self.assertEqual(error, "CONTROL_STATE_INVALID")
+
     def test_non_finite_update_does_not_replace_existing_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
