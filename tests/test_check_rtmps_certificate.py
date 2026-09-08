@@ -17,8 +17,11 @@ class RtmpsCertificateCheckTests(unittest.TestCase):
     def _run(
         self,
         *,
+        startdate_exit: int = 0,
         enddate_exit: int = 0,
         checkend_exit: int = 0,
+        now_epoch: int = 2_000_000_000,
+        not_before_epoch: int = 1_900_000_000,
         args: list[str] | None = None,
         extra_env: dict[str, str] | None = None,
         create_cert: bool = True,
@@ -33,6 +36,11 @@ class RtmpsCertificateCheckTests(unittest.TestCase):
                     f"""\
                     #!/usr/bin/env bash
                     set -euo pipefail
+                    if [[ "$*" == *" -startdate"* ]]; then
+                      if [[ {startdate_exit} -ne 0 ]]; then exit {startdate_exit}; fi
+                      printf '%s\\n' 'notBefore=Sep  1 12:00:00 2026 GMT'
+                      exit 0
+                    fi
                     if [[ "$*" == *" -enddate"* ]]; then
                       if [[ {enddate_exit} -ne 0 ]]; then exit {enddate_exit}; fi
                       printf '%s\\n' 'notAfter=Oct  1 12:00:00 2026 GMT'
@@ -47,6 +55,26 @@ class RtmpsCertificateCheckTests(unittest.TestCase):
                 encoding="utf-8",
             )
             openssl.chmod(0o755)
+            date = bin_dir / "date"
+            date.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    if [[ "$*" == *" -d "* ]]; then
+                      printf '%s\\n' '{not_before_epoch}'
+                      exit 0
+                    fi
+                    if [[ "$*" == "-u +%s" ]]; then
+                      printf '%s\\n' '{now_epoch}'
+                      exit 0
+                    fi
+                    exit 9
+                    """
+                ),
+                encoding="utf-8",
+            )
+            date.chmod(0o755)
             cert = tmp_path / "cert.pem"
             if create_cert:
                 cert.write_text("PUBLIC CERTIFICATE FIXTURE\n", encoding="utf-8")
@@ -74,6 +102,7 @@ class RtmpsCertificateCheckTests(unittest.TestCase):
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["code"], "RTMPS_CERT_VALID")
         self.assertEqual(payload["min_valid_seconds"], 1209600)
+        self.assertEqual(payload["not_before"], "Sep  1 12:00:00 2026 GMT")
         self.assertEqual(payload["not_after"], "Oct  1 12:00:00 2026 GMT")
         self.assertNotIn("AUDIT_DUMMY_PRIVATE_KEY", result.stdout + result.stderr)
         self.assertNotIn("cert.pem", result.stdout + result.stderr)
@@ -85,6 +114,12 @@ class RtmpsCertificateCheckTests(unittest.TestCase):
         self.assertEqual(payload["status"], "WARNING")
         self.assertEqual(payload["code"], "RTMPS_CERT_EXPIRING")
         self.assertEqual(payload["min_valid_seconds"], 86400)
+
+    def test_not_yet_valid_certificate_fails_closed(self) -> None:
+        result = self._run(now_epoch=2_000_000_000, not_before_epoch=2_100_000_000)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["code"], "RTMPS_CERT_NOT_YET_VALID")
 
     def test_invalid_certificate_fails_closed(self) -> None:
         result = self._run(enddate_exit=1)
