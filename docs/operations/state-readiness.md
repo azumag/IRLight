@@ -67,6 +67,8 @@ Example shape:
 
 Use this only to identify which local authority requires investigation. It deliberately has no repair, restore, marker deletion, provider cleanup, or credential-reset option.
 
+A backup restore can be compared against a protected reference without changing either tree by following [`state-restore-drill.md`](state-restore-drill.md). The comparison is intentionally limited to startup authority and does not authorize production restore or provider reconciliation.
+
 ## Recovery boundary
 
 Readiness and `state_inspect_cli.py` are detection, not automatic repair. Issue #90 also tracks the broader recovery procedure: backup generation/fencing, provider inventory reconciliation, credential re-issuance after restoring older state, and explicit restore/reconcile operations. Those steps can change security or provider ownership semantics and must not be guessed by the readiness handler or inspection command.
