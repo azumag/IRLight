@@ -63,7 +63,16 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            try:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise CatalogStateError("catalog state cannot be encoded") from exc
             handle.flush()
             os.fsync(handle.fileno())
         # Arm the initialization fuse before publishing authoritative state.
