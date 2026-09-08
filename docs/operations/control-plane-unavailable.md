@@ -24,7 +24,7 @@ python /app/control_plane_health_inspect_cli.py \
   --timeout-seconds 3
 ```
 
-CLI は `GET /healthz` と `GET /readyz` だけを実行する。非 loopback host、credential 入り URL、path/query/fragment、redirect は受け付けない。response body、URL、例外 detail は出力しない。
+CLI は `GET /healthz` と `GET /readyz` だけを実行する。非 loopback host、credential 入り URL、path/query/fragment、redirect は受け付けない。`HTTP_PROXY` / `HTTPS_PROXY` 等の proxy 環境設定も使用せず、literal loopback へ直接接続する。response body、URL、例外 detail は出力しない。
 
 結果は次の固定分類になる。
 
