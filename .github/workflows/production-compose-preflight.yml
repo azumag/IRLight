@@ -1,0 +1,49 @@
+name: Production Compose preflight
+
+on:
+  pull_request:
+    paths:
+      - "docker-compose.node.yml"
+      - "docker-compose.node.public.yml"
+      - "docker-compose.node.rtmps.yml"
+      - "scripts/validate-production-compose.py"
+      - "tests/test_validate_production_compose.py"
+      - ".github/workflows/production-compose-preflight.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-compose-preflight-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Prepare placeholder secret paths for Compose rendering
+        run: |
+          mkdir -p secrets
+          : > secrets/bootstrap_token
+          : > /tmp/irlight-rtmps.key
+          : > /tmp/irlight-rtmps.crt
+      - name: Validate internal production Media Node config
+        run: |
+          python3 scripts/validate-production-compose.py \
+            -f docker-compose.node.yml
+      - name: Validate public RTMPS production Media Node config
+        env:
+          NODE_RTMPS_KEY_FILE: /tmp/irlight-rtmps.key
+          NODE_RTMPS_CERT_FILE: /tmp/irlight-rtmps.crt
+        run: |
+          python3 scripts/validate-production-compose.py \
+            -f docker-compose.node.yml \
+            -f docker-compose.node.public.yml \
+            -f docker-compose.node.rtmps.yml
