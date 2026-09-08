@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--heartbeat-grace-seconds",
         type=_positive_finite,
-        default=_positive_finite(os.getenv("NODE_HEARTBEAT_GRACE_SECONDS", "120")),
+        default=os.getenv("NODE_HEARTBEAT_GRACE_SECONDS", "120"),
         help="Age at which an expected heartbeat is stale (default: env or 120)",
     )
     args = parser.parse_args(argv)
