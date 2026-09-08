@@ -144,6 +144,16 @@ class ControlStoreTest(unittest.TestCase):
             self.assertEqual(store.path.read_bytes(), before)
             self.assertEqual(store.get()["audio_mode"], "LIVE")
 
+            corrupt = (
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":null,'
+                f'"updated_at":1{"0" * 400}}}'
+            )
+            store.path.write_text(corrupt, encoding="utf-8")
+            with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                store.get()
+            self.assertEqual(store.path.read_text(encoding="utf-8"), corrupt)
+
     def test_serialization_failure_is_controlled_and_preserves_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
