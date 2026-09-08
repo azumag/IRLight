@@ -22,6 +22,8 @@ The destination secret authority follows the same writer rule and also validates
 
 The legacy audio control authority also follows the writer rule. `control.json` is serialized with `allow_nan=False`, and encoder `TypeError` / `ValueError` failures are converted to `ControlStateError` before `os.replace()`. Its existing record validator remains authoritative for the fixed control schema, including finite `updated_at`; this change does not alter audio-mode, version, idempotency, or command semantics.
 
+The media-node Node Agent uses the same schema when it seeds a fresh local `control.json` from the authenticated bootstrap response. Before the first write it validates the audio mode, non-negative integer version, optional UUID command ID, bounded optional idempotency key, and finite `updated_at` (including numeric-overflow rejection). The seed writer also uses `allow_nan=False`; an invalid bootstrap value or encoder failure cannot publish a partially trusted authority file. Existing local `control.json` remains create-only and is never replaced by bootstrap seeding.
+
 The ingest authentication guard authority follows the same fail-closed boundary. Bucket and event timestamps are non-negative finite numbers; integers too large to convert to a finite runtime timestamp are rejected as `IngestAuthGuardStateError` rather than escaping as an uncontrolled `OverflowError`. Its writer uses `allow_nan=False` and converts encoder `TypeError` / `ValueError` failures before publishing the temporary file, preserving the last readable `ingest_auth_guard.json`. Lockout thresholds, failure-window semantics, and attacker-facing reason behavior are unchanged.
 
 Refs #87 #90
