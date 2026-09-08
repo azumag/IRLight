@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -39,11 +40,16 @@ def _nonnegative_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _float(value: object, default: float) -> float:
+def _nonnegative_finite_number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
     try:
-        return float(value)  # type: ignore[arg-type]
+        numeric = float(value)
     except (TypeError, ValueError, OverflowError):
-        return default
+        return None
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    return value
 
 
 def read_egress_status(
@@ -65,7 +71,16 @@ def read_egress_status(
         return _unknown("STATUS_INVALID")
 
     current = time.time() if now is None else now
-    observed_at = _float(raw.get("observed_at"), current)
+    raw_observed_at = raw.get("observed_at")
+    if raw_observed_at is None:
+        observed_at = current
+    else:
+        try:
+            observed_at = float(raw_observed_at)
+        except (TypeError, ValueError, OverflowError):
+            return _unknown("STATUS_INVALID")
+        if not math.isfinite(observed_at) or observed_at < 0:
+            return _unknown("STATUS_INVALID")
     if max_age_seconds is None:
         try:
             max_age_seconds = float(
@@ -90,11 +105,7 @@ def read_egress_status(
             str(raw.get("reason_code"))[:100] if raw.get("reason_code") else None
         ),
         "rendered_buffers": _nonnegative_int(raw.get("rendered_buffers", 0)),
-        "next_retry_at": (
-            raw.get("next_retry_at")
-            if isinstance(raw.get("next_retry_at"), (int, float))
-            else None
-        ),
+        "next_retry_at": _nonnegative_finite_number(raw.get("next_retry_at")),
         "destination_scheme": (
             str(raw.get("destination_scheme"))[:20]
             if raw.get("destination_scheme")

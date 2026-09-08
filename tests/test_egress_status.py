@@ -91,6 +91,39 @@ class EgressStatusReaderTest(unittest.TestCase):
             corrupt = read_egress_status(path)
             self.assertEqual(corrupt["status"], "UNKNOWN")
 
+    def test_nonfinite_observed_at_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                '{"status":"CONNECTED","connected":true,"observed_at":NaN}',
+                encoding="utf-8",
+            )
+            result = read_egress_status(path, now=100.0, max_age_seconds=30.0)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual(result["reason_code"], "STATUS_INVALID")
+
+    def test_nonfinite_or_negative_retry_timestamp_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                '{"status":"RECONNECTING","observed_at":100,"next_retry_at":Infinity}',
+                encoding="utf-8",
+            )
+            nonfinite = read_egress_status(path, now=101.0, max_age_seconds=30.0)
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "RECONNECTING",
+                        "observed_at": 100.0,
+                        "next_retry_at": -1.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            negative = read_egress_status(path, now=101.0, max_age_seconds=30.0)
+        self.assertIsNone(nonfinite["next_retry_at"])
+        self.assertIsNone(negative["next_retry_at"])
+
 
 if __name__ == "__main__":
     unittest.main()
