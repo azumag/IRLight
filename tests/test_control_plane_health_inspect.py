@@ -31,10 +31,6 @@ class ControlPlaneHealthInspectTest(unittest.TestCase):
             "http://127.0.0.1:8080",
         )
         self.assertEqual(
-            _local_base_url("https://localhost:8443"),
-            "https://localhost:8443",
-        )
-        self.assertEqual(
             _local_base_url("http://[::1]:8080"),
             "http://[::1]:8080",
         )
@@ -42,6 +38,7 @@ class ControlPlaneHealthInspectTest(unittest.TestCase):
         for value in (
             "http://169.254.169.254/latest/meta-data",
             "http://10.0.0.1:8080",
+            "http://localhost:8080",
             "http://user:secret@127.0.0.1:8080",
             "http://127.0.0.1:8080/api",
             "http://127.0.0.1:8080?token=secret",
