@@ -69,6 +69,38 @@ class SecretFileInspectTest(unittest.TestCase):
         self.assertIn("symlink", result["problems"])
         self.assertNotIn("file_mode", result)
 
+    def test_parent_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = self._secret(root)
+            parent_link = root / "secret-link"
+            os.symlink(target.parent, parent_link)
+            result = inspect_secret_path(parent_link / target.name)
+
+        self.assertEqual(result["status"], "PROBLEM")
+        self.assertIn("parent_symlink", result["problems"])
+        self.assertNotIn("file_mode", result)
+
+    def test_parent_identity_change_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._secret(Path(tmp))
+            real_fstat = os.fstat
+
+            def changed_identity(fd: int) -> os.stat_result:
+                current = real_fstat(fd)
+                fields = list(current)
+                fields[1] = current.st_ino + 1
+                return os.stat_result(fields)
+
+            with mock.patch(
+                "secret_file_inspect_cli.os.fstat", side_effect=changed_identity
+            ):
+                result = inspect_secret_path(path)
+
+        self.assertEqual(result["status"], "PROBLEM")
+        self.assertIn("parent_changed", result["problems"])
+        self.assertNotIn("file_mode", result)
+
     def test_missing_secret_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
