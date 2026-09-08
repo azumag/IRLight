@@ -29,7 +29,7 @@ exit codeは次の通り。
 - `2`: `CAPACITY_EXHAUSTED` または `CAPACITY_DISABLED`
 - `3`: `CAPACITY_UNAVAILABLE`。authorityを安全に検証できない
 
-正常なJSON出力は `status`、`limit`、`occupied`、`available` の集計値だけを返す。指定したuser ID、Session ID、entitlement ID、state path、内部例外、stream key、tokenなどは出力しない。
+正常なJSON出力は `status`、`limit`、`occupied`、`available` の集計値だけを返す。指定したuser ID、Session ID、entitlement ID、state path、内部例外、stream key、tokenなどは出力しない。`CAPACITY_UNAVAILABLE` の場合だけ、安全な固定値 `authority=sessions` または `authority=entitlements` を返し、どちらのauthorityを先に復旧確認すべきかを示す。
 
 占有数はprepare時の実装と同じく、対象ユーザーのSessionについて次のいずれかを満たすものを1件として数える。
 
@@ -42,13 +42,15 @@ exit codeは次の通り。
 
 ### 1. authorityが読めることを確認する
 
-inspectorがexit `3` の場合はcapacity枯渇と断定しない。Sessionまたはentitlement authorityの欠損・破損・mount不備を先に疑う。
+inspectorがexit `3` の場合はcapacity枯渇と断定しない。`authority=sessions` ならSession authority、`authority=entitlements` ならentitlement authorityの欠損・破損・mount不備を先に疑う。JSON本文やsecretを障害記録へ貼らず、volume/mountの存在と直前のdeploy・restore・disk障害を確認する。
+
+`state_inspect_cli.py` は startup-mandatory authority のreadiness確認には利用できるが、lazy authorityである `sessions.json` / `entitlements.json` 自体は現在その対象外である。したがって `state_inspect_cli.py` が正常でも、このcapacity inspectorの `CAPACITY_UNAVAILABLE` を無視してはいけない。
 
 ```bash
 python /app/state_inspect_cli.py
 ```
 
-`CAPACITY_UNAVAILABLE` を「occupied=0」と読み替えて新しいSessionを作成してはいけない。初期化済みauthorityが消失している場合、inspectorはfail-closedする。
+`CAPACITY_UNAVAILABLE` を「occupied=0」と読み替えて新しいSessionを作成してはいけない。初期化済みauthorityが消失している場合、inspectorはfail-closedする。authorityの復旧が必要なら、空ファイルを作るのではなく、既存のstate restore手順と有効なsnapshotを使う。
 
 ### 2. 集計値を確認する
 
