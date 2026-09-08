@@ -18,4 +18,6 @@ Reader strictness is only one side of the boundary. Individual authority writers
 
 The catalog authority writer follows this contract as well. In particular, non-finite probe metadata is rejected as `CatalogStateError` while the temporary file is discarded, so a failed verification result cannot replace the last readable `catalog.json`. This only hardens serialization; it does not add or reinterpret destination or asset record fields.
 
+The destination secret authority follows the same writer rule and also validates the `created_at` / `updated_at` fields that its writer has always persisted. Missing timestamps, booleans, strings, nulls, numeric overflow, and non-finite values fail closed as `DestinationSecretError`; a rejected read does not repair the file, and a rejected write cannot replace the last readable `destination_secrets.json`. No ordering rule is imposed between the two timestamps here because that would change the semantics of the existing caller-supplied `now` hook rather than merely enforce the current record shape.
+
 Refs #87 #90
