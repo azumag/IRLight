@@ -1,6 +1,6 @@
 # Python dependency security audit
 
-IRLight の Control API は `apps/control-api/Dockerfile` と同じ Python 3.13 系で依存関係を検証する。
+IRLight の Control API は `apps/control-api/Dockerfile` と同じ Python 3.14 系で依存関係を検証する。
 
 ## CI checks
 
