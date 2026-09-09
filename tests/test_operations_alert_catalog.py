@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -84,11 +83,13 @@ class OperationsAlertCatalogTests(unittest.TestCase):
                 self.assertIs(alert["recovery_notification"], True)
                 self.assertTrue(set(alert["dedup_keys"]).issubset(module.SAFE_DEDUP_KEYS))
 
-    def test_bool_schema_version_is_rejected(self) -> None:
-        catalog = copy.deepcopy(self.load_real_catalog())
-        catalog["schema_version"] = True
-        with self.assertRaises(module.OperationsAlertCatalogError):
-            module.validate_catalog(catalog, repo_root=REPO_ROOT)
+    def test_non_integer_schema_versions_are_rejected(self) -> None:
+        for schema_version in (True, 1.0, "1"):
+            with self.subTest(schema_version=schema_version):
+                catalog = copy.deepcopy(self.load_real_catalog())
+                catalog["schema_version"] = schema_version
+                with self.assertRaises(module.OperationsAlertCatalogError):
+                    module.validate_catalog(catalog, repo_root=REPO_ROOT)
 
     def test_duplicate_alert_id_is_rejected(self) -> None:
         catalog = copy.deepcopy(self.load_real_catalog())
