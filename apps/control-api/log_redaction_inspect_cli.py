@@ -62,6 +62,11 @@ _SENSITIVE_KEY_SUFFIXES = (
 _SENSITIVE_COMPACT_SUFFIXES = tuple(
     suffix.removeprefix("_").replace("_", "") for suffix in _SENSITIVE_KEY_SUFFIXES
 )
+_SENSITIVE_URL_PARAMETER_KEYS = {
+    "x_amz_credential",
+    "x_amz_signature",
+    "x_amz_security_token",
+}
 
 
 class _DuplicateKeyError(ValueError):
@@ -113,6 +118,10 @@ def _is_sensitive_key(key: str) -> bool:
     return any(compact.endswith(suffix) for suffix in _SENSITIVE_COMPACT_SUFFIXES)
 
 
+def _is_sensitive_url_parameter(key: str) -> bool:
+    return _is_sensitive_key(key) or _normalize_key(key) in _SENSITIVE_URL_PARAMETER_KEYS
+
+
 def _is_redacted(value: Any) -> bool:
     if value is None:
         return True
@@ -135,7 +144,7 @@ def _component_has_unredacted_sensitive_params(component: str) -> bool:
     except ValueError:
         return False
     for key, raw_value in params:
-        if _is_sensitive_key(key) and not _is_redacted(raw_value):
+        if _is_sensitive_url_parameter(key) and not _is_redacted(raw_value):
             return True
     return False
 
