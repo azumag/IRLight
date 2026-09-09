@@ -10,9 +10,9 @@ Issue #11 の Critical alert `MEDIA_NODES_ALL_UNAVAILABLE` を、canonical Node 
 - `status=READY`
 - heartbeat age が `NODE_HEARTBEAT_GRACE_SECONDS` 未満
 
-件数が `0` の場合に `MEDIA_NODES_ALL_UNAVAILABLE` を1件だけ `MATCHED` として返します。Node authority が正常に初期化済みだが Node が0件の場合も available count は0です。これは「実行環境に稼働可能な Media Node がない」という signal 契約をそのまま表します。
+Critical alert は **少なくとも1件の Node が `desired_state=RUNNING` であるのに、available count が 0** の場合だけ `MATCHED` とします。Node authority が正常に初期化済みでも Node が0件の idle 環境や、全 Node が明示的に `desired_state=STOPPED` の環境は outage とみなしません。オンデマンド Node を持たない通常の idle 時間帯に Critical alert が常時発火することを避けるためです。
 
-`BOOTSTRAPPING`、`STOPPING`、`STOPPED`、`FAILED` は available と数えません。heartbeat が新しくても `READY` でなければ配信を受けられる状態と推測しません。逆に `READY` でも heartbeat が stale なら available と数えません。
+`BOOTSTRAPPING`、`STOPPING`、`STOPPED`、`FAILED` は available と数えません。heartbeat が新しくても `READY` でなければ配信を受けられる状態と推測しません。逆に `READY` でも heartbeat が stale なら available と数えません。`desired_state=RUNNING` の Node が provisioning / stopping 中に一時的に zero available になる時間を本番通知で何秒継続させるかは、この dry-run では固定せず collector / routing 側の運用 threshold として扱います。
 
 heartbeat の stale 境界と authority reader は `node_heartbeat_inspect_cli.py` を再利用します。そのため delayed-heartbeat warning と Critical availability alert で grace の意味が分岐しません。
 
@@ -46,7 +46,7 @@ NODE_HEARTBEAT_GRACE_SECONDS=120 \
 例:
 
 ```json
-{"available_nodes":0,"inspected_nodes":2,"matched_alerts":{"MEDIA_NODES_ALL_UNAVAILABLE":1},"status":"MATCHED","violations":{}}
+{"available_nodes":0,"expected_running_nodes":2,"inspected_nodes":2,"matched_alerts":{"MEDIA_NODES_ALL_UNAVAILABLE":1},"status":"MATCHED","violations":{}}
 ```
 
 authority が欠損・破損・marker 不整合などで読めない場合は `UNAVAILABLE` を返し、available count が0だったと推測して Critical alert を確定しません。部分的に読めた値から recovery も推測しません。
@@ -66,6 +66,6 @@ authority が欠損・破損・marker 不整合などで読めない場合は `U
 
 ## テスト
 
-`tests/test_operations_node_availability_alerts.py` では、fresh READY Node、stale Node、terminal Node、BOOTSTRAPPING、empty authority、catalog drift、secret/identifier 非露出、authority 欠落、read-only 性を回帰確認します。
+`tests/test_operations_node_availability_alerts.py` では、fresh READY Node、stale Node、terminal Node、BOOTSTRAPPING、idle empty authority、意図的な全停止、catalog drift、secret/identifier 非露出、authority 欠落、read-only 性を回帰確認します。
 
-本番 alert routing を接続する場合も、この dry-run の aggregate 判定をそのまま通知 payload とみなさず、environment / region の routing、dedup、復旧通知、collector freshness を別途定義してください。
+本番 alert routing を接続する場合も、この dry-run の aggregate 判定をそのまま通知 payload とみなさず、environment / region の routing、dedup、継続時間、復旧通知、collector freshness を別途定義してください。
