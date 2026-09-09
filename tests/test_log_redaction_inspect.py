@@ -81,6 +81,28 @@ class LogRedactionInspectTests(unittest.TestCase):
             result["violations"], {"SENSITIVE_URL_QUERY_UNREDACTED": 2}
         )
 
+    def test_sensitive_url_fragment_is_reported_without_url(self) -> None:
+        url = "https://example.invalid/callback#access_token=super-secret&token_type=bearer"
+        result = self.inspect(record(callback=url))
+        encoded = json.dumps(result)
+        self.assertEqual(
+            result["violations"], {"SENSITIVE_URL_FRAGMENT_UNREDACTED": 1}
+        )
+        self.assertNotIn("super-secret", encoded)
+        self.assertNotIn("example.invalid", encoded)
+
+    def test_relative_sensitive_url_fragment_is_reported(self) -> None:
+        result = self.inspect(record(callback="#refreshToken=raw"))
+        self.assertEqual(
+            result["violations"], {"SENSITIVE_URL_FRAGMENT_UNREDACTED": 1}
+        )
+
+    def test_redacted_sensitive_url_fragment_is_allowed(self) -> None:
+        result = self.inspect(
+            record(callback="https://example.invalid/callback#accessToken=%5BREDACTED%5D")
+        )
+        self.assertEqual(result["status"], "SAFE")
+
     def test_url_userinfo_is_reported_without_url(self) -> None:
         url = "https://relay-user:relay-password@example.invalid/live"
         result = self.inspect(record(destination=url))
