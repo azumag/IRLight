@@ -82,7 +82,6 @@ class StateRestoreCompareTest(unittest.TestCase):
         self.assertFalse((self.source / ".control-state.lock").exists())
         self.assertFalse((self.candidate / ".control-state.lock").exists())
 
-
     def test_separate_node_roots_use_their_verified_directory_fds(self) -> None:
         source_node = self.root / "source-node"
         candidate_node = self.root / "candidate-node"
@@ -238,6 +237,79 @@ class StateRestoreCompareTest(unittest.TestCase):
         self.assertEqual(payload["status"], "UNAVAILABLE")
         self.assertEqual(payload["reason_code"], "SNAPSHOT_ROOT_UNAVAILABLE")
         self.assertEqual(payload["checks"], [])
+
+    def test_fingerprint_rejects_authority_replacement_during_validation(self) -> None:
+        target = self.candidate / "control.json"
+        replacement = self.candidate / "control.replacement.json"
+        root_fd, _identity = restore_compare._open_snapshot_root(self.candidate)
+        replaced = False
+
+        def replace_authority(value: dict[str, object]) -> dict[str, object]:
+            nonlocal replaced
+            replacement.write_bytes(target.read_bytes())
+            os.replace(replacement, target)
+            replaced = True
+            return value
+
+        try:
+            with self.assertRaises(restore_compare.StateReadinessError):
+                restore_compare._validated_fingerprint_at(
+                    root_fd, target, replace_authority
+                )
+        finally:
+            os.close(root_fd)
+
+        self.assertTrue(replaced)
+        self.assertFalse(replacement.exists())
+
+    def test_fingerprint_rejects_marker_replacement_during_validation(self) -> None:
+        target = self.candidate / "control.json"
+        marker = initialization_marker(target)
+        replacement = self.candidate / ".control.json.initialized.replacement"
+        root_fd, _identity = restore_compare._open_snapshot_root(self.candidate)
+        replaced = False
+
+        def replace_marker(value: dict[str, object]) -> dict[str, object]:
+            nonlocal replaced
+            replacement.write_bytes(marker.read_bytes())
+            os.replace(replacement, marker)
+            replaced = True
+            return value
+
+        try:
+            with self.assertRaises(restore_compare.StateReadinessError):
+                restore_compare._validated_fingerprint_at(root_fd, target, replace_marker)
+        finally:
+            os.close(root_fd)
+
+        self.assertTrue(replaced)
+        self.assertFalse(replacement.exists())
+
+    def test_legacy_fuse_rejects_marker_appearance_during_validation(self) -> None:
+        legacy = self.candidate / "bootstrap_tokens.json"
+        marker = initialization_marker(legacy)
+        legacy.write_text(json.dumps({"tokens": {}}), encoding="utf-8")
+        self.assertFalse(marker.exists())
+        root_fd, _identity = restore_compare._open_snapshot_root(self.candidate)
+        original_validate = restore_compare._validate_tokens
+
+        def validate_and_create_marker(value: dict[str, object]) -> object:
+            result = original_validate(value)
+            marker.write_text("v1\n", encoding="utf-8")
+            return result
+
+        try:
+            with mock.patch.object(
+                restore_compare,
+                "_validate_tokens",
+                side_effect=validate_and_create_marker,
+            ):
+                with self.assertRaises(restore_compare.StateReadinessError):
+                    restore_compare._legacy_fuse_fingerprint_at(root_fd)
+        finally:
+            os.close(root_fd)
+
+        self.assertTrue(marker.exists())
 
     def test_valid_content_difference_is_redacted_mismatch(self) -> None:
         dummy_secret = "AUDIT_DUMMY_RESTORE_SECRET"
