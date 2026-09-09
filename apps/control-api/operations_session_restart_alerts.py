@@ -173,7 +173,7 @@ def evaluate_lines(
             invalid = True
             continue
 
-        if restart_rate >= effective_threshold:
+        if restart_rate > effective_threshold:
             matches += 1
         else:
             unmatched_records += 1
