@@ -35,11 +35,13 @@ python /app/state_restore_compare_cli.py \
   --candidate-node-state-dir /mnt/restored/node
 ```
 
-Node authority が各 `STATE_DIR` と同じ場所なら `--*-node-state-dir` は省略できる。source / candidate の snapshot root は実ディレクトリを直接指定し、symlink を比較元・restore 先の代用にしない。CLI は root 自体に加えて、その直上の parent directory も `O_NOFOLLOW` 付きで検査する。root は検証済み parent directory fd から相対 open し、その **検証済み root directory fd を比較終了まで保持**する。authority と initialization marker も保持した root fd から相対 open する。final symlink、直上 parent の symlink、root を安全に open するまでの root / parent identity race は fail-closed にし、root を open 済みの後に pathname が別 directory へ差し替えられても比較対象を新しい path へ付け替えない。より上位の deployment 固有 mount / path identity は下記の運用記録でも確認する。source / candidate のいずれかの root が同じ directory identity を指す場合は `SOURCE_CANDIDATE_NOT_DISTINCT`、個別 authority が hard link 等で同じ inode を共有する場合は `SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT` として拒否する。bind mount 等の deployment 固有 identity もあるため、運用記録でも mount identity を確認する。
+Node authority が各 `STATE_DIR` と同じ場所なら `--*-node-state-dir` は省略できる。source / candidate の snapshot root は実ディレクトリを直接指定し、symlink を比較元・restore 先の代用にしない。CLI は root 自体に加えて、その直上の parent directory も `O_NOFOLLOW` 付きで検査する。root は検証済み parent directory fd から相対 open し、その **検証済み root directory fd を比較終了まで保持**する。authority と initialization marker も保持した root fd から相対 open し、読み取った authority と marker の fd を validator 完了まで pin する。validation 中に通常 writer や誤操作が authority / marker を atomic replace した場合は、同一内容への置換であっても stale inode を比較結果として採用せず `UNAVAILABLE` に fail-closed する。legacy bootstrap-token ledger についても、marker が存在する場合は同じ identity 保護を行い、検査開始時に marker が存在しなかった場合でも検査中の出現を見逃さない。final symlink、直上 parent の symlink、root を安全に open するまでの root / parent identity race は fail-closed にし、root を open 済みの後に pathname が別 directory へ差し替えられても比較対象を新しい path へ付け替えない。より上位の deployment 固有 mount / path identity は下記の運用記録でも確認する。source / candidate のいずれかの root が同じ directory identity を指す場合は `SOURCE_CANDIDATE_NOT_DISTINCT`、個別 authority が hard link 等で同じ inode を共有する場合は `SOURCE_CANDIDATE_AUTHORITY_NOT_DISTINCT` として拒否する。bind mount 等の deployment 固有 identity もあるため、運用記録でも mount identity を確認する。
 
 CLI は `/readyz` と同じ startup authority (`control`, `catalog`, `users`, `auth_sessions`, `nodes`) を検証し、その **検証済み byte snapshot** が一致するかだけを比較する。legacy bootstrap-token ledger は file / initialization marker の存在と内容を別途比較する。digest は内部比較にだけ使い、出力しない。
 
 終了コードは `0=MATCH`, `2=MISMATCH`, `3=UNAVAILABLE`。JSON には overall status / reason code と authority label、`MATCH / MISMATCH / UNAVAILABLE`、固定 reason code だけを出し、path、raw JSON、hash、credential、parser detail は出さない。
+
+比較中に writer と競合して `UNAVAILABLE` になった場合、CLI は retry のために marker や authority を作成・修復しない。reference / candidate を保全し、writer を quiesce した整合点を取り直してから再検証する。
 
 ## 4. candidate 単体の readiness を確認する
 
