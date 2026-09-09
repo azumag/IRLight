@@ -23,6 +23,7 @@ _MAX_NESTING_DEPTH = 64
 _ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
+_AZURE_SAS_VERSION = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SENSITIVE_KEYS = {
     "secret",
     "secret_key",
@@ -66,7 +67,18 @@ _SENSITIVE_URL_PARAMETER_KEYS = {
     "x_amz_credential",
     "x_amz_signature",
     "x_amz_security_token",
+    "x_goog_credential",
+    "x_goog_signature",
 }
+_GCS_V2_CONTEXT_KEYS = {"google_access_id", "expires"}
+_AZURE_SAS_RESOURCE_OR_POLICY_KEYS = {
+    "si",
+    "sr",
+    "ss",
+    "srt",
+    "tn",
+}
+_AZURE_SAS_ADHOC_ACCESS_KEYS = {"sp", "se"}
 
 
 class _DuplicateKeyError(ValueError):
@@ -143,8 +155,25 @@ def _component_has_unredacted_sensitive_params(component: str) -> bool:
         params = parse_qsl(component, keep_blank_values=True)
     except ValueError:
         return False
+    normalized_params = [(_normalize_key(key), raw_value) for key, raw_value in params]
+    normalized_keys = {key for key, _ in normalized_params}
+    is_gcs_v2 = _GCS_V2_CONTEXT_KEYS.issubset(normalized_keys)
+    has_azure_sas_version = any(
+        key == "sv" and _AZURE_SAS_VERSION.fullmatch(raw_value.strip())
+        for key, raw_value in normalized_params
+    )
+    is_azure_sas = has_azure_sas_version and (
+        bool(normalized_keys & _AZURE_SAS_RESOURCE_OR_POLICY_KEYS)
+        or _AZURE_SAS_ADHOC_ACCESS_KEYS.issubset(normalized_keys)
+    )
     for key, raw_value in params:
-        if _is_sensitive_url_parameter(key) and not _is_redacted(raw_value):
+        normalized = _normalize_key(key)
+        provider_context_sensitive = (
+            normalized == "signature" and is_gcs_v2
+        ) or (normalized == "sig" and is_azure_sas)
+        if (
+            _is_sensitive_url_parameter(key) or provider_context_sensitive
+        ) and not _is_redacted(raw_value):
             return True
     return False
 
