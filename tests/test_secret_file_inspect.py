@@ -101,6 +101,31 @@ class SecretFileInspectTest(unittest.TestCase):
         self.assertIn("parent_changed", result["problems"])
         self.assertNotIn("file_mode", result)
 
+    def test_file_identity_change_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._secret(Path(tmp))
+            real_stat = os.stat
+            file_stat_calls = 0
+
+            def changed_identity(*args: object, **kwargs: object) -> os.stat_result:
+                nonlocal file_stat_calls
+                current = real_stat(*args, **kwargs)
+                if args and args[0] == path.name and kwargs.get("dir_fd") is not None:
+                    file_stat_calls += 1
+                    if file_stat_calls == 2:
+                        fields = list(current)
+                        fields[1] = current.st_ino + 1
+                        return os.stat_result(fields)
+                return current
+
+            with mock.patch(
+                "secret_file_inspect_cli.os.stat", side_effect=changed_identity
+            ):
+                result = inspect_secret_path(path)
+
+        self.assertEqual(result["status"], "PROBLEM")
+        self.assertIn("file_changed", result["problems"])
+
     def test_missing_secret_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
