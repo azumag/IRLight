@@ -37,6 +37,8 @@ _SENSITIVE_KEYS = {
     "streamkey",
     "api_key",
     "apikey",
+    "access_key",
+    "access_key_id",
     "private_key",
     "client_secret",
     "cookie",
@@ -50,6 +52,8 @@ _SENSITIVE_KEY_SUFFIXES = (
     "_passphrase",
     "_stream_key",
     "_api_key",
+    "_access_key",
+    "_access_key_id",
     "_private_key",
     "_cookie",
 )
