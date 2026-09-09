@@ -27,6 +27,7 @@ COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/session_workflow.py apps/control-api/state_safety.py \
      apps/control-api/state_readiness.py apps/control-api/state_inspect_cli.py \
      apps/control-api/state_restore_compare_cli.py \
+     apps/control-api/provider_state_reconcile_cli.py \
      apps/control-api/control_plane_health_inspect_cli.py \
      apps/control-api/node_heartbeat_inspect_cli.py \
      apps/control-api/reaper.py \
