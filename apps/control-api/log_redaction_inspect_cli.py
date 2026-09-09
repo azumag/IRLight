@@ -51,6 +51,13 @@ class _NonFiniteNumberError(ValueError):
     pass
 
 
+class _OversizedRecord:
+    pass
+
+
+_OVERSIZED_RECORD = _OversizedRecord()
+
+
 def _reject_nonfinite(value: str) -> None:
     raise _NonFiniteNumberError(value)
 
@@ -168,26 +175,47 @@ def _inspect_record(record: Any, reasons: Counter[str]) -> bool:
     return _scan_value(record, reasons)
 
 
-def inspect_lines(lines: Iterable[str]) -> dict[str, Any]:
+def _iter_bounded_lines(stream: TextIO) -> Iterable[str | _OversizedRecord]:
+    read_limit = _MAX_RECORD_BYTES + 1
+    while True:
+        line = stream.readline(read_limit)
+        if line == "":
+            return
+        if line.endswith("\n") or len(line) < read_limit:
+            yield line
+            continue
+        while line and not line.endswith("\n"):
+            line = stream.readline(read_limit)
+        yield _OVERSIZED_RECORD
+
+
+def inspect_lines(lines: Iterable[str | _OversizedRecord]) -> dict[str, Any]:
     """Inspect JSONL records without returning any source content."""
     reasons: Counter[str] = Counter()
     records = 0
     invalid = False
 
     for line in lines:
-        if not line.strip():
+        if line is _OVERSIZED_RECORD:
+            records += 1
+            reasons["RECORD_TOO_LARGE"] += 1
+            invalid = True
             continue
-        records += 1
         try:
             record_bytes = len(line.encode("utf-8"))
         except UnicodeEncodeError:
+            records += 1
             reasons["INVALID_JSON"] += 1
             invalid = True
             continue
         if record_bytes > _MAX_RECORD_BYTES:
+            records += 1
             reasons["RECORD_TOO_LARGE"] += 1
             invalid = True
             continue
+        if not line.strip():
+            continue
+        records += 1
         try:
             value = json.loads(
                 line,
@@ -235,7 +263,7 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
         description="Audit JSONL structured logs for baseline schema and secret redaction."
     )
     parser.parse_args(argv)
-    result = inspect_lines(stdin if stdin is not None else sys.stdin)
+    result = inspect_lines(_iter_bounded_lines(stdin if stdin is not None else sys.stdin))
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return _exit_code(result["status"])
 
