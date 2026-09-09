@@ -106,6 +106,14 @@ def _inspect_record(record: Any, reasons: Counter[str]) -> None:
     missing = [name for name in _REQUIRED_FIELDS if name not in record]
     if missing:
         reasons["MISSING_REQUIRED_FIELD"] += 1
+    invalid_required = [
+        name
+        for name in _REQUIRED_FIELDS
+        if name in record
+        and (not isinstance(record[name], str) or not record[name].strip())
+    ]
+    if invalid_required:
+        reasons["INVALID_REQUIRED_FIELD"] += 1
     _scan_value(record, reasons)
 
 
