@@ -29,6 +29,7 @@ RELATED_PROCEDURES = {
     "state provider reconciliation": "docs/operations/state-provider-reconciliation.md",
     "auth session gc": "docs/operations/auth-session-gc.md",
     "log redaction audit": "docs/operations/log-redaction-audit.md",
+    "alert catalog": "docs/operations/alert-catalog.md",
 }
 
 NEW_RUNBOOKS = {
