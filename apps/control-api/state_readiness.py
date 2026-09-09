@@ -34,6 +34,8 @@ def _reject_json_constant(_value: str) -> None:
 
 def _open_state_root(path: Path) -> int:
     """Pin one configured state root without following the root itself."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise StateReadinessError("state directory cannot be inspected safely")
     try:
         before = path.lstat()
     except OSError as exc:
@@ -41,15 +43,10 @@ def _open_state_root(path: Path) -> int:
     if not stat.S_ISDIR(before.st_mode):
         raise StateReadinessError("state directory is not a directory")
 
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(path, flags)
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         raise StateReadinessError("state directory cannot be opened safely") from exc
     try:
         opened = os.fstat(fd)
@@ -80,15 +77,15 @@ def _open_regular_readonly(root_fd: int, name: str) -> int:
     """Open one direct child of a pinned state root without following symlinks."""
     try:
         before = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         raise StateReadinessError("required state entry is unavailable") from exc
     if not stat.S_ISREG(before.st_mode):
         raise StateReadinessError("required state entry is not a regular file")
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(name, flags, dir_fd=root_fd)
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         raise StateReadinessError("required state entry cannot be opened") from exc
     try:
         opened = os.fstat(fd)
@@ -167,12 +164,14 @@ def _validate_catalog(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _optional_entry_stat(root_fd: int, name: str, *, marker: bool = False) -> os.stat_result | None:
+def _optional_entry_stat(
+    root_fd: int, name: str, *, marker: bool = False
+) -> os.stat_result | None:
     try:
         return os.stat(name, dir_fd=root_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         detail = (
             "legacy token fuse marker cannot be inspected"
             if marker
@@ -208,6 +207,20 @@ def _inspect_optional_legacy_token_fuse(node_root_fd: int) -> None:
 
 
 def _authority_specs(
+    *, state_dir: Path, node_state_dir: Path | None = None
+) -> tuple[tuple[str, Path, Validator], ...]:
+    """Return the canonical path-based spec used by restore comparison tooling."""
+    effective_node_state_dir = node_state_dir or state_dir
+    return (
+        ("control", state_dir / "control.json", _validate_control),
+        ("catalog", state_dir / "catalog.json", _validate_catalog),
+        ("users", state_dir / "users.json", _validate_users),
+        ("auth_sessions", state_dir / "auth_sessions.json", _validate_sessions),
+        ("nodes", effective_node_state_dir / "nodes.json", validate_node_authority),
+    )
+
+
+def _authority_fd_specs(
     *, state_root_fd: int, node_root_fd: int
 ) -> tuple[tuple[str, int, str, Validator], ...]:
     return (
@@ -258,7 +271,9 @@ def inspect_state_readiness(
             node_root_error = exc
 
         checks: list[dict[str, str | None]] = []
-        specs: tuple[tuple[str, int | None, StateReadinessError | None, str, Validator], ...] = (
+        specs: tuple[
+            tuple[str, int | None, StateReadinessError | None, str, Validator], ...
+        ] = (
             ("control", state_root_fd, state_root_error, "control.json", _validate_control),
             ("catalog", state_root_fd, state_root_error, "catalog.json", _validate_catalog),
             ("users", state_root_fd, state_root_error, "users.json", _validate_users),
@@ -355,7 +370,7 @@ def check_state_readiness(
     try:
         node_root_fd = _open_state_root(effective_node_state_dir)
         try:
-            for _authority, root_fd, authority_name, validator in _authority_specs(
+            for _authority, root_fd, authority_name, validator in _authority_fd_specs(
                 state_root_fd=state_root_fd,
                 node_root_fd=node_root_fd,
             ):
