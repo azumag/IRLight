@@ -102,6 +102,19 @@ def inspect_secret_path(path: Path) -> dict[str, Any]:
         ):
             problems.append("parent_changed")
             return result
+
+        try:
+            file_after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            problems.append("file_changed")
+            return result
+        if (
+            _identity(file_after) != _identity(file_state)
+            or file_after.st_mode != file_state.st_mode
+            or not stat.S_ISREG(file_after.st_mode)
+        ):
+            problems.append("file_changed")
+            return result
     finally:
         os.close(parent_fd)
 
