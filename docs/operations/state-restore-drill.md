@@ -57,20 +57,26 @@ python /app/state_inspect_cli.py
 
 `UNAVAILABLE` を marker 作成や空 state 生成で回避しない。reference を保全したまま restore 方法・対象世代を調べ直す。
 
-## 5. この drill で証明しないもの
+## 5. provider ownership を read-only 照合する
 
-この比較は PostgreSQL 等への将来移行、lazy な Session / entitlement / Destination-secret / ingest authority、object storage、provider 側 resource ownership を復元した証拠ではない。また古い snapshot の token / credential が安全に再利用可能であることも意味しない。
+startup authority / readiness の検証後、`docs/operations/state-provider-reconciliation.md` の手順で、復元した Session authority が参照する provider volume/server と provider 側の Session/user metadata を read-only 照合する。これは自動 cleanup の許可判定ではなく、snapshot 間の所有関係の不一致を `REVIEW_REQUIRED` として列挙する診断である。
+
+provider inventory の取得は point-in-time transaction ではないため、Control Plane writer / provisioner / reaper を fencing した状態で実施する。不一致を理由にこの診断 CLI から resource を削除・修復する機能は提供しない。
+
+## 6. この drill で証明しないもの
+
+この比較は PostgreSQL 等への将来移行、lazy な Session / entitlement / Destination-secret / ingest authority、object storage、provider 側 resource の現在の lifecycle が安全に cleanup 可能であることを証明しない。また古い snapshot の token / credential が安全に再利用可能であることも意味しない。
 
 本番復旧前には、少なくとも次を別の承認済み手順で決める必要がある。
 
 - backup generation / restore epoch / fencing と writer 再開順序
-- provider inventory と state ownership の reconciliation
+- provider ownership 診断で `REVIEW_REQUIRED` になった resource の lifecycle / cleanup 判断
 - 古い auth / bootstrap / ingest credential の失効・再発行方針
 - lazy authority と object storage の整合点
 - rollback 後に新しい writer が古い state を再導入しない保証
 
 これらが未決のままなら、比較が `MATCH` でも本番 restore / provider 操作へ進めない。
 
-## 6. 記録する証跡
+## 7. 記録する証跡
 
-秘密を含まない範囲で、backup generation ID、reference/candidate の mount identity、比較 CLI の overall status と reason code、`state_inspect_cli.py` の status、実施者、対象 version、未解決の reconciliation 項目を記録する。ファイル内容や digest を証跡として公開しない。
+秘密を含まない範囲で、backup generation ID、reference/candidate の mount identity、比較 CLI の overall status と reason code、`state_inspect_cli.py` の status、provider ownership 診断の overall status / reason code、実施者、対象 version、未解決の reconciliation 項目を記録する。ファイル内容や digest を証跡として公開しない。
