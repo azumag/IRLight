@@ -13,7 +13,7 @@ import re
 import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from typing import Any, TextIO
+from typing import Any, BinaryIO, TextIO
 from urllib.parse import parse_qsl, urlsplit
 
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
@@ -55,7 +55,12 @@ class _OversizedRecord:
     pass
 
 
+class _InvalidUtf8Record:
+    pass
+
+
 _OVERSIZED_RECORD = _OversizedRecord()
+_INVALID_UTF8_RECORD = _InvalidUtf8Record()
 
 
 def _reject_nonfinite(value: str) -> None:
@@ -176,6 +181,11 @@ def _inspect_record(record: Any, reasons: Counter[str]) -> bool:
 
 
 def _iter_bounded_lines(stream: TextIO) -> Iterable[str | _OversizedRecord]:
+    """Bound text streams used by tests/in-process callers.
+
+    TextIO.readline() limits characters rather than encoded bytes, so the CLI
+    prefers `_iter_bounded_byte_lines()` whenever a raw buffer is available.
+    """
     read_limit = _MAX_RECORD_BYTES + 1
     while True:
         line = stream.readline(read_limit)
@@ -189,7 +199,32 @@ def _iter_bounded_lines(stream: TextIO) -> Iterable[str | _OversizedRecord]:
         yield _OVERSIZED_RECORD
 
 
-def inspect_lines(lines: Iterable[str | _OversizedRecord]) -> dict[str, Any]:
+def _iter_bounded_byte_lines(
+    stream: BinaryIO,
+) -> Iterable[str | _OversizedRecord | _InvalidUtf8Record]:
+    """Read stdin with the record cap applied to raw bytes before UTF-8 decode."""
+    read_limit = _MAX_RECORD_BYTES + 1
+    while True:
+        line = stream.readline(read_limit)
+        if line == b"":
+            return
+        if line.endswith(b"\n") or len(line) < read_limit:
+            if len(line) > _MAX_RECORD_BYTES:
+                yield _OVERSIZED_RECORD
+                continue
+            try:
+                yield line.decode("utf-8")
+            except UnicodeDecodeError:
+                yield _INVALID_UTF8_RECORD
+            continue
+        while line and not line.endswith(b"\n"):
+            line = stream.readline(read_limit)
+        yield _OVERSIZED_RECORD
+
+
+def inspect_lines(
+    lines: Iterable[str | _OversizedRecord | _InvalidUtf8Record],
+) -> dict[str, Any]:
     """Inspect JSONL records without returning any source content."""
     reasons: Counter[str] = Counter()
     records = 0
@@ -199,6 +234,11 @@ def inspect_lines(lines: Iterable[str | _OversizedRecord]) -> dict[str, Any]:
         if line is _OVERSIZED_RECORD:
             records += 1
             reasons["RECORD_TOO_LARGE"] += 1
+            invalid = True
+            continue
+        if line is _INVALID_UTF8_RECORD:
+            records += 1
+            reasons["INVALID_JSON"] += 1
             invalid = True
             continue
         try:
@@ -263,7 +303,14 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
         description="Audit JSONL structured logs for baseline schema and secret redaction."
     )
     parser.parse_args(argv)
-    result = inspect_lines(_iter_bounded_lines(stdin if stdin is not None else sys.stdin))
+    source = stdin if stdin is not None else sys.stdin
+    raw_source = getattr(source, "buffer", None)
+    lines = (
+        _iter_bounded_byte_lines(raw_source)
+        if raw_source is not None
+        else _iter_bounded_lines(source)
+    )
+    result = inspect_lines(lines)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return _exit_code(result["status"])
 
