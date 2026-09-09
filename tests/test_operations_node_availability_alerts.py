@@ -76,6 +76,7 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "NO_MATCHES")
         self.assertEqual(result["inspected_nodes"], 1)
+        self.assertEqual(result["expected_running_nodes"], 1)
         self.assertEqual(result["available_nodes"], 1)
         self.assertEqual(result["matched_alerts"], {})
         self.assertEqual(result["violations"], {})
@@ -98,12 +99,13 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "MATCHED")
         self.assertEqual(result["inspected_nodes"], 2)
+        self.assertEqual(result["expected_running_nodes"], 1)
         self.assertEqual(result["available_nodes"], 0)
         self.assertEqual(
             result["matched_alerts"], {"MEDIA_NODES_ALL_UNAVAILABLE": 1}
         )
 
-    def test_bootstrapping_node_is_not_counted_as_available(self) -> None:
+    def test_bootstrapping_desired_running_node_is_not_available(self) -> None:
         result = module.evaluate_authority(
             authority(
                 node_record(
@@ -118,9 +120,10 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "MATCHED")
+        self.assertEqual(result["expected_running_nodes"], 1)
         self.assertEqual(result["available_nodes"], 0)
 
-    def test_empty_valid_authority_matches_zero_available_nodes(self) -> None:
+    def test_empty_valid_authority_is_idle_not_outage(self) -> None:
         result = module.evaluate_authority(
             authority(),
             self.load_catalog(),
@@ -128,12 +131,31 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
             grace_seconds=120.0,
         )
 
-        self.assertEqual(result["status"], "MATCHED")
+        self.assertEqual(result["status"], "NO_MATCHES")
         self.assertEqual(result["inspected_nodes"], 0)
+        self.assertEqual(result["expected_running_nodes"], 0)
         self.assertEqual(result["available_nodes"], 0)
-        self.assertEqual(
-            result["matched_alerts"], {"MEDIA_NODES_ALL_UNAVAILABLE": 1}
+        self.assertEqual(result["matched_alerts"], {})
+
+    def test_intentionally_stopped_nodes_are_idle_not_outage(self) -> None:
+        result = module.evaluate_authority(
+            authority(
+                node_record(
+                    "node-1",
+                    status="STOPPED",
+                    desired_state="STOPPED",
+                    last_heartbeat_at=800.0,
+                )
+            ),
+            self.load_catalog(),
+            now=1000.0,
+            grace_seconds=120.0,
         )
+
+        self.assertEqual(result["status"], "NO_MATCHES")
+        self.assertEqual(result["expected_running_nodes"], 0)
+        self.assertEqual(result["available_nodes"], 0)
+        self.assertEqual(result["matched_alerts"], {})
 
     def test_catalog_contract_drift_is_rejected(self) -> None:
         for field, value in (
@@ -158,6 +180,24 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
                         now=1000.0,
                         grace_seconds=120.0,
                     )
+
+        catalog = copy.deepcopy(self.load_catalog())
+        alert = next(
+            candidate
+            for candidate in catalog["alerts"]
+            if candidate["id"] == "MEDIA_NODES_ALL_UNAVAILABLE"
+        )
+        alert["trigger"] = {
+            "mode": "threshold",
+            "threshold_ref": "operations.other_threshold",
+        }
+        with self.assertRaises(module.OperationsNodeAvailabilityAlertError):
+            module.evaluate_authority(
+                authority(node_record("node-1")),
+                catalog,
+                now=1000.0,
+                grace_seconds=120.0,
+            )
 
     def test_cli_aggregates_without_exposing_node_session_or_provider_identifiers(self) -> None:
         with tempfile.TemporaryDirectory(
@@ -202,6 +242,7 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             rendered = output.getvalue()
             result = json.loads(rendered)
+            self.assertEqual(result["expected_running_nodes"], 1)
             self.assertEqual(
                 result["matched_alerts"], {"MEDIA_NODES_ALL_UNAVAILABLE": 1}
             )
@@ -235,6 +276,7 @@ class OperationsNodeAvailabilityAlertTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(exit_code, 3)
             self.assertEqual(result["status"], "UNAVAILABLE")
+            self.assertEqual(result["expected_running_nodes"], 0)
             self.assertEqual(result["matched_alerts"], {})
             self.assertEqual(
                 result["violations"], {"NODE_AUTHORITY_UNAVAILABLE": 1}
