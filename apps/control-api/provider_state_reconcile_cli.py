@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,7 +32,11 @@ if _LOCAL_REPO is not None and (_LOCAL_REPO / "provider").is_dir():
         sys.path.insert(0, str(_LOCAL_REPO))
 
 from provider.conoha import ManagedResource  # noqa: E402
-from provider.fake_provider import FileFakeProvider  # noqa: E402
+from provider.fake_provider import (  # noqa: E402
+    FakeProvider,
+    FakeProviderStateError,
+    FileFakeProvider,
+)
 from provider.provider_client import ConohaClient, ConohaConfig  # noqa: E402
 from session_store import SessionStateError, SessionStore  # noqa: E402
 from state_readiness import (  # noqa: E402
@@ -91,6 +94,33 @@ def load_session_snapshot(state_dir: Path) -> dict[str, dict[str, Any]]:
             os.close(authority_fd)
         if marker_fd is not None:
             os.close(marker_fd)
+        os.close(root_fd)
+
+
+def load_fake_provider_snapshot(path: Path) -> FakeProvider:
+    """Read a file-backed fake inventory once without following replacements."""
+    root_fd = _open_state_root(path.parent)
+    inventory_fd: int | None = None
+    try:
+        inventory_fd = _open_regular_readonly(root_fd, path.name)
+        value = _read_json_authority_fd(inventory_fd)
+        try:
+            volumes, servers, links = FileFakeProvider._decode_state(value)
+        except FakeProviderStateError as exc:
+            raise StateReadinessError(
+                "fake provider inventory failed validation"
+            ) from exc
+        _assert_regular_entry_unchanged(root_fd, path.name, inventory_fd)
+        _assert_state_root_unchanged(path.parent, root_fd)
+
+        provider = FakeProvider()
+        provider.volumes = volumes
+        provider.servers = servers
+        provider.server_volume_links = links
+        return provider
+    finally:
+        if inventory_fd is not None:
+            os.close(inventory_fd)
         os.close(root_fd)
 
 
@@ -315,12 +345,9 @@ def _provider_from_args(args: argparse.Namespace):
         if args.fake_state_file is None:
             raise ValueError("fake provider mode requires an explicit state file")
         try:
-            fake_state = args.fake_state_file.lstat()
-        except OSError as exc:
+            return load_fake_provider_snapshot(args.fake_state_file)
+        except StateReadinessError as exc:
             raise ValueError("fake provider inventory is unavailable") from exc
-        if not stat.S_ISREG(fake_state.st_mode):
-            raise ValueError("fake provider inventory is not a regular file")
-        return FileFakeProvider(args.fake_state_file)
     return ConohaClient(ConohaConfig.from_env())
 
 
