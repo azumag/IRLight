@@ -13,10 +13,12 @@ Issue #90 の復旧手順で、復元した Session authority と provider 側�
 
 ## 実行
 
+Control Plane image には `provider_state_reconcile_cli.py` が含まれる。復元した state directory を read-only bind mount するなど、live authority と分離した状態で実行する。
+
 実 provider を照合する場合:
 
 ```bash
-python apps/control-api/provider_state_reconcile_cli.py \
+python /app/provider_state_reconcile_cli.py \
   --state-dir /path/to/protected-restored-state \
   --provider-mode conoha
 ```
@@ -24,7 +26,7 @@ python apps/control-api/provider_state_reconcile_cli.py \
 file-backed fake provider を照合する場合:
 
 ```bash
-python apps/control-api/provider_state_reconcile_cli.py \
+python /app/provider_state_reconcile_cli.py \
   --state-dir /path/to/protected-restored-state \
   --provider-mode fake \
   --fake-state-file /path/to/fake-provider.json
