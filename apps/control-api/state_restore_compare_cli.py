@@ -63,44 +63,74 @@ def _open_regular_readonly_at(directory_fd: int, name: str) -> int:
         raise
 
 
+def _assert_regular_entry_unchanged_at(directory_fd: int, name: str, fd: int) -> None:
+    """Fail closed if a pinned snapshot entry was replaced during validation."""
+    try:
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        opened = os.fstat(fd)
+    except (OSError, NotImplementedError) as exc:
+        raise StateReadinessError("required state entry changed during inspection") from exc
+    if not stat.S_ISREG(current.st_mode):
+        raise StateReadinessError("required state entry changed during inspection")
+    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise StateReadinessError("required state entry changed during inspection")
+
+
 def _validated_fingerprint_at(
     directory_fd: int, path: Path, validator: Validator, *, require_marker: bool = True
 ) -> tuple[bytes, tuple[int, int]]:
     """Validate/fingerprint one authority without re-resolving its snapshot root."""
     name = _entry_name(path)
-    if require_marker:
-        marker_name = initialization_marker(Path(name)).name
-        marker_fd = _open_regular_readonly_at(directory_fd, marker_name)
-        os.close(marker_fd)
-
-    fd = _open_regular_readonly_at(directory_fd, name)
-    opened = os.fstat(fd)
-    identity = (opened.st_dev, opened.st_ino)
+    marker_name: str | None = None
+    marker_fd: int | None = None
+    fd: int | None = None
     try:
+        if require_marker:
+            marker_name = initialization_marker(Path(name)).name
+            marker_fd = _open_regular_readonly_at(directory_fd, marker_name)
+
+        fd = _open_regular_readonly_at(directory_fd, name)
+        opened = os.fstat(fd)
+        identity = (opened.st_dev, opened.st_ino)
         try:
-            with os.fdopen(fd, "rb") as handle:
-                raw = handle.read()
+            handle = os.fdopen(os.dup(fd), "rb")
         except OSError as exc:
             raise StateReadinessError("required state cannot be read") from exc
-        fd = -1
-    finally:
-        if fd >= 0:
-            os.close(fd)
+        with handle:
+            try:
+                raw = handle.read()
+            except OSError as exc:
+                raise StateReadinessError("required state cannot be read") from exc
 
-    try:
-        text = raw.decode("utf-8")
-        value = load_json_authority(
-            io.StringIO(text), parse_constant=_reject_json_constant
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise StateReadinessError("required state contains invalid JSON") from exc
-    if not isinstance(value, dict):
-        raise StateReadinessError("required state has invalid structure")
-    try:
-        validator(value)
-    except Exception as exc:
-        raise StateReadinessError("required state failed validation") from exc
-    return hashlib.sha256(raw).digest(), identity
+        try:
+            text = raw.decode("utf-8")
+            value = load_json_authority(
+                io.StringIO(text), parse_constant=_reject_json_constant
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise StateReadinessError("required state contains invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise StateReadinessError("required state has invalid structure")
+        try:
+            validator(value)
+        except Exception as exc:
+            raise StateReadinessError("required state failed validation") from exc
+
+        # The protected reference can still be on a writable filesystem during
+        # a drill, and the candidate may have a restore process or operator
+        # touching it by mistake.  Do not compare a stale inode snapshot after
+        # an atomic replace; require the pathname to still name the entry that
+        # was actually read and validated.  Keep the initialization marker
+        # pinned across validation for the same reason.
+        _assert_regular_entry_unchanged_at(directory_fd, name, fd)
+        if marker_fd is not None and marker_name is not None:
+            _assert_regular_entry_unchanged_at(directory_fd, marker_name, marker_fd)
+        return hashlib.sha256(raw).digest(), identity
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if marker_fd is not None:
+            os.close(marker_fd)
 
 
 def _entry_exists_at(directory_fd: int, name: str) -> bool:
@@ -127,12 +157,17 @@ def _legacy_fuse_fingerprint_at(
             raise StateReadinessError("legacy token fuse disappeared after initialization")
         return False, False, None, None
 
-    if marker_present:
-        marker_fd = _open_regular_readonly_at(node_directory_fd, marker_name)
-        os.close(marker_fd)
     digest, identity = _validated_fingerprint_at(
-        node_directory_fd, Path(name), _validate_tokens, require_marker=False
+        node_directory_fd,
+        Path(name),
+        _validate_tokens,
+        require_marker=marker_present,
     )
+    # A legacy file predates mandatory markers, so absence remains compatible.
+    # But if a marker appears while this inspection is in flight, the presence
+    # bit used for source/candidate comparison is stale and must not be trusted.
+    if _entry_exists_at(node_directory_fd, marker_name) != marker_present:
+        raise StateReadinessError("required state entry changed during inspection")
     return True, marker_present, digest, identity
 
 
