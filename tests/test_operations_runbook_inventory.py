@@ -31,6 +31,8 @@ RELATED_PROCEDURES = {
     "user session capacity": "docs/operations/session-capacity-exhaustion.md",
     "log redaction audit": "docs/operations/log-redaction-audit.md",
     "alert catalog": "docs/operations/alert-catalog.md",
+    "event alert dry-run": "docs/operations/event-alert-dry-run.md",
+    "media node capacity alert dry-run": "docs/operations/media-node-capacity-alert-dry-run.md",
 }
 
 NEW_RUNBOOKS = {
