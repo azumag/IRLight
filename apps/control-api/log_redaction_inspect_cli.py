@@ -18,6 +18,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
 _REDACTED_VALUES = {"[redacted]", "<redacted>", "***"}
+_MAX_RECORD_BYTES = 256 * 1024
+_MAX_NESTING_DEPTH = 64
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
 _SENSITIVE_KEYS = {
@@ -118,31 +120,40 @@ def _url_has_userinfo(value: str) -> bool:
         return False
 
 
-def _scan_value(value: Any, reasons: Counter[str]) -> None:
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            normalized = _normalize_key(str(key))
-            if normalized in _SENSITIVE_KEYS and not _is_redacted(child):
-                reasons["SENSITIVE_FIELD_UNREDACTED"] += 1
-            _scan_value(child, reasons)
-        return
-    if isinstance(value, list):
-        for child in value:
-            _scan_value(child, reasons)
-        return
-    if isinstance(value, str):
-        if _url_has_unredacted_sensitive_query(value):
-            reasons["SENSITIVE_URL_QUERY_UNREDACTED"] += 1
-        if _url_has_unredacted_sensitive_fragment(value):
-            reasons["SENSITIVE_URL_FRAGMENT_UNREDACTED"] += 1
-        if _url_has_userinfo(value):
-            reasons["SENSITIVE_URL_USERINFO"] += 1
+def _scan_value(value: Any, reasons: Counter[str]) -> bool:
+    too_deep = False
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > _MAX_NESTING_DEPTH:
+            too_deep = True
+            continue
+        if isinstance(current, Mapping):
+            for key, child in current.items():
+                normalized = _normalize_key(str(key))
+                if normalized in _SENSITIVE_KEYS and not _is_redacted(child):
+                    reasons["SENSITIVE_FIELD_UNREDACTED"] += 1
+                stack.append((child, depth + 1))
+            continue
+        if isinstance(current, list):
+            stack.extend((child, depth + 1) for child in current)
+            continue
+        if isinstance(current, str):
+            if _url_has_unredacted_sensitive_query(current):
+                reasons["SENSITIVE_URL_QUERY_UNREDACTED"] += 1
+            if _url_has_unredacted_sensitive_fragment(current):
+                reasons["SENSITIVE_URL_FRAGMENT_UNREDACTED"] += 1
+            if _url_has_userinfo(current):
+                reasons["SENSITIVE_URL_USERINFO"] += 1
+    if too_deep:
+        reasons["NESTING_TOO_DEEP"] += 1
+    return too_deep
 
 
-def _inspect_record(record: Any, reasons: Counter[str]) -> None:
+def _inspect_record(record: Any, reasons: Counter[str]) -> bool:
     if not isinstance(record, dict):
         reasons["INVALID_RECORD"] += 1
-        return
+        return True
     missing = [name for name in _REQUIRED_FIELDS if name not in record]
     if missing:
         reasons["MISSING_REQUIRED_FIELD"] += 1
@@ -154,7 +165,7 @@ def _inspect_record(record: Any, reasons: Counter[str]) -> None:
     ]
     if invalid_required:
         reasons["INVALID_REQUIRED_FIELD"] += 1
-    _scan_value(record, reasons)
+    return _scan_value(record, reasons)
 
 
 def inspect_lines(lines: Iterable[str]) -> dict[str, Any]:
@@ -167,6 +178,16 @@ def inspect_lines(lines: Iterable[str]) -> dict[str, Any]:
         if not line.strip():
             continue
         records += 1
+        try:
+            record_bytes = len(line.encode("utf-8"))
+        except UnicodeEncodeError:
+            reasons["INVALID_JSON"] += 1
+            invalid = True
+            continue
+        if record_bytes > _MAX_RECORD_BYTES:
+            reasons["RECORD_TOO_LARGE"] += 1
+            invalid = True
+            continue
         try:
             value = json.loads(
                 line,
@@ -181,13 +202,15 @@ def inspect_lines(lines: Iterable[str]) -> dict[str, Any]:
             reasons["NONFINITE_NUMBER"] += 1
             invalid = True
             continue
+        except RecursionError:
+            reasons["NESTING_TOO_DEEP"] += 1
+            invalid = True
+            continue
         except (json.JSONDecodeError, UnicodeError, TypeError, ValueError):
             reasons["INVALID_JSON"] += 1
             invalid = True
             continue
-        before_invalid = reasons["INVALID_RECORD"]
-        _inspect_record(value, reasons)
-        if reasons["INVALID_RECORD"] > before_invalid:
+        if _inspect_record(value, reasons):
             invalid = True
 
     if invalid:
