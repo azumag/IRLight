@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
+import state_readiness as readiness  # noqa: E402
 from auth_store import _default_sessions, _default_users  # noqa: E402
 from control_store import default_control  # noqa: E402
 from state_inspect_cli import main as inspect_main  # noqa: E402
@@ -263,6 +264,45 @@ class StateReadinessTest(unittest.TestCase):
         before = self._snapshot()
         self._check()
         self.assertEqual(self._snapshot(), before)
+
+    def test_legacy_token_fuse_marker_appearance_during_validation_is_not_ready(self) -> None:
+        legacy = self.node_state_dir / "bootstrap_tokens.json"
+        marker = initialization_marker(legacy)
+        digest = "a" * 64
+        legacy.write_text(
+            json.dumps(
+                {
+                    "tokens": {
+                        digest: {
+                            "consumed": True,
+                            "consumed_at": 1.0,
+                            "node_id": "node-1",
+                            "session_id": "session-1",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = legacy.read_bytes()
+        original_validate_tokens = readiness._validate_tokens
+
+        def initialize_during_validation(value: dict[str, object]) -> object:
+            marker.write_text("v1\n", encoding="utf-8")
+            return original_validate_tokens(value)
+
+        readiness._validate_tokens = initialize_during_validation
+        try:
+            with self.assertRaisesRegex(
+                StateReadinessError,
+                "required state entry changed during inspection",
+            ):
+                self._check()
+        finally:
+            readiness._validate_tokens = original_validate_tokens
+
+        self.assertEqual(legacy.read_bytes(), before)
+        self.assertTrue(marker.exists())
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink is unavailable")
     def test_symlinked_authority_is_rejected(self) -> None:
