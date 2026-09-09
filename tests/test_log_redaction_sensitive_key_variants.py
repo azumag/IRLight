@@ -46,6 +46,20 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 7})
 
+    def test_acronym_camel_case_sensitive_fields_require_redaction(self) -> None:
+        result = self.inspect(
+            record(
+                payload={
+                    "xAPIKey": "raw",
+                    "clientIDToken": "raw",
+                    "relayRTMPStreamKey": "raw",
+                    "HTTPAuthorization": "raw",
+                }
+            )
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 4})
+
     def test_namespaced_sensitive_url_params_require_redaction(self) -> None:
         result = self.inspect(
             record(
@@ -64,6 +78,19 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
             },
         )
 
+    def test_acronym_camel_case_sensitive_url_params_require_redaction(self) -> None:
+        result = self.inspect(
+            record(callback="/callback?xAPIKey=raw#clientIDToken=raw")
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(
+            result["violations"],
+            {
+                "SENSITIVE_URL_FRAGMENT_UNREDACTED": 1,
+                "SENSITIVE_URL_QUERY_UNREDACTED": 1,
+            },
+        )
+
     def test_redacted_namespaced_sensitive_values_are_allowed(self) -> None:
         result = self.inspect(
             record(
@@ -71,6 +98,7 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "oauth2AccessToken": "[REDACTED]",
                     "x-api-key": None,
                     "databasePassword": "***",
+                    "xAPIKey": "<redacted>",
                 },
                 callback="?proxyAuthorization=%3Credacted%3E",
             )
@@ -85,6 +113,8 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "password_policy": "strict",
                     "cookie_count": 3,
                     "api_key_rotation_count": 4,
+                    "HTTPStatusCode": 200,
+                    "tokenCount": 12,
                 }
             )
         )
