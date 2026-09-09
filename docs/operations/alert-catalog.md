@@ -18,7 +18,7 @@ Issue #11 の alert / notification 要件を、外部監視製品や通知先へ
 
 `MEDIA_NODE_CAPACITY_HIGH` は Issue #11 が明示している **Node capacity 80%超** warning を `issue11.media_node_capacity_80_percent` として参照します。論理 signal は `media_nodes.capacity_ratio` で、検証済み `max_sessions` に対する active / reserved Session の占有率を想定します。ユーザー単位の `max_concurrent_sessions` を扱う `session_capacity_inspect_cli.py` / `session-capacity-exhaustion.md` とは別契約です。Node capacity の collector / scheduler metric がまだ接続されていない環境では、この warning をユーザー entitlement の値から推測して発火させません。
 
-それ以外の rate / pressure / backlog の数値 threshold は、実測値と運用負荷を確認せず固定しません。`operations.*` の `threshold_ref` は deployment 側で値を定義する必要がある未接続の契約名です。ただし `MEDIA_NODES_ALL_UNAVAILABLE` の `operations.media_nodes_all_unavailable` は count signal が 0 であることを表す論理境界で、repository 内の read-only Node authority から安全に評価できるため専用 dry-run を接続しています。
+それ以外の rate / pressure / backlog の数値 threshold は、実測値と運用負荷を確認せず固定しません。`operations.*` の `threshold_ref` は deployment 側で値を定義する必要がある未接続の契約名です。ただし `MEDIA_NODES_ALL_UNAVAILABLE` の `operations.media_nodes_all_unavailable` は、少なくとも1件の Node が `desired_state=RUNNING` である状況で available count が 0 になる論理境界を repository 内の read-only Node authority から安全に評価できるため、専用 dry-run を接続しています。Node が存在しない idle 環境や全 Node が明示的に停止されている状態は outage と推測しません。provisioning / stopping 等で zero available が何秒継続したら通知するかは deployment 側の運用 threshold として残します。
 
 ## Secret と個人情報
 
@@ -52,7 +52,7 @@ python apps/control-api/operations_event_alerts.py < captured.jsonl
 
 repository 内に既に authority / aggregate input の安全な取得契約がある threshold は、汎用 threshold engine を先に決めず個別の read-only dry-run で検証します。
 
-- `MEDIA_NODES_ALL_UNAVAILABLE`: `operations_node_availability_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、`desired_state=RUNNING`・`status=READY`・heartbeat fresh を満たす Node の aggregate 件数が 0 の場合に Critical alert を一致させます。詳細は `media-node-availability-alert-dry-run.md`。
+- `MEDIA_NODES_ALL_UNAVAILABLE`: `operations_node_availability_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、少なくとも1件の `desired_state=RUNNING` Node がある状況で、`status=READY`・heartbeat fresh を満たす Node の aggregate 件数が 0 の場合に Critical alert を一致させます。idle / 明示停止状態は一致させません。詳細は `media-node-availability-alert-dry-run.md`。
 - `NODE_HEARTBEAT_DELAYED`: `operations_heartbeat_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、`NODE_HEARTBEAT_GRACE_SECONDS` 以上の stale expected heartbeat を aggregate alert 件数へ変換します。詳細は `node-heartbeat-alert-dry-run.md`。
 - `MEDIA_NODE_CAPACITY_HIGH`: `operations_capacity_alerts.py` が識別子を含まない aggregate capacity JSONL を検査し、Issue #11 の 80% 超契約を判定します。詳細は `media-node-capacity-alert-dry-run.md`。
 
@@ -62,7 +62,7 @@ repository 内に既に authority / aggregate input の安全な取得契約が�
 
 - Prometheus / CloudWatch 等の collector や alert engine の採用。
 - Discord / email 等の通知先、credential、routing 設定。
-- `operations.*` threshold のうち rate / pressure / backlog に必要な本番数値。
+- `operations.*` threshold のうち rate / pressure / backlog / sustained duration に必要な本番数値。
 - Media Node の `max_sessions` を推測で決めること。これは #8 / #13 の scheduler / load test の実測に従います。
 - paging / escalation の担当者や当番表。
 - alert を契機にした Session stop、provider cleanup / provisioning、failover、refund 等の自動変更。
