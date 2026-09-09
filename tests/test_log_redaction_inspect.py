@@ -44,6 +44,13 @@ class LogRedactionInspectTests(unittest.TestCase):
         self.assertNotIn(secret, encoded)
         self.assertNotIn("Authorization", encoded)
 
+    def test_camel_case_sensitive_keys_are_normalized(self) -> None:
+        result = self.inspect(
+            record(payload={"accessToken": "raw", "streamKey": "raw", "clientSecret": "raw"})
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 3})
+
     def test_redacted_sensitive_fields_are_allowed(self) -> None:
         result = self.inspect(
             record(
@@ -61,6 +68,26 @@ class LogRedactionInspectTests(unittest.TestCase):
             result["violations"], {"SENSITIVE_URL_QUERY_UNREDACTED": 1}
         )
         self.assertNotIn("super-secret", encoded)
+        self.assertNotIn("example.invalid", encoded)
+
+    def test_relative_url_sensitive_query_is_reported(self) -> None:
+        result = self.inspect(
+            record(
+                callback="/callback?apiKey=raw",
+                next_url="?refreshToken=raw",
+            )
+        )
+        self.assertEqual(
+            result["violations"], {"SENSITIVE_URL_QUERY_UNREDACTED": 2}
+        )
+
+    def test_url_userinfo_is_reported_without_url(self) -> None:
+        url = "https://relay-user:relay-password@example.invalid/live"
+        result = self.inspect(record(destination=url))
+        encoded = json.dumps(result)
+        self.assertEqual(result["violations"], {"SENSITIVE_URL_USERINFO": 1})
+        self.assertNotIn("relay-user", encoded)
+        self.assertNotIn("relay-password", encoded)
         self.assertNotIn("example.invalid", encoded)
 
     def test_duplicate_key_and_nonfinite_number_are_invalid(self) -> None:
