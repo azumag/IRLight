@@ -36,7 +36,8 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
+- alert ID / severity / runbook / dedup 契約: [alert-catalog.md](alert-catalog.md)
 
 障害の根因が authority、deploy regression、secret 監査などにある場合は、必須12シナリオの runbook だけで復旧を推測せず、上記の専用手順を優先してください。
 
-runbook を追加・移動する場合は `tests/test_operations_runbook_inventory.py` も更新し、Issue #11 の必須シナリオと主要な関連運用手順が索引から脱落しないことを CI で確認します。
+runbook や関連運用手順を追加・移動する場合は対応する inventory test も更新し、Issue #11 の必須シナリオと主要な関連運用契約が索引から脱落しないことを CI で確認します。
