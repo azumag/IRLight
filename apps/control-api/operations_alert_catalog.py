@@ -9,10 +9,11 @@ providers.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 from typing import Any
+
+from state_safety import load_json_authority
 
 
 class OperationsAlertCatalogError(ValueError):
@@ -41,19 +42,6 @@ SAFE_DEDUP_KEYS = {
 _ID_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 _SIGNAL_RE = re.compile(r"^[a-z][a-z0-9_.]{2,127}$")
 _TRIGGER_REF_RE = re.compile(r"^[a-zA-Z0-9_.:-]{3,160}$")
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise OperationsAlertCatalogError("catalog contains duplicate JSON object key")
-        result[key] = value
-    return result
-
-
-def _reject_non_finite_constant(value: str) -> None:
-    raise OperationsAlertCatalogError(f"catalog contains non-finite JSON number: {value}")
 
 
 def _require_nonempty_string(record: dict[str, Any], field: str, *, context: str) -> str:
@@ -166,14 +154,10 @@ def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str
 def load_catalog(path: Path, *, repo_root: Path | None = None) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(
-                handle,
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_non_finite_constant,
-            )
+            payload = load_json_authority(handle)
     except OperationsAlertCatalogError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
         raise OperationsAlertCatalogError("catalog cannot be read as strict JSON") from exc
     return validate_catalog(payload, repo_root=repo_root)
 
