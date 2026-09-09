@@ -103,8 +103,14 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("docs/production-deploy-preflight.md", text)
         self.assertIn("state-readiness.md", text)
         self.assertIn("state-restore-drill.md", text)
-        self.assertIn("docker compose down -v", text)
-        self.assertIn("volume prune", text)
+        self.assertIn(
+            "`docker compose down -v`、volume prune、state volume 削除、marker 削除、空 state 作成を rollback 手段にしない。",
+            text,
+        )
+        self.assertIn(
+            "この runbook は本番の `pull` / `up` / `restart` を自動化しません。",
+            text,
+        )
 
     def test_new_runbooks_have_actionable_lifecycle_sections(self) -> None:
         for relative_path in NEW_RUNBOOKS:
