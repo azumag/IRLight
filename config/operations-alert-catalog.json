@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "alerts": [
+    {
+      "id": "MEDIA_NODES_ALL_UNAVAILABLE",
+      "severity": "critical",
+      "signal": "media_nodes.available_count",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.media_nodes_all_unavailable"
+      },
+      "runbook": "docs/operations/media-node-heartbeat-stopped.md",
+      "dedup_keys": ["environment", "region"],
+      "recovery_notification": true
+    },
+    {
+      "id": "NODE_HEARTBEAT_DELAYED",
+      "severity": "warning",
+      "signal": "media_nodes.heartbeat_age_seconds",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "NODE_HEARTBEAT_GRACE_SECONDS"
+      },
+      "runbook": "docs/operations/media-node-heartbeat-stopped.md",
+      "dedup_keys": ["environment", "node_id"],
+      "recovery_notification": true
+    },
+    {
+      "id": "NODE_RESOURCE_EXHAUSTED",
+      "severity": "critical",
+      "signal": "media_nodes.resource_exhausted",
+      "trigger": {
+        "mode": "event",
+        "event_type": "NODE_RESOURCE_EXHAUSTED"
+      },
+      "runbook": "docs/operations/media-node-heartbeat-stopped.md",
+      "dedup_keys": ["environment", "node_id", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "NODE_RESOURCE_PRESSURE",
+      "severity": "warning",
+      "signal": "media_nodes.resource_pressure",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.node_resource_pressure"
+      },
+      "runbook": "docs/operations/media-node-heartbeat-stopped.md",
+      "dedup_keys": ["environment", "node_id", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "SESSION_PROCESS_CRASH_LOOP",
+      "severity": "critical",
+      "signal": "sessions.process_restart_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.session_process_crash_loop"
+      },
+      "runbook": "docs/operations/session-process-crash-loop.md",
+      "dedup_keys": ["environment", "session_id"],
+      "recovery_notification": true
+    },
+    {
+      "id": "SESSION_FAILURE_SURGE",
+      "severity": "critical",
+      "signal": "sessions.failed_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.session_failure_surge"
+      },
+      "runbook": "docs/operations/session-process-crash-loop.md",
+      "dedup_keys": ["environment", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "SESSION_CAPACITY_HIGH",
+      "severity": "warning",
+      "signal": "sessions.capacity_ratio",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "issue11.session_capacity_80_percent"
+      },
+      "runbook": "docs/operations/session-capacity-exhaustion.md",
+      "dedup_keys": ["environment"],
+      "recovery_notification": true
+    },
+    {
+      "id": "EGRESS_FAILURE_SURGE",
+      "severity": "critical",
+      "signal": "egress.failure_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.egress_failure_surge"
+      },
+      "runbook": "docs/operations/egress-widespread-failure.md",
+      "dedup_keys": ["environment", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "RECONNECT_RATE_HIGH",
+      "severity": "warning",
+      "signal": "egress.reconnect_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.egress_reconnect_rate_high"
+      },
+      "runbook": "docs/operations/egress-widespread-failure.md",
+      "dedup_keys": ["environment", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "INGEST_UNAVAILABLE",
+      "severity": "critical",
+      "signal": "ingest.connectivity_failure_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.ingest_unavailable"
+      },
+      "runbook": "docs/operations/ingest-connectivity-failure.md",
+      "dedup_keys": ["environment", "region", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "CONTROL_PLANE_UNAVAILABLE",
+      "severity": "critical",
+      "signal": "control_plane.readiness",
+      "trigger": {
+        "mode": "event",
+        "event_type": "CONTROL_PLANE_UNAVAILABLE"
+      },
+      "runbook": "docs/operations/control-plane-unavailable.md",
+      "dedup_keys": ["environment", "service", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "DATASTORE_UNAVAILABLE",
+      "severity": "critical",
+      "signal": "datastore.health",
+      "trigger": {
+        "mode": "event",
+        "event_type": "DATASTORE_UNAVAILABLE"
+      },
+      "runbook": "docs/operations/datastore-unavailable.md",
+      "dedup_keys": ["environment", "service", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "OBJECT_STORAGE_UNAVAILABLE",
+      "severity": "critical",
+      "signal": "object_storage.health",
+      "trigger": {
+        "mode": "event",
+        "event_type": "OBJECT_STORAGE_UNAVAILABLE"
+      },
+      "runbook": "docs/operations/object-storage-unavailable.md",
+      "dedup_keys": ["environment", "service", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "ASSET_FAILURE_RATE_HIGH",
+      "severity": "warning",
+      "signal": "assets.processing_failure_rate",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.asset_failure_rate_high"
+      },
+      "runbook": "docs/operations/object-storage-unavailable.md",
+      "dedup_keys": ["environment", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "RTMPS_CERTIFICATE_UPDATE_FAILED",
+      "severity": "critical",
+      "signal": "rtmps.certificate_update",
+      "trigger": {
+        "mode": "event",
+        "event_type": "RTMPS_CERTIFICATE_UPDATE_FAILED"
+      },
+      "runbook": "docs/operations/rtmps-certificate-update-failure.md",
+      "dedup_keys": ["environment", "node_id", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "SECRET_EXPOSURE_SUSPECTED",
+      "severity": "critical",
+      "signal": "security.secret_exposure",
+      "trigger": {
+        "mode": "event",
+        "event_type": "SECRET_EXPOSURE_SUSPECTED"
+      },
+      "runbook": "docs/operations/secret-exposure-suspected.md",
+      "dedup_keys": ["environment", "service", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "BILLING_WEBHOOK_DELAYED",
+      "severity": "warning",
+      "signal": "billing.webhook_backlog_age_seconds",
+      "trigger": {
+        "mode": "threshold",
+        "threshold_ref": "operations.billing_webhook_delayed"
+      },
+      "runbook": "docs/operations/billing-webhook-stalled.md",
+      "dedup_keys": ["environment", "reason_code"],
+      "recovery_notification": true
+    },
+    {
+      "id": "EMERGENCY_ABUSE_SIGNAL",
+      "severity": "critical",
+      "signal": "security.abuse_signal",
+      "trigger": {
+        "mode": "event",
+        "event_type": "EMERGENCY_ABUSE_SIGNAL"
+      },
+      "runbook": "docs/operations/emergency-abuse-stop.md",
+      "dedup_keys": ["environment", "session_id", "reason_code"],
+      "recovery_notification": true
+    }
+  ]
+}
