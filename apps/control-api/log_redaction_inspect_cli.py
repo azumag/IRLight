@@ -41,6 +41,17 @@ _SENSITIVE_KEYS = {
     "cookie",
     "set_cookie",
 }
+_SENSITIVE_KEY_SUFFIXES = (
+    "_secret",
+    "_token",
+    "_authorization",
+    "_password",
+    "_passphrase",
+    "_stream_key",
+    "_api_key",
+    "_private_key",
+    "_cookie",
+)
 
 
 class _DuplicateKeyError(ValueError):
@@ -81,6 +92,13 @@ def _normalize_key(key: str) -> str:
     return _KEY_SEPARATORS.sub("_", expanded).strip("_").lower()
 
 
+def _is_sensitive_key(key: str) -> bool:
+    normalized = _normalize_key(key)
+    return normalized in _SENSITIVE_KEYS or any(
+        normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES
+    )
+
+
 def _is_redacted(value: Any) -> bool:
     if value is None:
         return True
@@ -103,7 +121,7 @@ def _component_has_unredacted_sensitive_params(component: str) -> bool:
     except ValueError:
         return False
     for key, raw_value in params:
-        if _normalize_key(key) in _SENSITIVE_KEYS and not _is_redacted(raw_value):
+        if _is_sensitive_key(key) and not _is_redacted(raw_value):
             return True
     return False
 
@@ -142,8 +160,7 @@ def _scan_value(value: Any, reasons: Counter[str]) -> bool:
             continue
         if isinstance(current, Mapping):
             for key, child in current.items():
-                normalized = _normalize_key(str(key))
-                if normalized in _SENSITIVE_KEYS and not _is_redacted(child):
+                if _is_sensitive_key(str(key)) and not _is_redacted(child):
                     reasons["SENSITIVE_FIELD_UNREDACTED"] += 1
                 stack.append((child, depth + 1))
             continue
