@@ -16,7 +16,9 @@ The baseline schema requires `timestamp`, `level`, `service`, and `event_type`. 
 
 ## Secret checks
 
-Sensitive key names such as `authorization`, `token`, `stream_key`, `srt_passphrase`, `password`, `api_key`, `client_secret`, and `cookie` must be `null` or one of the explicit redaction placeholders (`[REDACTED]`, `<redacted>`, `***`). The same rule applies recursively to nested objects and arrays. URL query parameters using those names are also checked. Duplicate JSON object keys and non-finite JSON numbers are rejected so a producer cannot hide a sensitive field behind parser-dependent behavior.
+Sensitive key names such as `authorization`, `token`, `stream_key`, `srt_passphrase`, `password`, `api_key`, `client_secret`, and `cookie` must be `null` or one of the explicit redaction placeholders (`[REDACTED]`, `<redacted>`, `***`). The same rule applies recursively to nested objects and arrays. Key matching normalizes case, common camelCase boundaries, and punctuation separators, so names such as `accessToken`, `streamKey`, `apiKey`, and `clientSecret` are covered by the same policy.
+
+Sensitive query parameters are checked in absolute URLs and URL-like relative values such as `/callback?token=...` or `?apiKey=...`. Absolute URLs containing userinfo (`scheme://user@host` or `scheme://user:password@host`) always require review; producers should omit the userinfo rather than trying to retain a credential-shaped URL in logs. Duplicate JSON object keys and non-finite JSON numbers are rejected so a producer cannot hide a sensitive field behind parser-dependent behavior.
 
 This is a detection guardrail, not a sanitizer. It does not rewrite logs and must not be used to make an unsafe record safe after the fact. It also cannot reliably infer secrets embedded in arbitrary free text or URL path segments. Producers still need allow-list logging and redaction at the point where a record is constructed; an audit result of `SAFE` is not proof that arbitrary message text contains no secret.
 
