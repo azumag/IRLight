@@ -20,10 +20,12 @@ _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
 _REDACTED_VALUES = {"[redacted]", "<redacted>", "***"}
 _MAX_RECORD_BYTES = 256 * 1024
 _MAX_NESTING_DEPTH = 64
+_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
 _SENSITIVE_KEYS = {
     "secret",
+    "secret_key",
     "token",
     "access_token",
     "refresh_token",
@@ -36,6 +38,8 @@ _SENSITIVE_KEYS = {
     "streamkey",
     "api_key",
     "apikey",
+    "access_key",
+    "access_key_id",
     "private_key",
     "client_secret",
     "cookie",
@@ -43,14 +47,20 @@ _SENSITIVE_KEYS = {
 }
 _SENSITIVE_KEY_SUFFIXES = (
     "_secret",
+    "_secret_key",
     "_token",
     "_authorization",
     "_password",
     "_passphrase",
     "_stream_key",
     "_api_key",
+    "_access_key",
+    "_access_key_id",
     "_private_key",
     "_cookie",
+)
+_SENSITIVE_COMPACT_SUFFIXES = tuple(
+    suffix.removeprefix("_").replace("_", "") for suffix in _SENSITIVE_KEY_SUFFIXES
 )
 
 
@@ -88,15 +98,19 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _normalize_key(key: str) -> str:
-    expanded = _CAMEL_CASE_BOUNDARY.sub("_", key.strip())
+    expanded = _ACRONYM_BOUNDARY.sub("_", key.strip())
+    expanded = _CAMEL_CASE_BOUNDARY.sub("_", expanded)
     return _KEY_SEPARATORS.sub("_", expanded).strip("_").lower()
 
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = _normalize_key(key)
-    return normalized in _SENSITIVE_KEYS or any(
+    if normalized in _SENSITIVE_KEYS or any(
         normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES
-    )
+    ):
+        return True
+    compact = normalized.replace("_", "")
+    return any(compact.endswith(suffix) for suffix in _SENSITIVE_COMPACT_SUFFIXES)
 
 
 def _is_redacted(value: Any) -> bool:
