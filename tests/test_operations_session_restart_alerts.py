@@ -33,7 +33,7 @@ class OperationsSessionRestartAlertTests(unittest.TestCase):
     def load_catalog(self) -> dict[str, object]:
         return module.load_catalog(CATALOG_PATH, repo_root=REPO_ROOT)
 
-    def test_explicit_threshold_matches_boundary_and_above(self) -> None:
+    def test_explicit_threshold_matches_only_strictly_above_boundary(self) -> None:
         result = module.evaluate_lines(
             [observation(1.9), observation(2.0), observation(2.1)],
             self.load_catalog(),
@@ -42,9 +42,19 @@ class OperationsSessionRestartAlertTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "MATCHED")
         self.assertEqual(result["records"], 3)
-        self.assertEqual(result["matched_alerts"], {"SESSION_PROCESS_CRASH_LOOP": 2})
-        self.assertEqual(result["unmatched_records"], 1)
+        self.assertEqual(result["matched_alerts"], {"SESSION_PROCESS_CRASH_LOOP": 1})
+        self.assertEqual(result["unmatched_records"], 2)
         self.assertEqual(result["violations"], {})
+
+    def test_zero_threshold_does_not_classify_zero_rate_as_crash_loop(self) -> None:
+        result = module.evaluate_lines(
+            [observation(0), observation(0.1)],
+            self.load_catalog(),
+            threshold=0,
+        )
+        self.assertEqual(result["status"], "MATCHED")
+        self.assertEqual(result["matched_alerts"], {"SESSION_PROCESS_CRASH_LOOP": 1})
+        self.assertEqual(result["unmatched_records"], 1)
 
     def test_repository_does_not_supply_a_production_threshold(self) -> None:
         with self.assertRaises(module.OperationsSessionRestartAlertError):
@@ -145,13 +155,13 @@ class OperationsSessionRestartAlertTests(unittest.TestCase):
 
     def test_no_matches_is_a_successful_valid_result(self) -> None:
         result = module.evaluate_lines(
-            [observation(0), observation(1.99)],
+            [observation(0), observation(1.99), observation(2.0)],
             self.load_catalog(),
             threshold=2.0,
         )
         self.assertEqual(result["status"], "NO_MATCHES")
         self.assertEqual(result["matched_alerts"], {})
-        self.assertEqual(result["unmatched_records"], 2)
+        self.assertEqual(result["unmatched_records"], 3)
         self.assertEqual(module._exit_code(result["status"]), 0)
 
 
