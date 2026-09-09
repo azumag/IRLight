@@ -32,6 +32,7 @@ RELATED_PROCEDURES = {
     "log redaction audit": "docs/operations/log-redaction-audit.md",
     "alert catalog": "docs/operations/alert-catalog.md",
     "event alert dry-run": "docs/operations/event-alert-dry-run.md",
+    "node heartbeat alert dry-run": "docs/operations/node-heartbeat-alert-dry-run.md",
     "media node capacity alert dry-run": "docs/operations/media-node-capacity-alert-dry-run.md",
 }
 
