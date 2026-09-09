@@ -32,6 +32,8 @@ python /app/provider_state_reconcile_cli.py \
   --fake-state-file /path/to/fake-provider.json
 ```
 
+fake provider inventory は親 directory と対象 file を no-follow で固定してから strict JSON と record shape を検証し、検査中の file / parent 差し替えも拒否する。missing、symlink、置換 race は空 inventory とみなさず `PROVIDER_INVENTORY_UNAVAILABLE` へ fail-closed に倒す。
+
 provider mode は必須指定で、暗黙に実 provider へ接続しない。終了コードは `0=MATCH`、`2=authority/provider inventory を安全に取得できない`、`3=REVIEW_REQUIRED`。
 
 ## 判定内容
