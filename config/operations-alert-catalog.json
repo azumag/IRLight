@@ -74,15 +74,15 @@
       "recovery_notification": true
     },
     {
-      "id": "SESSION_CAPACITY_HIGH",
+      "id": "MEDIA_NODE_CAPACITY_HIGH",
       "severity": "warning",
-      "signal": "sessions.capacity_ratio",
+      "signal": "media_nodes.capacity_ratio",
       "trigger": {
         "mode": "threshold",
-        "threshold_ref": "issue11.session_capacity_80_percent"
+        "threshold_ref": "issue11.media_node_capacity_80_percent"
       },
-      "runbook": "docs/operations/session-capacity-exhaustion.md",
-      "dedup_keys": ["environment"],
+      "runbook": "docs/operations/media-node-capacity-high.md",
+      "dedup_keys": ["environment", "region", "node_id"],
       "recovery_notification": true
     },
     {
