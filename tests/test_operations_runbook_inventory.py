@@ -21,6 +21,16 @@ REQUIRED_RUNBOOKS = {
     "emergency abuse stop": "docs/operations/emergency-abuse-stop.md",
 }
 
+RELATED_PROCEDURES = {
+    "deploy rollback": "docs/operations/deploy-rollback.md",
+    "production deploy preflight": "docs/production-deploy-preflight.md",
+    "state readiness": "docs/operations/state-readiness.md",
+    "state restore drill": "docs/operations/state-restore-drill.md",
+    "state provider reconciliation": "docs/operations/state-provider-reconciliation.md",
+    "auth session gc": "docs/operations/auth-session-gc.md",
+    "log redaction audit": "docs/operations/log-redaction-audit.md",
+}
+
 NEW_RUNBOOKS = {
     "docs/operations/datastore-unavailable.md",
     "docs/operations/object-storage-unavailable.md",
@@ -56,6 +66,51 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
                     1,
                     f"runbook index must link exactly once to {relative_path}",
                 )
+
+    def test_related_operations_procedures_are_linked_from_index(self) -> None:
+        index_path = REPO_ROOT / RUNBOOK_INDEX
+        text = index_path.read_text(encoding="utf-8")
+        self.assertIn("## 関連運用手順", text)
+
+        for procedure, relative_path in RELATED_PROCEDURES.items():
+            with self.subTest(procedure=procedure):
+                path = REPO_ROOT / relative_path
+                self.assertTrue(path.is_file(), f"missing operations procedure: {relative_path}")
+                link_target = Path(relative_path).name
+                link_marker = f"]({link_target})" if path.parent.name == "operations" else f"](../{link_target})"
+                self.assertEqual(
+                    text.count(link_marker),
+                    1,
+                    f"operations index must link exactly once to {relative_path}",
+                )
+
+    def test_deploy_rollback_runbook_keeps_safe_decision_boundaries(self) -> None:
+        relative_path = RELATED_PROCEDURES["deploy rollback"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        for heading in (
+            "## Deploy 前確認",
+            "## Deploy 実施条件",
+            "## Deploy 後確認",
+            "## Rollback 判定",
+            "## Rollback 手順",
+            "## 復旧確認",
+            "## 事後作業",
+        ):
+            with self.subTest(heading=heading):
+                self.assertIn(heading, text)
+
+        self.assertIn("docs/production-deploy-preflight.md", text)
+        self.assertIn("state-readiness.md", text)
+        self.assertIn("state-restore-drill.md", text)
+        self.assertIn(
+            "`docker compose down -v`、volume prune、state volume 削除、marker 削除、空 state 作成を rollback 手段にしない。",
+            text,
+        )
+        self.assertIn(
+            "この runbook は本番の `pull` / `up` / `restart` を自動化しません。",
+            text,
+        )
 
     def test_new_runbooks_have_actionable_lifecycle_sections(self) -> None:
         for relative_path in NEW_RUNBOOKS:
