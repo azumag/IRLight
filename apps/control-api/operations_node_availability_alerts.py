@@ -2,9 +2,10 @@
 
 The evaluator reuses the canonical read-only Node heartbeat inspector. A Node is
 counted as available only when it is desired RUNNING, reports READY, and its
-heartbeat is still within the existing grace window. Output is aggregate only;
-Node/Session identifiers, provider metadata, credentials, and raw authority are
-never emitted.
+heartbeat is still within the existing grace window. The critical condition is
+only meaningful while at least one Node is desired RUNNING, so an intentionally
+idle authority does not become an outage. Output is aggregate only; Node/Session
+identifiers, provider metadata, credentials, and raw authority are never emitted.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ def evaluate_authority(
     now: float,
     grace_seconds: float,
 ) -> dict[str, Any]:
-    """Evaluate zero available Media Nodes and return only aggregate output."""
+    """Evaluate zero available expected Nodes and return aggregate output only."""
     _validate_availability_alert_contract(catalog)
     summary = summarize_node_heartbeats(
         authority,
@@ -78,6 +79,9 @@ def evaluate_authority(
         grace_seconds=grace_seconds,
     )
 
+    expected_running_nodes = sum(
+        1 for node in summary["nodes"] if node["desired_state"] == "RUNNING"
+    )
     available_nodes = sum(
         1
         for node in summary["nodes"]
@@ -85,14 +89,26 @@ def evaluate_authority(
         and node["status"] == "READY"
         and not node["stale"]
     )
-    matched = available_nodes == 0
+    matched = expected_running_nodes > 0 and available_nodes == 0
 
     return {
         "status": "MATCHED" if matched else "NO_MATCHES",
         "inspected_nodes": summary["node_count"],
+        "expected_running_nodes": expected_running_nodes,
         "available_nodes": available_nodes,
         "matched_alerts": {_ALERT_ID: 1} if matched else {},
         "violations": {},
+    }
+
+
+def _empty_result(status: str, *, violations: dict[str, int] | None = None) -> dict[str, Any]:
+    return {
+        "status": status,
+        "inspected_nodes": 0,
+        "expected_running_nodes": 0,
+        "available_nodes": 0,
+        "matched_alerts": {},
+        "violations": violations or {},
     }
 
 
@@ -139,26 +155,16 @@ def main(argv: list[str] | None = None) -> int:
         catalog = load_catalog(args.catalog, repo_root=args.repo_root)
         _validate_availability_alert_contract(catalog)
     except (OperationsAlertCatalogError, OperationsNodeAvailabilityAlertError):
-        result = {
-            "status": "INVALID_CATALOG",
-            "inspected_nodes": 0,
-            "available_nodes": 0,
-            "matched_alerts": {},
-            "violations": {},
-        }
+        result = _empty_result("INVALID_CATALOG")
         _print(result)
         return _exit_code(result["status"])
 
     try:
         authority = _read_node_authority(Path(args.node_state_dir))
     except NodeHeartbeatInspectError:
-        result = {
-            "status": "UNAVAILABLE",
-            "inspected_nodes": 0,
-            "available_nodes": 0,
-            "matched_alerts": {},
-            "violations": {"NODE_AUTHORITY_UNAVAILABLE": 1},
-        }
+        result = _empty_result(
+            "UNAVAILABLE", violations={"NODE_AUTHORITY_UNAVAILABLE": 1}
+        )
         _print(result)
         return _exit_code(result["status"])
 
