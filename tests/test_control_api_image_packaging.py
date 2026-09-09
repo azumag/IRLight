@@ -14,6 +14,7 @@ RUNTIME_ENTRYPOINTS = (
     "auth_session_gc.py",
     "control_plane_health_inspect_cli.py",
     "node_heartbeat_inspect_cli.py",
+    "provider_state_reconcile_cli.py",
     "reaper_cli.py",
     "session_capacity_inspect_cli.py",
     "state_inspect_cli.py",
