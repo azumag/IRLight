@@ -75,7 +75,7 @@ def _is_redacted(value: Any) -> bool:
 
 def _url_for_secret_scan(value: str):
     candidate = value.strip()
-    if "://" not in candidate and not candidate.startswith(("/", "./", "../", "?")):
+    if "://" not in candidate and not candidate.startswith(("/", "./", "../", "?", "#")):
         return None
     try:
         return urlsplit(candidate)
@@ -83,18 +83,29 @@ def _url_for_secret_scan(value: str):
         return None
 
 
-def _url_has_unredacted_sensitive_query(value: str) -> bool:
-    parsed = _url_for_secret_scan(value)
-    if parsed is None:
-        return False
+def _component_has_unredacted_sensitive_params(component: str) -> bool:
     try:
-        params = parse_qsl(parsed.query, keep_blank_values=True)
+        params = parse_qsl(component, keep_blank_values=True)
     except ValueError:
         return False
     for key, raw_value in params:
         if _normalize_key(key) in _SENSITIVE_KEYS and not _is_redacted(raw_value):
             return True
     return False
+
+
+def _url_has_unredacted_sensitive_query(value: str) -> bool:
+    parsed = _url_for_secret_scan(value)
+    if parsed is None:
+        return False
+    return _component_has_unredacted_sensitive_params(parsed.query)
+
+
+def _url_has_unredacted_sensitive_fragment(value: str) -> bool:
+    parsed = _url_for_secret_scan(value)
+    if parsed is None:
+        return False
+    return _component_has_unredacted_sensitive_params(parsed.fragment)
 
 
 def _url_has_userinfo(value: str) -> bool:
@@ -122,6 +133,8 @@ def _scan_value(value: Any, reasons: Counter[str]) -> None:
     if isinstance(value, str):
         if _url_has_unredacted_sensitive_query(value):
             reasons["SENSITIVE_URL_QUERY_UNREDACTED"] += 1
+        if _url_has_unredacted_sensitive_fragment(value):
+            reasons["SENSITIVE_URL_FRAGMENT_UNREDACTED"] += 1
         if _url_has_userinfo(value):
             reasons["SENSITIVE_URL_USERINFO"] += 1
 
