@@ -66,6 +66,18 @@ _SENSITIVE_URL_PARAMETER_KEYS = {
     "x_amz_credential",
     "x_amz_signature",
     "x_amz_security_token",
+    "x_goog_credential",
+    "x_goog_signature",
+}
+_GCS_V2_CONTEXT_KEYS = {"google_access_id", "expires"}
+_AZURE_SAS_CONTEXT_KEYS = {
+    "se",
+    "si",
+    "sp",
+    "sr",
+    "ss",
+    "srt",
+    "tn",
 }
 
 
@@ -143,8 +155,19 @@ def _component_has_unredacted_sensitive_params(component: str) -> bool:
         params = parse_qsl(component, keep_blank_values=True)
     except ValueError:
         return False
+    normalized_keys = {_normalize_key(key) for key, _ in params}
+    is_gcs_v2 = _GCS_V2_CONTEXT_KEYS.issubset(normalized_keys)
+    is_azure_sas = "sv" in normalized_keys and bool(
+        normalized_keys & _AZURE_SAS_CONTEXT_KEYS
+    )
     for key, raw_value in params:
-        if _is_sensitive_url_parameter(key) and not _is_redacted(raw_value):
+        normalized = _normalize_key(key)
+        provider_context_sensitive = (
+            normalized == "signature" and is_gcs_v2
+        ) or (normalized == "sig" and is_azure_sas)
+        if (
+            _is_sensitive_url_parameter(key) or provider_context_sensitive
+        ) and not _is_redacted(raw_value):
             return True
     return False
 
