@@ -118,6 +118,8 @@ class LogRedactionCloudSignedUrlParameterTests(unittest.TestCase):
             "/callback?sv=2&sig=checksum",
             "/callback?sv=2&se=tomorrow&sig=checksum",
             "/callback?sp=r&se=tomorrow&sig=checksum",
+            "/callback?sv=2&sr=b&sig=checksum",
+            "/callback?sv=latest&sp=r&se=tomorrow&sig=checksum",
         ):
             with self.subTest(url=url):
                 result = self.inspect(record(url=url))
