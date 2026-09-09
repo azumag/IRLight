@@ -16,7 +16,9 @@ Issue #11 の alert / notification 要件を、外部監視製品や通知先へ
 - `dedup_keys`: alert storm をまとめるために許可した低 cardinality / correlation key。credential や request body を key にしません。
 - `recovery_notification`: Issue #11 の復旧通知要件に合わせ、現 schema では常に `true` とします。
 
-`SESSION_CAPACITY_HIGH` は Issue #11 が明示している 80% warning を `issue11.session_capacity_80_percent` として参照します。それ以外の rate / pressure / backlog の数値 threshold は、実測値と運用負荷を確認せず固定しません。`operations.*` の `threshold_ref` は deployment 側で値を定義する必要がある未接続の契約名です。
+`MEDIA_NODE_CAPACITY_HIGH` は Issue #11 が明示している **Node capacity 80%超** warning を `issue11.media_node_capacity_80_percent` として参照します。論理 signal は `media_nodes.capacity_ratio` で、検証済み `max_sessions` に対する active / reserved Session の占有率を想定します。ユーザー単位の `max_concurrent_sessions` を扱う `session_capacity_inspect_cli.py` / `session-capacity-exhaustion.md` とは別契約です。Node capacity の collector / scheduler metric がまだ接続されていない環境では、この warning をユーザー entitlement の値から推測して発火させません。
+
+それ以外の rate / pressure / backlog の数値 threshold は、実測値と運用負荷を確認せず固定しません。`operations.*` の `threshold_ref` は deployment 側で値を定義する必要がある未接続の契約名です。
 
 ## Secret と個人情報
 
@@ -32,7 +34,7 @@ repository root から次を実行すると catalog の strict JSON、schema、r
 python apps/control-api/operations_alert_catalog.py
 ```
 
-成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないことも固定します。
+成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないこと、Node capacity 80% warning がユーザー entitlement capacity へ誤配線されないことも固定します。
 
 ## Event trigger の dry-run
 
@@ -51,7 +53,8 @@ python apps/control-api/operations_event_alerts.py < captured.jsonl
 - Prometheus / CloudWatch 等の collector や alert engine の採用。
 - Discord / email 等の通知先、credential、routing 設定。
 - `operations.*` threshold の本番数値。
+- Media Node の `max_sessions` を推測で決めること。これは #8 / #13 の scheduler / load test の実測に従います。
 - paging / escalation の担当者や当番表。
-- alert を契機にした Session stop、provider cleanup、failover、refund 等の自動変更。
+- alert を契機にした Session stop、provider cleanup / provisioning、failover、refund 等の自動変更。
 
 これらは外部サービス、秘密情報、費用、または運用判断を伴うため、この catalog validator から実行しません。各 alert の一次対応は catalog が指す runbook を入口にし、破壊的操作は runbook の判断境界に従います。

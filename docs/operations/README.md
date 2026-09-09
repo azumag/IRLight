@@ -22,7 +22,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 | DB / Redis 障害 | [datastore-unavailable.md](datastore-unavailable.md) |
 | object storage 障害 | [object-storage-unavailable.md](object-storage-unavailable.md) |
 | TLS 証明書更新失敗 | [rtmps-certificate-update-failure.md](rtmps-certificate-update-failure.md) |
-| capacity 枯渇 | [session-capacity-exhaustion.md](session-capacity-exhaustion.md) |
+| Media Node capacity 80% 超 / 枯渇 | [media-node-capacity-high.md](media-node-capacity-high.md) |
 | secret 漏えい疑い | [secret-exposure-suspected.md](secret-exposure-suspected.md) |
 | billing webhook 停止 / backlog | [billing-webhook-stalled.md](billing-webhook-stalled.md) |
 | 不正配信の緊急停止 | [emergency-abuse-stop.md](emergency-abuse-stop.md) |
@@ -35,6 +35,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - backup restore drill: [state-restore-drill.md](state-restore-drill.md)
 - state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
+- ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
 - alert ID / severity / runbook / dedup 契約: [alert-catalog.md](alert-catalog.md)
 

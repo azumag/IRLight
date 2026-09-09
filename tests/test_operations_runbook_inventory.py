@@ -15,7 +15,7 @@ REQUIRED_RUNBOOKS = {
     "database or redis unavailable": "docs/operations/datastore-unavailable.md",
     "object storage unavailable": "docs/operations/object-storage-unavailable.md",
     "tls certificate update failure": "docs/operations/rtmps-certificate-update-failure.md",
-    "capacity exhausted": "docs/operations/session-capacity-exhaustion.md",
+    "media node capacity exhausted": "docs/operations/media-node-capacity-high.md",
     "secret exposure suspected": "docs/operations/secret-exposure-suspected.md",
     "billing webhook stalled": "docs/operations/billing-webhook-stalled.md",
     "emergency abuse stop": "docs/operations/emergency-abuse-stop.md",
@@ -28,6 +28,7 @@ RELATED_PROCEDURES = {
     "state restore drill": "docs/operations/state-restore-drill.md",
     "state provider reconciliation": "docs/operations/state-provider-reconciliation.md",
     "auth session gc": "docs/operations/auth-session-gc.md",
+    "user session capacity": "docs/operations/session-capacity-exhaustion.md",
     "log redaction audit": "docs/operations/log-redaction-audit.md",
     "alert catalog": "docs/operations/alert-catalog.md",
 }
@@ -37,6 +38,7 @@ NEW_RUNBOOKS = {
     "docs/operations/object-storage-unavailable.md",
     "docs/operations/billing-webhook-stalled.md",
     "docs/operations/emergency-abuse-stop.md",
+    "docs/operations/media-node-capacity-high.md",
 }
 
 

@@ -30,7 +30,7 @@ REQUIRED_RUNBOOKS = {
     "docs/operations/datastore-unavailable.md",
     "docs/operations/object-storage-unavailable.md",
     "docs/operations/rtmps-certificate-update-failure.md",
-    "docs/operations/session-capacity-exhaustion.md",
+    "docs/operations/media-node-capacity-high.md",
     "docs/operations/secret-exposure-suspected.md",
     "docs/operations/billing-webhook-stalled.md",
     "docs/operations/emergency-abuse-stop.md",
@@ -46,7 +46,7 @@ REQUIRED_CRITICAL_ALERTS = {
 }
 
 REQUIRED_WARNING_ALERTS = {
-    "SESSION_CAPACITY_HIGH",
+    "MEDIA_NODE_CAPACITY_HIGH",
     "RECONNECT_RATE_HIGH",
     "ASSET_FAILURE_RATE_HIGH",
     "BILLING_WEBHOOK_DELAYED",
@@ -79,6 +79,35 @@ class OperationsAlertCatalogTests(unittest.TestCase):
             with self.subTest(alert_id=alert_id):
                 self.assertIn(alert_id, alerts)
                 self.assertEqual(alerts[alert_id]["severity"], "warning")
+
+    def test_media_node_capacity_warning_is_not_user_entitlement_capacity(self) -> None:
+        catalog = self.load_real_catalog()
+        alerts = {alert["id"]: alert for alert in catalog["alerts"]}
+        alert = alerts["MEDIA_NODE_CAPACITY_HIGH"]
+
+        self.assertEqual(alert["signal"], "media_nodes.capacity_ratio")
+        self.assertEqual(
+            alert["trigger"],
+            {
+                "mode": "threshold",
+                "threshold_ref": "issue11.media_node_capacity_80_percent",
+            },
+        )
+        self.assertEqual(
+            alert["runbook"], "docs/operations/media-node-capacity-high.md"
+        )
+        self.assertEqual(
+            alert["dedup_keys"], ["environment", "region", "node_id"]
+        )
+
+        self.assertNotIn("SESSION_CAPACITY_HIGH", alerts)
+        for candidate in catalog["alerts"]:
+            if candidate["trigger"].get("threshold_ref") == "issue11.media_node_capacity_80_percent":
+                self.assertNotEqual(candidate["signal"], "sessions.capacity_ratio")
+                self.assertNotEqual(
+                    candidate["runbook"],
+                    "docs/operations/session-capacity-exhaustion.md",
+                )
 
     def test_every_alert_has_recovery_notification_and_safe_dedup_keys(self) -> None:
         catalog = self.load_real_catalog()
