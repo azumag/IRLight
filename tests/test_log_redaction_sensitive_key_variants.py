@@ -60,6 +60,20 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 4})
 
+    def test_compact_acronym_and_lowercase_suffixes_require_redaction(self) -> None:
+        result = self.inspect(
+            record(
+                payload={
+                    "AWSAPIKey": "raw",
+                    "XAPIKEY": "raw",
+                    "dbpassword": "raw",
+                    "sessioncookie": "raw",
+                }
+            )
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 4})
+
     def test_namespaced_sensitive_url_params_require_redaction(self) -> None:
         result = self.inspect(
             record(
@@ -91,6 +105,17 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
             },
         )
 
+    def test_compact_sensitive_url_params_require_redaction(self) -> None:
+        result = self.inspect(record(callback="/callback?AWSAPIKey=raw#dbpassword=raw"))
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(
+            result["violations"],
+            {
+                "SENSITIVE_URL_FRAGMENT_UNREDACTED": 1,
+                "SENSITIVE_URL_QUERY_UNREDACTED": 1,
+            },
+        )
+
     def test_redacted_namespaced_sensitive_values_are_allowed(self) -> None:
         result = self.inspect(
             record(
@@ -99,6 +124,7 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "x-api-key": None,
                     "databasePassword": "***",
                     "xAPIKey": "<redacted>",
+                    "AWSAPIKey": None,
                 },
                 callback="?proxyAuthorization=%3Credacted%3E",
             )
@@ -115,6 +141,7 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "api_key_rotation_count": 4,
                     "HTTPStatusCode": 200,
                     "tokenCount": 12,
+                    "apikeyRotationCount": 4,
                 }
             )
         )
