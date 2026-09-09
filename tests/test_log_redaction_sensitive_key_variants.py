@@ -96,6 +96,28 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
             },
         )
 
+    def test_secret_key_credentials_require_redaction(self) -> None:
+        result = self.inspect(
+            record(
+                payload={
+                    "secret_key": "raw",
+                    "secretKey": "raw",
+                    "webhookSecretKey": "raw",
+                    "WEBHOOKSECRETKEY": "raw",
+                },
+                callback="/callback?webhookSecretKey=raw#secret_key=raw",
+            )
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(
+            result["violations"],
+            {
+                "SENSITIVE_FIELD_UNREDACTED": 4,
+                "SENSITIVE_URL_FRAGMENT_UNREDACTED": 1,
+                "SENSITIVE_URL_QUERY_UNREDACTED": 1,
+            },
+        )
+
     def test_namespaced_sensitive_url_params_require_redaction(self) -> None:
         result = self.inspect(
             record(
@@ -149,6 +171,7 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "AWSAPIKey": None,
                     "AWS_SECRET_ACCESS_KEY": "[REDACTED]",
                     "AWS_ACCESS_KEY_ID": None,
+                    "webhookSecretKey": "***",
                 },
                 callback="?proxyAuthorization=%3Credacted%3E",
             )
@@ -168,6 +191,8 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "apikeyRotationCount": 4,
                     "access_key_rotation_count": 2,
                     "accessKeyRotationCount": 2,
+                    "secret_key_rotation_count": 2,
+                    "secretKeyRotationCount": 2,
                 }
             )
         )
