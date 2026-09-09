@@ -93,6 +93,13 @@ class LogRedactionCloudSignedUrlParameterTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"SENSITIVE_URL_QUERY_UNREDACTED": 1})
 
+    def test_azure_sas_ad_hoc_access_context_requires_redaction(self) -> None:
+        result = self.inspect(
+            record(url="?sv=2025-11-05&sp=r&se=2026-09-09T23%3A00%3A00Z&sig=deadbeef")
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["violations"], {"SENSITIVE_URL_QUERY_UNREDACTED": 1})
+
     def test_azure_sas_fragment_signature_requires_redaction(self) -> None:
         result = self.inspect(
             record(url="#sv=2025-11-05&si=read-policy&sr=b&sig=deadbeef")
@@ -107,8 +114,14 @@ class LogRedactionCloudSignedUrlParameterTests(unittest.TestCase):
         self.assertEqual(result, {"status": "SAFE", "records": 1, "violations": {}})
 
     def test_generic_sig_query_is_not_treated_as_azure_sas(self) -> None:
-        result = self.inspect(record(url="/callback?sv=2&sig=checksum"))
-        self.assertEqual(result, {"status": "SAFE", "records": 1, "violations": {}})
+        for url in (
+            "/callback?sv=2&sig=checksum",
+            "/callback?sv=2&se=tomorrow&sig=checksum",
+            "/callback?sp=r&se=tomorrow&sig=checksum",
+        ):
+            with self.subTest(url=url):
+                result = self.inspect(record(url=url))
+                self.assertEqual(result, {"status": "SAFE", "records": 1, "violations": {}})
 
     def test_provider_specific_names_do_not_expand_field_secret_policy(self) -> None:
         result = self.inspect(
