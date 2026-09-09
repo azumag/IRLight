@@ -25,12 +25,6 @@ python apps/control-api/operations_node_availability_alerts.py \
   --node-state-dir /path/to/state
 ```
 
-Control API image 内では:
-
-```bash
-python /app/operations_node_availability_alerts.py
-```
-
 必要なら既存と同じ環境変数で grace を変更します。
 
 ```bash
@@ -38,6 +32,8 @@ NODE_HEARTBEAT_GRACE_SECONDS=120 \
   python apps/control-api/operations_node_availability_alerts.py \
   --node-state-dir /path/to/state
 ```
+
+この evaluator は現時点では repository checkout から実行する運用補助ツールです。Control API image の明示的な source packaging には追加していないため、image 内に存在すると仮定しません。
 
 ## 出力と exit code
 
