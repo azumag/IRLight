@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -313,6 +314,12 @@ def _provider_from_args(args: argparse.Namespace):
     if args.provider_mode == "fake":
         if args.fake_state_file is None:
             raise ValueError("fake provider mode requires an explicit state file")
+        try:
+            fake_state = args.fake_state_file.lstat()
+        except OSError as exc:
+            raise ValueError("fake provider inventory is unavailable") from exc
+        if not stat.S_ISREG(fake_state.st_mode):
+            raise ValueError("fake provider inventory is not a regular file")
         return FileFakeProvider(args.fake_state_file)
     return ConohaClient(ConohaConfig.from_env())
 
