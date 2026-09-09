@@ -101,6 +101,21 @@ class OperationsAlertCatalogTests(unittest.TestCase):
         with self.assertRaises(module.OperationsAlertCatalogError):
             module.validate_catalog(catalog, repo_root=REPO_ROOT)
 
+    def test_duplicate_event_type_is_rejected(self) -> None:
+        catalog = copy.deepcopy(self.load_real_catalog())
+        first_event = next(
+            alert
+            for alert in catalog["alerts"]
+            if alert["trigger"]["mode"] == "event"
+        )
+        duplicate = copy.deepcopy(first_event)
+        duplicate["id"] = "SECOND_ALERT_FOR_SAME_EVENT"
+        catalog["alerts"].append(duplicate)
+        with self.assertRaisesRegex(
+            module.OperationsAlertCatalogError, "duplicate event_type"
+        ):
+            module.validate_catalog(catalog, repo_root=REPO_ROOT)
+
     def test_unhashable_or_secret_like_dedup_keys_fail_closed(self) -> None:
         for dedup_keys in ([{"token": "value"}], ["environment", "token"]):
             with self.subTest(dedup_keys=dedup_keys):
