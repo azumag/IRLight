@@ -44,6 +44,7 @@ exit code は `0=OK`、`2=PROBLEM`、inspector 自体の実行不能は `1`。JS
 - `not_regular_file` / `parent_not_directory`: 想定した file type ではない。
 - `missing`: 指定した active secret が存在しない。
 - `file_unavailable` / `parent_unavailable`: metadata を安全に取得できない。
+- `file_changed` / `parent_changed`: 検査中に pathname の identity または mode/type が変化した。書込処理が落ち着いた後に再実行し、想定外の差替えなら原因を調査する。
 
 `missing` は Session mode や lifecycle によって正常な場合もあるため、存在すべき active secret だけを `--path` へ渡す。
 
