@@ -48,6 +48,15 @@ python apps/control-api/operations_event_alerts.py < captured.jsonl
 
 詳細な入力上限、fail-closed 条件、secret handling は `docs/operations/event-alert-dry-run.md` を参照してください。この dry-run は threshold alert、通知 routing、外部サービス、Session / provider の変更操作を実行しません。
 
+## 接続済み threshold dry-run
+
+repository 内に既に authority / aggregate input の安全な取得契約がある threshold は、汎用 threshold engine を先に決めず個別の read-only dry-run で検証します。
+
+- `NODE_HEARTBEAT_DELAYED`: `operations_heartbeat_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、`NODE_HEARTBEAT_GRACE_SECONDS` 以上の stale expected heartbeat を aggregate alert 件数へ変換します。詳細は `node-heartbeat-alert-dry-run.md`。
+- `MEDIA_NODE_CAPACITY_HIGH`: `operations_capacity_alerts.py` が識別子を含まない aggregate capacity JSONL を検査し、Issue #11 の 80% 超契約を判定します。詳細は `media-node-capacity-alert-dry-run.md`。
+
+どちらも通知 routing、provider 操作、Session mutation、課金操作を行いません。authority が読めない場合や catalog 契約が drift した場合は、既知の正常値を推測して alert / recovery を確定しません。
+
 ## 今回決めないこと
 
 - Prometheus / CloudWatch 等の collector や alert engine の採用。
