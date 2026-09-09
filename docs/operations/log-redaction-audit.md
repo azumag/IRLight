@@ -14,6 +14,8 @@ The output contains only `status`, the number of non-empty records, and normaliz
 
 The baseline schema requires `timestamp`, `level`, `service`, and `event_type`. Correlation fields such as `request_id`, `session_id`, `node_id`, `version`, and `reason_code` remain event-dependent and can be added without changing this audit contract.
 
+To keep the audit itself bounded when it is pointed at malformed or adversarial captures, one JSONL record is limited to 256 KiB of UTF-8 input and nested arrays/objects are limited to 64 levels for inspection. Oversized records return `RECORD_TOO_LARGE`; excessive parser or inspection depth returns `NESTING_TOO_DEEP`. Both make the overall result `INVALID`, and the source record is neither echoed nor partially reported.
+
 ## Secret checks
 
 Sensitive key names such as `authorization`, `token`, `stream_key`, `srt_passphrase`, `password`, `api_key`, `client_secret`, and `cookie` must be `null` or one of the explicit redaction placeholders (`[REDACTED]`, `<redacted>`, `***`). The same rule applies recursively to nested objects and arrays. Key matching normalizes case, common camelCase boundaries, and punctuation separators, so names such as `accessToken`, `streamKey`, `apiKey`, and `clientSecret` are covered by the same policy.
