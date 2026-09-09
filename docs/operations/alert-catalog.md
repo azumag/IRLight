@@ -55,6 +55,7 @@ repository 内に既に authority / aggregate input の安全な取得契約が�
 - `MEDIA_NODES_ALL_UNAVAILABLE`: `operations_node_availability_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、少なくとも1件の `desired_state=RUNNING` Node がある状況で、`status=READY`・heartbeat fresh を満たす Node の aggregate 件数が 0 の場合に Critical alert を一致させます。idle / 明示停止状態は一致させません。詳細は `media-node-availability-alert-dry-run.md`。
 - `NODE_HEARTBEAT_DELAYED`: `operations_heartbeat_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、`NODE_HEARTBEAT_GRACE_SECONDS` 以上の stale expected heartbeat を aggregate alert 件数へ変換します。詳細は `node-heartbeat-alert-dry-run.md`。
 - `MEDIA_NODE_CAPACITY_HIGH`: `operations_capacity_alerts.py` が識別子を含まない aggregate capacity JSONL を検査し、Issue #11 の 80% 超契約を判定します。詳細は `media-node-capacity-alert-dry-run.md`。
+- `SESSION_PROCESS_CRASH_LOOP`: `operations_session_restart_alerts.py` が識別子を含まない aggregate restart-rate JSONL と、deployment / operator が明示した `--threshold` を照合します。repository は production threshold や aggregation window を決めず、rate が明示 threshold を超えた場合だけ一致させます。詳細は `session-process-crash-loop-alert-dry-run.md`。
 
 いずれも通知 routing、provider 操作、Session mutation、課金操作を行いません。authority が読めない場合や catalog 契約が drift した場合は、既知の正常値を推測して alert / recovery を確定しません。
 
