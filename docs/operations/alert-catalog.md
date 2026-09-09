@@ -34,6 +34,18 @@ python apps/control-api/operations_alert_catalog.py
 
 成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないことも固定します。
 
+## Event trigger の dry-run
+
+`trigger.mode = event` の alert は `apps/control-api/operations_event_alerts.py` で structured JSONL と read-only に照合できます。
+
+```bash
+python apps/control-api/operations_event_alerts.py < captured.jsonl
+```
+
+この evaluator は一致した repository 管理下の alert ID と件数だけを返し、source log の message、correlation identifier、credential 等は再表示しません。invalid な JSONL が1件でも含まれる batch は部分一致結果を抑制して `INVALID` とし、同じ `event_type` を複数 alert に割り当てる曖昧な catalog も拒否します。
+
+詳細な入力上限、fail-closed 条件、secret handling は `docs/operations/event-alert-dry-run.md` を参照してください。この dry-run は threshold alert、通知 routing、外部サービス、Session / provider の変更操作を実行しません。
+
 ## 今回決めないこと
 
 - Prometheus / CloudWatch 等の collector や alert engine の採用。

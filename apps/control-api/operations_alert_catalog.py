@@ -110,6 +110,7 @@ def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str
         raise OperationsAlertCatalogError("catalog must contain alerts")
 
     seen_ids: set[str] = set()
+    seen_event_types: set[str] = set()
     for index, alert in enumerate(alerts):
         context = f"alert[{index}]"
         if not isinstance(alert, dict) or set(alert) != REQUIRED_ALERT_FIELDS:
@@ -131,6 +132,12 @@ def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str
             raise OperationsAlertCatalogError(f"alert {alert_id} has invalid signal")
 
         _validate_trigger(alert["trigger"], alert_id=alert_id)
+        trigger = alert["trigger"]
+        if trigger["mode"] == "event":
+            event_type = trigger["event_type"]
+            if event_type in seen_event_types:
+                raise OperationsAlertCatalogError("catalog contains duplicate event_type")
+            seen_event_types.add(event_type)
 
         runbook = _require_nonempty_string(alert, "runbook", context=f"alert {alert_id}")
         _validate_runbook(runbook, repo_root=repo_root, alert_id=alert_id)
