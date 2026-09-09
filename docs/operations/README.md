@@ -29,6 +29,14 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 
 ## 関連運用手順
 
-Issue #11 の12シナリオ以外にも、同じ `docs/operations/` 配下に state readiness / restore、認証 Session GC、structured log redaction などの補助手順があります。障害の根因が authority や secret 監査にある場合は、該当する専用手順を優先してください。
+- deploy / rollback の判断・確認: [deploy-rollback.md](deploy-rollback.md)
+- production Compose の read-only preflight: [production-deploy-preflight.md](../production-deploy-preflight.md)
+- authority readiness: [state-readiness.md](state-readiness.md)
+- backup restore drill: [state-restore-drill.md](state-restore-drill.md)
+- state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
+- 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
+- structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
 
-runbook を追加・移動する場合は `tests/test_operations_runbook_inventory.py` も更新し、Issue #11 の必須シナリオが索引から脱落しないことを CI で確認します。
+障害の根因が authority、deploy regression、secret 監査などにある場合は、必須12シナリオの runbook だけで復旧を推測せず、上記の専用手順を優先してください。
+
+runbook を追加・移動する場合は `tests/test_operations_runbook_inventory.py` も更新し、Issue #11 の必須シナリオと主要な関連運用手順が索引から脱落しないことを CI で確認します。
