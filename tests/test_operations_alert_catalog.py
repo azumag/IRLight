@@ -8,8 +8,12 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "apps" / "control-api" / "operations_alert_catalog.py"
+CONTROL_API_ROOT = REPO_ROOT / "apps" / "control-api"
+MODULE_PATH = CONTROL_API_ROOT / "operations_alert_catalog.py"
 CATALOG_PATH = REPO_ROOT / "config" / "operations-alert-catalog.json"
+
+if str(CONTROL_API_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTROL_API_ROOT))
 
 spec = importlib.util.spec_from_file_location("operations_alert_catalog", MODULE_PATH)
 assert spec is not None and spec.loader is not None
