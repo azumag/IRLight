@@ -18,7 +18,7 @@ from auth_store import _validate_sessions, _validate_users
 from catalog_store import CatalogValidationError, _validate_destination_server_url
 from control_store import _validate_control
 from node_internal import _validate_tokens, validate_node_authority
-from state_safety import load_json_authority, initialization_marker
+from state_safety import load_json_authority
 
 
 class StateReadinessError(RuntimeError):
@@ -32,10 +32,54 @@ def _reject_json_constant(_value: str) -> None:
     raise ValueError("non-finite JSON constants are not allowed")
 
 
-def _open_regular_readonly(path: Path) -> int:
-    """Open one existing regular file without following a raced symlink."""
+def _open_state_root(path: Path) -> int:
+    """Pin one configured state root without following the root itself."""
     try:
         before = path.lstat()
+    except OSError as exc:
+        raise StateReadinessError("state directory is unavailable") from exc
+    if not stat.S_ISDIR(before.st_mode):
+        raise StateReadinessError("state directory is not a directory")
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise StateReadinessError("state directory cannot be opened safely") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise StateReadinessError("state directory is not a directory")
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise StateReadinessError("state directory changed while opening")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _assert_state_root_unchanged(path: Path, root_fd: int) -> None:
+    """Fail closed if the configured pathname stopped naming the pinned root."""
+    try:
+        after = path.lstat()
+        opened = os.fstat(root_fd)
+    except OSError as exc:
+        raise StateReadinessError("state directory changed during inspection") from exc
+    if not stat.S_ISDIR(after.st_mode):
+        raise StateReadinessError("state directory changed during inspection")
+    if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
+        raise StateReadinessError("state directory changed during inspection")
+
+
+def _open_regular_readonly(root_fd: int, name: str) -> int:
+    """Open one direct child of a pinned state root without following symlinks."""
+    try:
+        before = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
     except OSError as exc:
         raise StateReadinessError("required state entry is unavailable") from exc
     if not stat.S_ISREG(before.st_mode):
@@ -43,7 +87,7 @@ def _open_regular_readonly(path: Path) -> int:
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        fd = os.open(path, flags)
+        fd = os.open(name, flags, dir_fd=root_fd)
     except OSError as exc:
         raise StateReadinessError("required state entry cannot be opened") from exc
     try:
@@ -58,13 +102,17 @@ def _open_regular_readonly(path: Path) -> int:
         raise
 
 
-def _require_regular_marker(authority_path: Path) -> None:
-    fd = _open_regular_readonly(initialization_marker(authority_path))
+def _marker_name(authority_name: str) -> str:
+    return f".{authority_name}.initialized"
+
+
+def _require_regular_marker(root_fd: int, authority_name: str) -> None:
+    fd = _open_regular_readonly(root_fd, _marker_name(authority_name))
     os.close(fd)
 
 
-def _read_json_authority(path: Path) -> dict[str, Any]:
-    fd = _open_regular_readonly(path)
+def _read_json_authority(root_fd: int, authority_name: str) -> dict[str, Any]:
+    fd = _open_regular_readonly(root_fd, authority_name)
     try:
         try:
             handle = os.fdopen(fd, "r", encoding="utf-8")
@@ -84,11 +132,11 @@ def _read_json_authority(path: Path) -> dict[str, Any]:
     return value
 
 
-def _inspect_authority(path: Path, validator: Validator) -> None:
+def _inspect_authority(root_fd: int, authority_name: str, validator: Validator) -> None:
     # Startup writers arm the marker before publishing authority. Requiring
     # both entries catches deleted/mis-mounted state without creating either.
-    _require_regular_marker(path)
-    value = _read_json_authority(path)
+    _require_regular_marker(root_fd, authority_name)
+    value = _read_json_authority(root_fd, authority_name)
     try:
         validator(value)
     except StateReadinessError:
@@ -119,38 +167,40 @@ def _validate_catalog(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _inspect_optional_legacy_token_fuse(node_state_dir: Path) -> None:
+def _optional_entry_stat(root_fd: int, name: str, *, marker: bool = False) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        detail = (
+            "legacy token fuse marker cannot be inspected"
+            if marker
+            else "legacy token fuse cannot be inspected"
+        )
+        raise StateReadinessError(detail) from exc
+
+
+def _inspect_optional_legacy_token_fuse(node_root_fd: int) -> None:
     """Validate the rollback token ledger when it exists, without creating it."""
-    path = node_state_dir / "bootstrap_tokens.json"
-    marker = initialization_marker(path)
-    try:
-        path_stat = path.lstat()
-        path_exists = True
-    except FileNotFoundError:
-        path_exists = False
-        path_stat = None
-    except OSError as exc:
-        raise StateReadinessError("legacy token fuse cannot be inspected") from exc
+    authority_name = "bootstrap_tokens.json"
+    marker_name = _marker_name(authority_name)
+    path_stat = _optional_entry_stat(node_root_fd, authority_name)
+    marker_stat = _optional_entry_stat(node_root_fd, marker_name, marker=True)
 
-    try:
-        marker.lstat()
-        marker_exists = True
-    except FileNotFoundError:
-        marker_exists = False
-    except OSError as exc:
-        raise StateReadinessError("legacy token fuse marker cannot be inspected") from exc
-
-    if not path_exists:
-        if marker_exists:
+    if path_stat is None:
+        if marker_stat is not None:
             # A consumed-token write-ahead fuse disappeared. Treating that as
             # an empty ledger can make rollback reuse a credential.
             raise StateReadinessError("legacy token fuse disappeared after initialization")
         return
-    if path_stat is None or not stat.S_ISREG(path_stat.st_mode):
+    if not stat.S_ISREG(path_stat.st_mode):
         raise StateReadinessError("legacy token fuse is not a regular file")
-    if marker_exists:
-        _require_regular_marker(path)
-    value = _read_json_authority(path)
+    if marker_stat is not None:
+        if not stat.S_ISREG(marker_stat.st_mode):
+            raise StateReadinessError("legacy token fuse marker is not a regular file")
+        _require_regular_marker(node_root_fd, authority_name)
+    value = _read_json_authority(node_root_fd, authority_name)
     try:
         _validate_tokens(value)
     except Exception as exc:
@@ -158,16 +208,27 @@ def _inspect_optional_legacy_token_fuse(node_state_dir: Path) -> None:
 
 
 def _authority_specs(
-    *, state_dir: Path, node_state_dir: Path | None = None
-) -> tuple[tuple[str, Path, Validator], ...]:
-    effective_node_state_dir = node_state_dir or state_dir
+    *, state_root_fd: int, node_root_fd: int
+) -> tuple[tuple[str, int, str, Validator], ...]:
     return (
-        ("control", state_dir / "control.json", _validate_control),
-        ("catalog", state_dir / "catalog.json", _validate_catalog),
-        ("users", state_dir / "users.json", _validate_users),
-        ("auth_sessions", state_dir / "auth_sessions.json", _validate_sessions),
-        ("nodes", effective_node_state_dir / "nodes.json", validate_node_authority),
+        ("control", state_root_fd, "control.json", _validate_control),
+        ("catalog", state_root_fd, "catalog.json", _validate_catalog),
+        ("users", state_root_fd, "users.json", _validate_users),
+        ("auth_sessions", state_root_fd, "auth_sessions.json", _validate_sessions),
+        ("nodes", node_root_fd, "nodes.json", validate_node_authority),
     )
+
+
+def _replace_checks_with_root_error(
+    checks: list[dict[str, str | None]],
+    *,
+    authorities: set[str],
+    error: StateReadinessError,
+) -> None:
+    for check in checks:
+        if check["authority"] in authorities:
+            check["status"] = "UNAVAILABLE"
+            check["reason"] = str(error)
 
 
 def inspect_state_readiness(
@@ -181,35 +242,100 @@ def inspect_state_readiness(
     normalized validation reason. They intentionally omit file paths, raw JSON,
     parser exceptions, credentials, and validator exception details.
     """
-    checks: list[dict[str, str | None]] = []
-    for authority, path, validator in _authority_specs(
-        state_dir=state_dir, node_state_dir=node_state_dir
-    ):
+    effective_node_state_dir = node_state_dir or state_dir
+    state_root_fd: int | None = None
+    node_root_fd: int | None = None
+    state_root_error: StateReadinessError | None = None
+    node_root_error: StateReadinessError | None = None
+    try:
         try:
-            _inspect_authority(path, validator)
+            state_root_fd = _open_state_root(state_dir)
         except StateReadinessError as exc:
+            state_root_error = exc
+        try:
+            node_root_fd = _open_state_root(effective_node_state_dir)
+        except StateReadinessError as exc:
+            node_root_error = exc
+
+        checks: list[dict[str, str | None]] = []
+        specs: tuple[tuple[str, int | None, StateReadinessError | None, str, Validator], ...] = (
+            ("control", state_root_fd, state_root_error, "control.json", _validate_control),
+            ("catalog", state_root_fd, state_root_error, "catalog.json", _validate_catalog),
+            ("users", state_root_fd, state_root_error, "users.json", _validate_users),
+            (
+                "auth_sessions",
+                state_root_fd,
+                state_root_error,
+                "auth_sessions.json",
+                _validate_sessions,
+            ),
+            ("nodes", node_root_fd, node_root_error, "nodes.json", validate_node_authority),
+        )
+        for authority, root_fd, root_error, authority_name, validator in specs:
+            if root_error is not None or root_fd is None:
+                error = root_error or StateReadinessError("state directory is unavailable")
+                checks.append(
+                    {"authority": authority, "status": "UNAVAILABLE", "reason": str(error)}
+                )
+                continue
+            try:
+                _inspect_authority(root_fd, authority_name, validator)
+            except StateReadinessError as exc:
+                checks.append(
+                    {"authority": authority, "status": "UNAVAILABLE", "reason": str(exc)}
+                )
+            else:
+                checks.append({"authority": authority, "status": "OK", "reason": None})
+
+        if node_root_error is not None or node_root_fd is None:
+            error = node_root_error or StateReadinessError("state directory is unavailable")
             checks.append(
-                {"authority": authority, "status": "UNAVAILABLE", "reason": str(exc)}
+                {
+                    "authority": "legacy_bootstrap_tokens",
+                    "status": "UNAVAILABLE",
+                    "reason": str(error),
+                }
             )
         else:
-            checks.append({"authority": authority, "status": "OK", "reason": None})
+            try:
+                _inspect_optional_legacy_token_fuse(node_root_fd)
+            except StateReadinessError as exc:
+                checks.append(
+                    {
+                        "authority": "legacy_bootstrap_tokens",
+                        "status": "UNAVAILABLE",
+                        "reason": str(exc),
+                    }
+                )
+            else:
+                checks.append(
+                    {"authority": "legacy_bootstrap_tokens", "status": "OK", "reason": None}
+                )
 
-    effective_node_state_dir = node_state_dir or state_dir
-    try:
-        _inspect_optional_legacy_token_fuse(effective_node_state_dir)
-    except StateReadinessError as exc:
-        checks.append(
-            {
-                "authority": "legacy_bootstrap_tokens",
-                "status": "UNAVAILABLE",
-                "reason": str(exc),
-            }
-        )
-    else:
-        checks.append(
-            {"authority": "legacy_bootstrap_tokens", "status": "OK", "reason": None}
-        )
-    return checks
+        if state_root_fd is not None:
+            try:
+                _assert_state_root_unchanged(state_dir, state_root_fd)
+            except StateReadinessError as exc:
+                _replace_checks_with_root_error(
+                    checks,
+                    authorities={"control", "catalog", "users", "auth_sessions"},
+                    error=exc,
+                )
+        if node_root_fd is not None:
+            try:
+                _assert_state_root_unchanged(effective_node_state_dir, node_root_fd)
+            except StateReadinessError as exc:
+                _replace_checks_with_root_error(
+                    checks,
+                    authorities={"nodes", "legacy_bootstrap_tokens"},
+                    error=exc,
+                )
+        return checks
+    finally:
+        if state_root_fd is not None:
+            os.close(state_root_fd)
+        if node_root_fd is not None:
+            os.close(node_root_fd)
 
 
 def check_state_readiness(
@@ -224,8 +350,20 @@ def check_state_readiness(
     their own fail-closed request paths and can be added to readiness only when
     their deployment lifecycle is made mandatory.
     """
-    for _authority, path, validator in _authority_specs(
-        state_dir=state_dir, node_state_dir=node_state_dir
-    ):
-        _inspect_authority(path, validator)
-    _inspect_optional_legacy_token_fuse(node_state_dir or state_dir)
+    effective_node_state_dir = node_state_dir or state_dir
+    state_root_fd = _open_state_root(state_dir)
+    try:
+        node_root_fd = _open_state_root(effective_node_state_dir)
+        try:
+            for _authority, root_fd, authority_name, validator in _authority_specs(
+                state_root_fd=state_root_fd,
+                node_root_fd=node_root_fd,
+            ):
+                _inspect_authority(root_fd, authority_name, validator)
+            _inspect_optional_legacy_token_fuse(node_root_fd)
+            _assert_state_root_unchanged(state_dir, state_root_fd)
+            _assert_state_root_unchanged(effective_node_state_dir, node_root_fd)
+        finally:
+            os.close(node_root_fd)
+    finally:
+        os.close(state_root_fd)
