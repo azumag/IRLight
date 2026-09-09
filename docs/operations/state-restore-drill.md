@@ -51,6 +51,8 @@ NODE_STATE_DIR=/mnt/restored/node \
 python /app/state_inspect_cli.py
 ```
 
+`STATE_DIR` / `NODE_STATE_DIR` には restore された実ディレクトリを直接指定し、symlink を代用にしない。`state_inspect_cli.py` と `/readyz` は各 state root を `lstat` と `O_NOFOLLOW|O_DIRECTORY` 付き open + `fstat` で固定し、その root fd から authority / marker を相対 open する。root 自体が symlink の場合、または検査中に configured pathname が別 directory へ差し替わった場合は `UNAVAILABLE` として fail-closed にする。診断のために root、marker、lock、JSON を作成・修復しない。
+
 `UNAVAILABLE` を marker 作成や空 state 生成で回避しない。reference を保全したまま restore 方法・対象世代を調べ直す。
 
 ## 5. この drill で証明しないもの
