@@ -110,7 +110,11 @@ def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str
     if not isinstance(payload, dict) or set(payload) != {"schema_version", "alerts"}:
         raise OperationsAlertCatalogError("catalog has invalid top-level structure")
     schema_version = payload.get("schema_version")
-    if isinstance(schema_version, bool) or schema_version != 1:
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 1
+    ):
         raise OperationsAlertCatalogError("catalog has unsupported schema_version")
 
     alerts = payload.get("alerts")
