@@ -134,6 +134,36 @@ class LogRedactionInspectTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"MISSING_REQUIRED_FIELD": 1})
 
+    def test_oversized_record_is_invalid_without_parsing_content(self) -> None:
+        secret = "AUDIT_DUMMY_SECRET"
+        line = json.dumps(record(message=secret + ("x" * module._MAX_RECORD_BYTES))) + "\n"
+        result = module.inspect_lines([line])
+        encoded = json.dumps(result)
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"RECORD_TOO_LARGE": 1})
+        self.assertNotIn(secret, encoded)
+
+    def test_excessive_nesting_is_invalid_without_recursion(self) -> None:
+        nested: object = "leaf"
+        for _ in range(module._MAX_NESTING_DEPTH + 2):
+            nested = {"child": nested}
+        result = self.inspect(record(payload=nested))
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"NESTING_TOO_DEEP": 1})
+
+    def test_parser_recursion_error_is_normalized(self) -> None:
+        depth = 2000
+        line = (
+            '{"timestamp":"x","level":"INFO","service":"cp","event_type":"x","payload":'
+            + ("[" * depth)
+            + "0"
+            + ("]" * depth)
+            + "}\n"
+        )
+        result = module.inspect_lines([line])
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"NESTING_TOO_DEEP": 1})
+
     def test_main_emits_only_summary_and_uses_nonzero_review_exit(self) -> None:
         original_stdout = sys.stdout
         stdout = io.StringIO()
