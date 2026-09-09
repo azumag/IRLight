@@ -53,6 +53,9 @@ _SENSITIVE_KEY_SUFFIXES = (
     "_private_key",
     "_cookie",
 )
+_SENSITIVE_COMPACT_SUFFIXES = tuple(
+    suffix.removeprefix("_").replace("_", "") for suffix in _SENSITIVE_KEY_SUFFIXES
+)
 
 
 class _DuplicateKeyError(ValueError):
@@ -96,9 +99,12 @@ def _normalize_key(key: str) -> str:
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = _normalize_key(key)
-    return normalized in _SENSITIVE_KEYS or any(
+    if normalized in _SENSITIVE_KEYS or any(
         normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES
-    )
+    ):
+        return True
+    compact = normalized.replace("_", "")
+    return any(compact.endswith(suffix) for suffix in _SENSITIVE_COMPACT_SUFFIXES)
 
 
 def _is_redacted(value: Any) -> bool:
