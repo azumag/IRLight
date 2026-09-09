@@ -70,15 +70,14 @@ _SENSITIVE_URL_PARAMETER_KEYS = {
     "x_goog_signature",
 }
 _GCS_V2_CONTEXT_KEYS = {"google_access_id", "expires"}
-_AZURE_SAS_CONTEXT_KEYS = {
-    "se",
+_AZURE_SAS_RESOURCE_OR_POLICY_KEYS = {
     "si",
-    "sp",
     "sr",
     "ss",
     "srt",
     "tn",
 }
+_AZURE_SAS_ADHOC_ACCESS_KEYS = {"sp", "se"}
 
 
 class _DuplicateKeyError(ValueError):
@@ -157,8 +156,9 @@ def _component_has_unredacted_sensitive_params(component: str) -> bool:
         return False
     normalized_keys = {_normalize_key(key) for key, _ in params}
     is_gcs_v2 = _GCS_V2_CONTEXT_KEYS.issubset(normalized_keys)
-    is_azure_sas = "sv" in normalized_keys and bool(
-        normalized_keys & _AZURE_SAS_CONTEXT_KEYS
+    is_azure_sas = "sv" in normalized_keys and (
+        bool(normalized_keys & _AZURE_SAS_RESOURCE_OR_POLICY_KEYS)
+        or _AZURE_SAS_ADHOC_ACCESS_KEYS.issubset(normalized_keys)
     )
     for key, raw_value in params:
         normalized = _normalize_key(key)
