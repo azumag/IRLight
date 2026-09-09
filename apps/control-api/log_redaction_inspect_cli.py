@@ -25,6 +25,7 @@ _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
 _SENSITIVE_KEYS = {
     "secret",
+    "secret_key",
     "token",
     "access_token",
     "refresh_token",
@@ -46,6 +47,7 @@ _SENSITIVE_KEYS = {
 }
 _SENSITIVE_KEY_SUFFIXES = (
     "_secret",
+    "_secret_key",
     "_token",
     "_authorization",
     "_password",
