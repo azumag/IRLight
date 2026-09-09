@@ -91,19 +91,6 @@ def inspect_secret_path(path: Path) -> dict[str, Any]:
             problems.append("permissions_too_open")
 
         try:
-            parent_after = path.parent.lstat()
-        except OSError:
-            problems.append("parent_changed")
-            return result
-        if (
-            stat.S_ISLNK(parent_after.st_mode)
-            or not stat.S_ISDIR(parent_after.st_mode)
-            or _identity(parent_after) != _identity(parent_open)
-        ):
-            problems.append("parent_changed")
-            return result
-
-        try:
             file_after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError:
             problems.append("file_changed")
@@ -114,6 +101,19 @@ def inspect_secret_path(path: Path) -> dict[str, Any]:
             or not stat.S_ISREG(file_after.st_mode)
         ):
             problems.append("file_changed")
+            return result
+
+        try:
+            parent_after = path.parent.lstat()
+        except OSError:
+            problems.append("parent_changed")
+            return result
+        if (
+            stat.S_ISLNK(parent_after.st_mode)
+            or not stat.S_ISDIR(parent_after.st_mode)
+            or _identity(parent_after) != _identity(parent_open)
+        ):
+            problems.append("parent_changed")
             return result
     finally:
         os.close(parent_fd)
