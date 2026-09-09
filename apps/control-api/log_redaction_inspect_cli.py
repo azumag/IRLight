@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -17,6 +18,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
 _REDACTED_VALUES = {"[redacted]", "<redacted>", "***"}
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
 _SENSITIVE_KEYS = {
     "secret",
     "token",
@@ -60,7 +63,8 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _normalize_key(key: str) -> str:
-    return key.strip().lower().replace("-", "_").replace(".", "_")
+    expanded = _CAMEL_CASE_BOUNDARY.sub("_", key.strip())
+    return _KEY_SEPARATORS.sub("_", expanded).strip("_").lower()
 
 
 def _is_redacted(value: Any) -> bool:
@@ -69,18 +73,38 @@ def _is_redacted(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _REDACTED_VALUES
 
 
+def _url_for_secret_scan(value: str):
+    candidate = value.strip()
+    if "://" not in candidate and not candidate.startswith(("/", "./", "../", "?")):
+        return None
+    try:
+        return urlsplit(candidate)
+    except ValueError:
+        return None
+
+
 def _url_has_unredacted_sensitive_query(value: str) -> bool:
-    if "://" not in value:
+    parsed = _url_for_secret_scan(value)
+    if parsed is None:
         return False
     try:
-        query = urlsplit(value).query
-        params = parse_qsl(query, keep_blank_values=True)
+        params = parse_qsl(parsed.query, keep_blank_values=True)
     except ValueError:
         return False
     for key, raw_value in params:
         if _normalize_key(key) in _SENSITIVE_KEYS and not _is_redacted(raw_value):
             return True
     return False
+
+
+def _url_has_userinfo(value: str) -> bool:
+    parsed = _url_for_secret_scan(value)
+    if parsed is None or "://" not in value:
+        return False
+    try:
+        return parsed.username is not None or parsed.password is not None
+    except ValueError:
+        return False
 
 
 def _scan_value(value: Any, reasons: Counter[str]) -> None:
@@ -95,8 +119,11 @@ def _scan_value(value: Any, reasons: Counter[str]) -> None:
         for child in value:
             _scan_value(child, reasons)
         return
-    if isinstance(value, str) and _url_has_unredacted_sensitive_query(value):
-        reasons["SENSITIVE_URL_QUERY_UNREDACTED"] += 1
+    if isinstance(value, str):
+        if _url_has_unredacted_sensitive_query(value):
+            reasons["SENSITIVE_URL_QUERY_UNREDACTED"] += 1
+        if _url_has_userinfo(value):
+            reasons["SENSITIVE_URL_USERINFO"] += 1
 
 
 def _inspect_record(record: Any, reasons: Counter[str]) -> None:
