@@ -17,48 +17,40 @@ from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
 from operations_alert_catalog import OperationsAlertCatalogError, load_catalog
+from operations_jsonl_safety import (
+    INVALID_UTF8_RECORD,
+    OVERSIZED_RECORD,
+    DuplicateKeyError,
+    InvalidUtf8Record,
+    NonFiniteNumberError,
+    OversizedRecord,
+    iter_bounded_byte_lines,
+    iter_bounded_lines,
+    object_without_duplicates,
+    reject_nonfinite,
+    strict_json_loads,
+    utf8_size_violation,
+)
 
 
 _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
 _MAX_RECORD_BYTES = 256 * 1024
 _MAX_NESTING_DEPTH = 64
 
+# Compatibility aliases keep existing focused tests/callers stable while the
+# implementation is shared with other read-only operations JSONL evaluators.
+_DuplicateKeyError = DuplicateKeyError
+_NonFiniteNumberError = NonFiniteNumberError
+_OversizedRecord = OversizedRecord
+_InvalidUtf8Record = InvalidUtf8Record
+_OVERSIZED_RECORD = OVERSIZED_RECORD
+_INVALID_UTF8_RECORD = INVALID_UTF8_RECORD
+_reject_nonfinite = reject_nonfinite
+_object_without_duplicates = object_without_duplicates
+
 
 class OperationsEventAlertError(ValueError):
     """Raised when event-alert evaluation cannot be trusted."""
-
-
-class _DuplicateKeyError(ValueError):
-    pass
-
-
-class _NonFiniteNumberError(ValueError):
-    pass
-
-
-class _OversizedRecord:
-    pass
-
-
-class _InvalidUtf8Record:
-    pass
-
-
-_OVERSIZED_RECORD = _OversizedRecord()
-_INVALID_UTF8_RECORD = _InvalidUtf8Record()
-
-
-def _reject_nonfinite(value: str) -> None:
-    raise _NonFiniteNumberError(value)
-
-
-def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateKeyError(key)
-        result[key] = value
-    return result
 
 
 def _build_event_alert_index(catalog: dict[str, Any]) -> dict[str, str]:
@@ -84,47 +76,14 @@ def _build_event_alert_index(catalog: dict[str, Any]) -> dict[str, str]:
     return index
 
 
-def _iter_bounded_lines(stream: TextIO) -> Iterable[str | _OversizedRecord]:
-    """Bound text streams used by tests or in-process callers.
-
-    Text ``readline`` limits characters rather than encoded bytes, so the CLI
-    prefers :func:`_iter_bounded_byte_lines` when a raw buffer is available.
-    Final UTF-8 byte length is still checked by :func:`evaluate_lines`.
-    """
-    read_limit = _MAX_RECORD_BYTES + 1
-    while True:
-        line = stream.readline(read_limit)
-        if line == "":
-            return
-        if line.endswith("\n") or len(line) < read_limit:
-            yield line
-            continue
-        while line and not line.endswith("\n"):
-            line = stream.readline(read_limit)
-        yield _OVERSIZED_RECORD
+def _iter_bounded_lines(stream: TextIO) -> Iterable[str | OversizedRecord]:
+    return iter_bounded_lines(stream, max_record_bytes=_MAX_RECORD_BYTES)
 
 
 def _iter_bounded_byte_lines(
     stream: BinaryIO,
-) -> Iterable[str | _OversizedRecord | _InvalidUtf8Record]:
-    """Apply the JSONL record cap to raw bytes before UTF-8 decoding."""
-    read_limit = _MAX_RECORD_BYTES + 1
-    while True:
-        line = stream.readline(read_limit)
-        if line == b"":
-            return
-        if line.endswith(b"\n") or len(line) < read_limit:
-            if len(line) > _MAX_RECORD_BYTES:
-                yield _OVERSIZED_RECORD
-                continue
-            try:
-                yield line.decode("utf-8")
-            except UnicodeDecodeError:
-                yield _INVALID_UTF8_RECORD
-            continue
-        while line and not line.endswith(b"\n"):
-            line = stream.readline(read_limit)
-        yield _OVERSIZED_RECORD
+) -> Iterable[str | OversizedRecord | InvalidUtf8Record]:
+    return iter_bounded_byte_lines(stream, max_record_bytes=_MAX_RECORD_BYTES)
 
 
 def _has_excessive_nesting(value: Any) -> bool:
@@ -159,7 +118,7 @@ def _valid_required_fields(record: Any, reasons: Counter[str]) -> bool:
 
 
 def evaluate_lines(
-    lines: Iterable[str | _OversizedRecord | _InvalidUtf8Record],
+    lines: Iterable[str | OversizedRecord | InvalidUtf8Record],
     catalog: dict[str, Any],
 ) -> dict[str, Any]:
     """Evaluate JSONL records without returning source content or identifiers.
@@ -176,27 +135,21 @@ def evaluate_lines(
     invalid = False
 
     for line in lines:
-        if line is _OVERSIZED_RECORD:
+        if line is OVERSIZED_RECORD:
             records += 1
             reasons["RECORD_TOO_LARGE"] += 1
             invalid = True
             continue
-        if line is _INVALID_UTF8_RECORD:
+        if line is INVALID_UTF8_RECORD:
             records += 1
             reasons["INVALID_JSON"] += 1
             invalid = True
             continue
 
-        try:
-            record_bytes = len(line.encode("utf-8"))
-        except UnicodeEncodeError:
+        size_violation = utf8_size_violation(line, max_record_bytes=_MAX_RECORD_BYTES)
+        if size_violation is not None:
             records += 1
-            reasons["INVALID_JSON"] += 1
-            invalid = True
-            continue
-        if record_bytes > _MAX_RECORD_BYTES:
-            records += 1
-            reasons["RECORD_TOO_LARGE"] += 1
+            reasons[size_violation] += 1
             invalid = True
             continue
         if not line.strip():
@@ -204,16 +157,12 @@ def evaluate_lines(
 
         records += 1
         try:
-            value = json.loads(
-                line,
-                object_pairs_hook=_object_without_duplicates,
-                parse_constant=_reject_nonfinite,
-            )
-        except _DuplicateKeyError:
+            value = strict_json_loads(line)
+        except DuplicateKeyError:
             reasons["DUPLICATE_JSON_KEY"] += 1
             invalid = True
             continue
-        except _NonFiniteNumberError:
+        except NonFiniteNumberError:
             reasons["NONFINITE_NUMBER"] += 1
             invalid = True
             continue

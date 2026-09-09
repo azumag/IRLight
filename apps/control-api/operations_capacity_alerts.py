@@ -17,6 +17,20 @@ from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
 from operations_alert_catalog import OperationsAlertCatalogError, load_catalog
+from operations_jsonl_safety import (
+    INVALID_UTF8_RECORD,
+    OVERSIZED_RECORD,
+    DuplicateKeyError,
+    InvalidUtf8Record,
+    NonFiniteNumberError,
+    OversizedRecord,
+    iter_bounded_byte_lines,
+    iter_bounded_lines,
+    object_without_duplicates,
+    reject_nonfinite,
+    strict_json_loads,
+    utf8_size_violation,
+)
 
 
 _ALERT_ID = "MEDIA_NODE_CAPACITY_HIGH"
@@ -26,42 +40,20 @@ _RUNBOOK = "docs/operations/media-node-capacity-high.md"
 _REQUIRED_FIELDS = {"max_sessions", "active_sessions", "reserved_sessions"}
 _MAX_RECORD_BYTES = 4 * 1024
 
+# Compatibility aliases keep existing focused tests/callers stable while the
+# low-level safety implementation is shared with event-alert dry-runs.
+_DuplicateKeyError = DuplicateKeyError
+_NonFiniteNumberError = NonFiniteNumberError
+_OversizedRecord = OversizedRecord
+_InvalidUtf8Record = InvalidUtf8Record
+_OVERSIZED_RECORD = OVERSIZED_RECORD
+_INVALID_UTF8_RECORD = INVALID_UTF8_RECORD
+_reject_nonfinite = reject_nonfinite
+_object_without_duplicates = object_without_duplicates
+
 
 class OperationsCapacityAlertError(ValueError):
     """Raised when the capacity-alert contract cannot be trusted."""
-
-
-class _DuplicateKeyError(ValueError):
-    pass
-
-
-class _NonFiniteNumberError(ValueError):
-    pass
-
-
-class _OversizedRecord:
-    pass
-
-
-class _InvalidUtf8Record:
-    pass
-
-
-_OVERSIZED_RECORD = _OversizedRecord()
-_INVALID_UTF8_RECORD = _InvalidUtf8Record()
-
-
-def _reject_nonfinite(value: str) -> None:
-    raise _NonFiniteNumberError(value)
-
-
-def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateKeyError(key)
-        result[key] = value
-    return result
 
 
 def _validate_capacity_alert_contract(catalog: dict[str, Any]) -> None:
@@ -84,41 +76,14 @@ def _validate_capacity_alert_contract(catalog: dict[str, Any]) -> None:
         raise OperationsCapacityAlertError("capacity alert contract does not match evaluator")
 
 
-def _iter_bounded_lines(stream: TextIO) -> Iterable[str | _OversizedRecord]:
-    read_limit = _MAX_RECORD_BYTES + 1
-    while True:
-        line = stream.readline(read_limit)
-        if line == "":
-            return
-        if line.endswith("\n") or len(line) < read_limit:
-            yield line
-            continue
-        while line and not line.endswith("\n"):
-            line = stream.readline(read_limit)
-        yield _OVERSIZED_RECORD
+def _iter_bounded_lines(stream: TextIO) -> Iterable[str | OversizedRecord]:
+    return iter_bounded_lines(stream, max_record_bytes=_MAX_RECORD_BYTES)
 
 
 def _iter_bounded_byte_lines(
     stream: BinaryIO,
-) -> Iterable[str | _OversizedRecord | _InvalidUtf8Record]:
-    """Bound raw JSONL bytes before decoding so one record cannot grow unbounded."""
-    read_limit = _MAX_RECORD_BYTES + 1
-    while True:
-        line = stream.readline(read_limit)
-        if line == b"":
-            return
-        if line.endswith(b"\n") or len(line) < read_limit:
-            if len(line) > _MAX_RECORD_BYTES:
-                yield _OVERSIZED_RECORD
-                continue
-            try:
-                yield line.decode("utf-8")
-            except UnicodeDecodeError:
-                yield _INVALID_UTF8_RECORD
-            continue
-        while line and not line.endswith(b"\n"):
-            line = stream.readline(read_limit)
-        yield _OVERSIZED_RECORD
+) -> Iterable[str | OversizedRecord | InvalidUtf8Record]:
+    return iter_bounded_byte_lines(stream, max_record_bytes=_MAX_RECORD_BYTES)
 
 
 def _capacity_integer(value: Any) -> int | None:
@@ -138,7 +103,7 @@ def _is_above_issue11_threshold(*, maximum: int, active: int, reserved: int) -> 
 
 
 def evaluate_lines(
-    lines: Iterable[str | _OversizedRecord | _InvalidUtf8Record],
+    lines: Iterable[str | OversizedRecord | InvalidUtf8Record],
     catalog: dict[str, Any],
 ) -> dict[str, Any]:
     """Evaluate aggregate capacity observations without echoing source values.
@@ -156,27 +121,21 @@ def evaluate_lines(
     reasons: Counter[str] = Counter()
 
     for line in lines:
-        if line is _OVERSIZED_RECORD:
+        if line is OVERSIZED_RECORD:
             records += 1
             reasons["RECORD_TOO_LARGE"] += 1
             invalid = True
             continue
-        if line is _INVALID_UTF8_RECORD:
+        if line is INVALID_UTF8_RECORD:
             records += 1
             reasons["INVALID_JSON"] += 1
             invalid = True
             continue
 
-        try:
-            record_bytes = len(line.encode("utf-8"))
-        except UnicodeEncodeError:
+        size_violation = utf8_size_violation(line, max_record_bytes=_MAX_RECORD_BYTES)
+        if size_violation is not None:
             records += 1
-            reasons["INVALID_JSON"] += 1
-            invalid = True
-            continue
-        if record_bytes > _MAX_RECORD_BYTES:
-            records += 1
-            reasons["RECORD_TOO_LARGE"] += 1
+            reasons[size_violation] += 1
             invalid = True
             continue
         if not line.strip():
@@ -184,16 +143,12 @@ def evaluate_lines(
 
         records += 1
         try:
-            value = json.loads(
-                line,
-                object_pairs_hook=_object_without_duplicates,
-                parse_constant=_reject_nonfinite,
-            )
-        except _DuplicateKeyError:
+            value = strict_json_loads(line)
+        except DuplicateKeyError:
             reasons["DUPLICATE_JSON_KEY"] += 1
             invalid = True
             continue
-        except _NonFiniteNumberError:
+        except NonFiniteNumberError:
             reasons["NONFINITE_NUMBER"] += 1
             invalid = True
             continue
