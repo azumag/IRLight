@@ -134,6 +134,73 @@ class LogRedactionInspectTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"MISSING_REQUIRED_FIELD": 1})
 
+    def test_oversized_record_is_invalid_without_parsing_content(self) -> None:
+        secret = "AUDIT_DUMMY_SECRET"
+        line = json.dumps(record(message=secret + ("x" * module._MAX_RECORD_BYTES))) + "\n"
+        result = module.inspect_lines([line])
+        encoded = json.dumps(result)
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"RECORD_TOO_LARGE": 1})
+        self.assertNotIn(secret, encoded)
+
+    def test_oversized_blank_record_is_invalid_before_strip(self) -> None:
+        line = (" " * (module._MAX_RECORD_BYTES + 1)) + "\n"
+        result = module.inspect_lines([line])
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["records"], 1)
+        self.assertEqual(result["violations"], {"RECORD_TOO_LARGE": 1})
+
+    def test_main_reads_oversized_line_in_bounded_chunks(self) -> None:
+        class GuardedStream(io.StringIO):
+            def __init__(self, value: str) -> None:
+                super().__init__(value)
+                self.max_requested = 0
+
+            def __iter__(self):
+                raise AssertionError("main must not iterate stdin with unbounded line reads")
+
+            def readline(self, size: int = -1) -> str:
+                if size < 0:
+                    raise AssertionError("readline must be bounded")
+                self.max_requested = max(self.max_requested, size)
+                return super().readline(size)
+
+        secret = "AUDIT_DUMMY_SECRET"
+        stream = GuardedStream(secret + ("x" * (module._MAX_RECORD_BYTES * 2)) + "\n")
+        original_stdout = sys.stdout
+        stdout = io.StringIO()
+        try:
+            sys.stdout = stdout
+            code = module.main([], stdin=stream)
+        finally:
+            sys.stdout = original_stdout
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(code, 3)
+        self.assertEqual(result["violations"], {"RECORD_TOO_LARGE": 1})
+        self.assertLessEqual(stream.max_requested, module._MAX_RECORD_BYTES + 1)
+        self.assertNotIn(secret, stdout.getvalue())
+
+    def test_excessive_nesting_is_invalid_without_recursion(self) -> None:
+        nested: object = "leaf"
+        for _ in range(module._MAX_NESTING_DEPTH + 2):
+            nested = {"child": nested}
+        result = self.inspect(record(payload=nested))
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"NESTING_TOO_DEEP": 1})
+
+    def test_parser_recursion_error_is_normalized(self) -> None:
+        depth = 2000
+        line = (
+            '{"timestamp":"x","level":"INFO","service":"cp","event_type":"x","payload":'
+            + ("[" * depth)
+            + "0"
+            + ("]" * depth)
+            + "}\n"
+        )
+        result = module.inspect_lines([line])
+        self.assertEqual(result["status"], "INVALID")
+        self.assertEqual(result["violations"], {"NESTING_TOO_DEEP": 1})
+
     def test_main_emits_only_summary_and_uses_nonzero_review_exit(self) -> None:
         original_stdout = sys.stdout
         stdout = io.StringIO()

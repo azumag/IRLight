@@ -10,9 +10,11 @@ Pipe a captured JSONL stream through the inspector. The command reads stdin only
 python apps/control-api/log_redaction_inspect_cli.py < captured.jsonl
 ```
 
-The output contains only `status`, the number of non-empty records, and normalized violation counts. It never includes log values or field paths. Exit status is `0` for `SAFE`, `2` for `REVIEW_REQUIRED`, and `3` for structurally invalid JSONL.
+The output contains only `status`, the number of records considered, and normalized violation counts. Ordinary blank lines are skipped; an oversized line is counted and rejected before blankness is examined. The output never includes log values or field paths. Exit status is `0` for `SAFE`, `2` for `REVIEW_REQUIRED`, and `3` for structurally invalid JSONL.
 
 The baseline schema requires `timestamp`, `level`, `service`, and `event_type`. Correlation fields such as `request_id`, `session_id`, `node_id`, `version`, and `reason_code` remain event-dependent and can be added without changing this audit contract.
+
+To keep the audit itself bounded when it is pointed at malformed or adversarial captures, one JSONL record is limited to 256 KiB of UTF-8 input and nested arrays/objects are limited to 64 levels for inspection. The CLI reads and drains oversized lines in bounded chunks instead of materializing an arbitrarily long stdin line. Oversized records return `RECORD_TOO_LARGE`; excessive parser or inspection depth returns `NESTING_TOO_DEEP`. Both make the overall result `INVALID`, and the source record is neither echoed nor partially reported.
 
 ## Secret checks
 
