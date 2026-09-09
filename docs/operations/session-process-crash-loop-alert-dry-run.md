@@ -29,7 +29,7 @@ catalog の次の契約が一致している場合だけ判定します。
 - trigger: `threshold_ref=operations.session_process_crash_loop`
 - runbook: `session-process-crash-loop.md`
 
-入力 rate が明示した `--threshold` 以上なら match とします。出力は repository 管理下の alert ID と aggregate 件数だけで、入力値や識別子を echo しません。catalog が drift していれば `INVALID_CATALOG`、threshold が非 finite / 負値なら `INVALID_THRESHOLD` として alert 判定を行いません。
+入力 rate が明示した `--threshold` を**超えた場合**だけ match とします。threshold と同値は match しません。この境界により、例えば threshold `0` を検証用に指定しても restart rate `0` の正常観測を crash loop と誤分類しません。出力は repository 管理下の alert ID と aggregate 件数だけで、入力値や識別子を echo しません。catalog が drift していれば `INVALID_CATALOG`、threshold が非 finite / 負値なら `INVALID_THRESHOLD` として alert 判定を行いません。
 
 ## 安全境界
 
