@@ -225,6 +225,11 @@ def _inspect_optional_legacy_token_fuse(node_root_fd: int) -> None:
         _assert_regular_entry_unchanged(node_root_fd, authority_name, authority_fd)
         if marker_fd is not None:
             _assert_regular_entry_unchanged(node_root_fd, marker_name, marker_fd)
+        elif _optional_entry_stat(node_root_fd, marker_name, marker=True) is not None:
+            # Marker absence is part of the compatibility snapshot for legacy
+            # ledgers. If a writer initializes the fuse while validation is in
+            # flight, do not report readiness from the stale pre-marker view.
+            raise StateReadinessError("required state entry changed during inspection")
     finally:
         if marker_fd is not None:
             os.close(marker_fd)
