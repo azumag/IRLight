@@ -20,6 +20,7 @@ _REQUIRED_FIELDS = ("timestamp", "level", "service", "event_type")
 _REDACTED_VALUES = {"[redacted]", "<redacted>", "***"}
 _MAX_RECORD_BYTES = 256 * 1024
 _MAX_NESTING_DEPTH = 64
+_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_SEPARATORS = re.compile(r"[^0-9A-Za-z]+")
 _SENSITIVE_KEYS = {
@@ -88,7 +89,8 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _normalize_key(key: str) -> str:
-    expanded = _CAMEL_CASE_BOUNDARY.sub("_", key.strip())
+    expanded = _ACRONYM_BOUNDARY.sub("_", key.strip())
+    expanded = _CAMEL_CASE_BOUNDARY.sub("_", expanded)
     return _KEY_SEPARATORS.sub("_", expanded).strip("_").lower()
 
 
