@@ -2,15 +2,14 @@
 
 The catalog is deliberately routing-neutral: it defines stable alert IDs,
 severity, signal ownership, runbook linkage, deduplication dimensions and the
-source of each trigger threshold/event.  It does not send notifications or
-call providers.
+source of each trigger threshold/event. It does not send notifications or call
+providers.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -110,7 +109,8 @@ def _validate_runbook(runbook: str, *, repo_root: Path | None, alert_id: str) ->
 def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != {"schema_version", "alerts"}:
         raise OperationsAlertCatalogError("catalog has invalid top-level structure")
-    if payload.get("schema_version") != 1:
+    schema_version = payload.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
         raise OperationsAlertCatalogError("catalog has unsupported schema_version")
 
     alerts = payload.get("alerts")
@@ -144,13 +144,11 @@ def validate_catalog(payload: Any, *, repo_root: Path | None = None) -> dict[str
         _validate_runbook(runbook, repo_root=repo_root, alert_id=alert_id)
 
         dedup_keys = alert.get("dedup_keys")
-        if (
-            not isinstance(dedup_keys, list)
-            or not dedup_keys
-            or len(dedup_keys) > 4
-            or len(set(dedup_keys)) != len(dedup_keys)
-            or any(key not in SAFE_DEDUP_KEYS for key in dedup_keys)
-        ):
+        if not isinstance(dedup_keys, list) or not dedup_keys or len(dedup_keys) > 4:
+            raise OperationsAlertCatalogError(f"alert {alert_id} has invalid dedup_keys")
+        if any(not isinstance(key, str) or key not in SAFE_DEDUP_KEYS for key in dedup_keys):
+            raise OperationsAlertCatalogError(f"alert {alert_id} has invalid dedup_keys")
+        if len(set(dedup_keys)) != len(dedup_keys):
             raise OperationsAlertCatalogError(f"alert {alert_id} has invalid dedup_keys")
 
         if alert.get("recovery_notification") is not True:
@@ -171,7 +169,7 @@ def load_catalog(path: Path, *, repo_root: Path | None = None) -> dict[str, Any]
             )
     except OperationsAlertCatalogError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise OperationsAlertCatalogError("catalog cannot be read as strict JSON") from exc
     return validate_catalog(payload, repo_root=repo_root)
 
