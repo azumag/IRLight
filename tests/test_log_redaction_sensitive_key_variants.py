@@ -74,6 +74,28 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
         self.assertEqual(result["status"], "REVIEW_REQUIRED")
         self.assertEqual(result["violations"], {"SENSITIVE_FIELD_UNREDACTED": 4})
 
+    def test_access_key_credentials_require_redaction(self) -> None:
+        result = self.inspect(
+            record(
+                payload={
+                    "AWS_SECRET_ACCESS_KEY": "raw",
+                    "awsSecretAccessKey": "raw",
+                    "AWS_ACCESS_KEY_ID": "raw",
+                    "awsAccessKeyId": "raw",
+                },
+                callback="/callback?AWSSecretAccessKey=raw#AWSAccessKeyId=raw",
+            )
+        )
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(
+            result["violations"],
+            {
+                "SENSITIVE_FIELD_UNREDACTED": 4,
+                "SENSITIVE_URL_FRAGMENT_UNREDACTED": 1,
+                "SENSITIVE_URL_QUERY_UNREDACTED": 1,
+            },
+        )
+
     def test_namespaced_sensitive_url_params_require_redaction(self) -> None:
         result = self.inspect(
             record(
@@ -125,6 +147,8 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "databasePassword": "***",
                     "xAPIKey": "<redacted>",
                     "AWSAPIKey": None,
+                    "AWS_SECRET_ACCESS_KEY": "[REDACTED]",
+                    "AWS_ACCESS_KEY_ID": None,
                 },
                 callback="?proxyAuthorization=%3Credacted%3E",
             )
@@ -142,6 +166,8 @@ class LogRedactionSensitiveKeyVariantTests(unittest.TestCase):
                     "HTTPStatusCode": 200,
                     "tokenCount": 12,
                     "apikeyRotationCount": 4,
+                    "access_key_rotation_count": 2,
+                    "accessKeyRotationCount": 2,
                 }
             )
         )
