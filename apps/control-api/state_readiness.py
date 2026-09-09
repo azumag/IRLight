@@ -99,47 +99,61 @@ def _open_regular_readonly(root_fd: int, name: str) -> int:
         raise
 
 
+def _assert_regular_entry_unchanged(root_fd: int, name: str, fd: int) -> None:
+    """Fail closed if a pinned authority path was replaced during inspection."""
+    try:
+        current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        opened = os.fstat(fd)
+    except (OSError, NotImplementedError) as exc:
+        raise StateReadinessError("required state entry changed during inspection") from exc
+    if not stat.S_ISREG(current.st_mode):
+        raise StateReadinessError("required state entry changed during inspection")
+    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise StateReadinessError("required state entry changed during inspection")
+
+
 def _marker_name(authority_name: str) -> str:
     return f".{authority_name}.initialized"
 
 
-def _require_regular_marker(root_fd: int, authority_name: str) -> None:
-    fd = _open_regular_readonly(root_fd, _marker_name(authority_name))
-    os.close(fd)
-
-
-def _read_json_authority(root_fd: int, authority_name: str) -> dict[str, Any]:
-    fd = _open_regular_readonly(root_fd, authority_name)
+def _read_json_authority_fd(fd: int) -> dict[str, Any]:
+    """Read strict JSON from an already pinned regular-file descriptor."""
     try:
+        handle = os.fdopen(os.dup(fd), "r", encoding="utf-8")
+    except OSError as exc:
+        raise StateReadinessError("required state cannot be read") from exc
+    with handle:
         try:
-            handle = os.fdopen(fd, "r", encoding="utf-8")
-        except OSError as exc:
-            raise StateReadinessError("required state cannot be read") from exc
-        fd = -1  # ``handle`` owns the descriptor from this point forward.
-        with handle:
-            try:
-                value = load_json_authority(handle, parse_constant=_reject_json_constant)
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError) as exc:
-                raise StateReadinessError("required state contains invalid JSON") from exc
-    finally:
-        if fd >= 0:
-            os.close(fd)
+            value = load_json_authority(handle, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError) as exc:
+            raise StateReadinessError("required state contains invalid JSON") from exc
     if not isinstance(value, dict):
         raise StateReadinessError("required state has invalid structure")
     return value
 
 
 def _inspect_authority(root_fd: int, authority_name: str, validator: Validator) -> None:
-    # Startup writers arm the marker before publishing authority. Requiring
-    # both entries catches deleted/mis-mounted state without creating either.
-    _require_regular_marker(root_fd, authority_name)
-    value = _read_json_authority(root_fd, authority_name)
+    # Startup writers arm the marker before publishing authority. Pinning both
+    # names until validation completes prevents a concurrent atomic replace
+    # from making readiness approve an already-stale inode snapshot.
+    marker_name = _marker_name(authority_name)
+    marker_fd = _open_regular_readonly(root_fd, marker_name)
+    authority_fd: int | None = None
     try:
-        validator(value)
-    except StateReadinessError:
-        raise
-    except Exception as exc:
-        raise StateReadinessError("required state failed validation") from exc
+        authority_fd = _open_regular_readonly(root_fd, authority_name)
+        value = _read_json_authority_fd(authority_fd)
+        try:
+            validator(value)
+        except StateReadinessError:
+            raise
+        except Exception as exc:
+            raise StateReadinessError("required state failed validation") from exc
+        _assert_regular_entry_unchanged(root_fd, authority_name, authority_fd)
+        _assert_regular_entry_unchanged(root_fd, marker_name, marker_fd)
+    finally:
+        if authority_fd is not None:
+            os.close(authority_fd)
+        os.close(marker_fd)
 
 
 def _validate_catalog(value: dict[str, Any]) -> dict[str, Any]:
@@ -195,15 +209,26 @@ def _inspect_optional_legacy_token_fuse(node_root_fd: int) -> None:
         return
     if not stat.S_ISREG(path_stat.st_mode):
         raise StateReadinessError("legacy token fuse is not a regular file")
-    if marker_stat is not None:
-        if not stat.S_ISREG(marker_stat.st_mode):
-            raise StateReadinessError("legacy token fuse marker is not a regular file")
-        _require_regular_marker(node_root_fd, authority_name)
-    value = _read_json_authority(node_root_fd, authority_name)
+    if marker_stat is not None and not stat.S_ISREG(marker_stat.st_mode):
+        raise StateReadinessError("legacy token fuse marker is not a regular file")
+
+    authority_fd = _open_regular_readonly(node_root_fd, authority_name)
+    marker_fd: int | None = None
     try:
-        _validate_tokens(value)
-    except Exception as exc:
-        raise StateReadinessError("legacy token fuse failed validation") from exc
+        if marker_stat is not None:
+            marker_fd = _open_regular_readonly(node_root_fd, marker_name)
+        value = _read_json_authority_fd(authority_fd)
+        try:
+            _validate_tokens(value)
+        except Exception as exc:
+            raise StateReadinessError("legacy token fuse failed validation") from exc
+        _assert_regular_entry_unchanged(node_root_fd, authority_name, authority_fd)
+        if marker_fd is not None:
+            _assert_regular_entry_unchanged(node_root_fd, marker_name, marker_fd)
+    finally:
+        if marker_fd is not None:
+            os.close(marker_fd)
+        os.close(authority_fd)
 
 
 def _authority_specs(

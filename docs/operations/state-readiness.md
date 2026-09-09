@@ -39,7 +39,9 @@ Readiness does not call normal store lock/getter methods because those code path
 - clear corrupt data;
 - remove initialization fuses.
 
-This property is covered by tests that compare file contents, mtimes, and the file set before and after a readiness check.
+The configured state roots are opened without following symlinks and pinned by file descriptor for the duration of the inspection. Each authority file and initialization marker is likewise opened without following symlinks and remains pinned through payload validation. Immediately before accepting a check, readiness verifies that the pathname still names the same regular-file inode. If a normal atomic writer replaces an authority or marker while inspection is in progress, the check fails closed instead of reporting a stale pre-replacement snapshot as ready. No store lock is created or acquired for this purpose, so a concurrent writer can cause a transient non-ready result rather than being blocked indefinitely.
+
+This property is covered by tests that compare file contents, mtimes, and the file set before and after a readiness check, together with deterministic replacement-race tests for both an authority file and its initialization marker.
 
 ## Deployment use
 
