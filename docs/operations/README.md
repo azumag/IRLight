@@ -39,6 +39,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
 - alert ID / severity / runbook / dedup 契約: [alert-catalog.md](alert-catalog.md)
 - event-trigger alert の read-only dry-run: [event-alert-dry-run.md](event-alert-dry-run.md)
+- Media Node 全停止 Critical alert の read-only dry-run: [media-node-availability-alert-dry-run.md](media-node-availability-alert-dry-run.md)
 - Media Node heartbeat warning の read-only dry-run: [node-heartbeat-alert-dry-run.md](node-heartbeat-alert-dry-run.md)
 - Media Node capacity 80% warning の read-only dry-run: [media-node-capacity-alert-dry-run.md](media-node-capacity-alert-dry-run.md)
 
