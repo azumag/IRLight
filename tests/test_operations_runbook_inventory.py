@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+RUNBOOK_INDEX = "docs/operations/README.md"
 
 REQUIRED_RUNBOOKS = {
     "media node heartbeat": "docs/operations/media-node-heartbeat-stopped.md",
@@ -37,6 +38,24 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertTrue(text.startswith("# "), f"runbook must start with an H1: {relative_path}")
                 self.assertGreater(len(text.strip()), 200, f"runbook is unexpectedly empty: {relative_path}")
+
+    def test_issue_11_required_runbooks_are_linked_from_index(self) -> None:
+        index_path = REPO_ROOT / RUNBOOK_INDEX
+        self.assertTrue(index_path.is_file(), f"missing runbook index: {RUNBOOK_INDEX}")
+        text = index_path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("# "), "runbook index must start with an H1")
+        self.assertIn("## 共通安全原則", text)
+        self.assertIn("## Issue #11 必須 runbook", text)
+
+        for scenario, relative_path in REQUIRED_RUNBOOKS.items():
+            with self.subTest(scenario=scenario):
+                link_target = Path(relative_path).name
+                link_marker = f"]({link_target})"
+                self.assertEqual(
+                    text.count(link_marker),
+                    1,
+                    f"runbook index must link exactly once to {relative_path}",
+                )
 
     def test_new_runbooks_have_actionable_lifecycle_sections(self) -> None:
         for relative_path in NEW_RUNBOOKS:
