@@ -38,6 +38,8 @@ python apps/control-api/operations_alert_catalog.py
 
 成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないこと、Node capacity 80% warning がユーザー entitlement capacity へ誤配線されないこと、Node resource pressure / exhaustion が heartbeat runbook へ誤配線されないことも固定します。
 
+さらに `tests/test_operations_alert_detector_coverage.py` は、catalog にあるすべての `threshold` alert が下記の個別 dry-run evaluator と運用文書に明示的に対応していることを固定します。新しい threshold alert を catalog へ追加しただけで detector が未実装・未文書化のままになる場合、CI は失敗します。`event` alert は共通 `operations_event_alerts.py` / `event-alert-dry-run.md` の存在を同じテストで確認します。
+
 ## Event trigger の dry-run
 
 `trigger.mode = event` の alert は `apps/control-api/operations_event_alerts.py` で structured JSONL と read-only に照合できます。
@@ -56,9 +58,15 @@ repository 内に既に authority / aggregate input の安全な取得契約が�
 
 - `MEDIA_NODES_ALL_UNAVAILABLE`: `operations_node_availability_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、少なくとも1件の `desired_state=RUNNING` Node がある状況で、`status=READY`・heartbeat fresh を満たす Node の aggregate 件数が 0 の場合に Critical alert を一致させます。idle / 明示停止状態は一致させません。詳細は `media-node-availability-alert-dry-run.md`。
 - `NODE_HEARTBEAT_DELAYED`: `operations_heartbeat_alerts.py` が canonical Node authority を既存 heartbeat inspector と同じ read-only reader で検査し、`NODE_HEARTBEAT_GRACE_SECONDS` 以上の stale expected heartbeat を aggregate alert 件数へ変換します。詳細は `node-heartbeat-alert-dry-run.md`。
-- `MEDIA_NODE_CAPACITY_HIGH`: `operations_capacity_alerts.py` が識別子を含まない aggregate capacity JSONL を検査し、Issue #11 の 80% 超契約を判定します。詳細は `media-node-capacity-alert-dry-run.md`。
 - `NODE_RESOURCE_PRESSURE`: `operations_node_resource_pressure_alerts.py` が識別子を含まない事前集計済み `resource_pressure` JSONL と、deployment / operator が同一 metric・同一 unit で明示した `--threshold` を照合します。repository は production metric、unit、aggregation window、threshold を決めません。詳細は `node-resource-pressure-alert-dry-run.md`。
 - `SESSION_PROCESS_CRASH_LOOP`: `operations_session_restart_alerts.py` が識別子を含まない aggregate restart-rate JSONL と、deployment / operator が明示した `--threshold` を照合します。repository は production threshold や aggregation window を決めず、rate が明示 threshold を超えた場合だけ一致させます。詳細は `session-process-crash-loop-alert-dry-run.md`。
+- `SESSION_FAILURE_SURGE`: `operations_session_failure_alerts.py` が識別子を含まない事前集計済み failure-rate JSONL と明示 `--threshold` を照合します。部分的に壊れた batch では一致結果を抑制します。詳細は `session-failure-surge-alert-dry-run.md`。
+- `MEDIA_NODE_CAPACITY_HIGH`: `operations_capacity_alerts.py` が識別子を含まない aggregate capacity JSONL を検査し、Issue #11 の 80% 超契約を判定します。詳細は `media-node-capacity-alert-dry-run.md`。
+- `EGRESS_FAILURE_SURGE`: `operations_egress_failure_alerts.py` が識別子を含まない事前集計済み egress failure-rate JSONL と明示 `--threshold` を照合します。production window / denominator は推測しません。詳細は `egress-failure-surge-alert-dry-run.md`。
+- `RECONNECT_RATE_HIGH`: `operations_egress_reconnect_alerts.py` が識別子を含まない事前集計済み reconnect-rate JSONL と明示 `--threshold` を照合します。詳細は `egress-reconnect-rate-alert-dry-run.md`。
+- `INGEST_UNAVAILABLE`: `operations_ingest_unavailable_alerts.py` が識別子を含まない事前集計済み ingest connectivity failure-rate JSONL と明示 `--threshold` を照合します。外部 ingest probe は実行しません。詳細は `ingest-unavailable-alert-dry-run.md`。
+- `ASSET_FAILURE_RATE_HIGH`: `operations_asset_failure_alerts.py` が識別子を含まない事前集計済み asset processing failure-rate JSONL と明示 `--threshold` を照合します。object storage や processing worker は操作しません。詳細は `asset-failure-rate-alert-dry-run.md`。
+- `BILLING_WEBHOOK_DELAYED`: `operations_billing_webhook_alerts.py` が識別子を含まない事前集計済み最古 webhook backlog age JSONL と明示 `--threshold` を照合します。provider API、retry、Entitlement、返金等は操作しません。詳細は `billing-webhook-alert-dry-run.md`。
 
 いずれも通知 routing、provider 操作、Session mutation、課金操作を行いません。authority が読めない場合や catalog 契約が drift した場合は、既知の正常値を推測して alert / recovery を確定しません。
 
