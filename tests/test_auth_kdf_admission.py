@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -23,6 +24,13 @@ from auth_kdf_admission import (  # noqa: E402
     AuthKdfAdmissionUnavailable,
     auth_kdf_slot,
 )
+
+
+def _hold_auth_kdf_slot(lock_dir: str, ready: object, release: object) -> None:
+    config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=Path(lock_dir))
+    with auth_kdf_slot(config):
+        ready.set()
+        release.wait(timeout=10)
 
 
 class AuthKdfAdmissionTest(unittest.TestCase):
@@ -73,6 +81,34 @@ class AuthKdfAdmissionTest(unittest.TestCase):
             with auth_kdf_slot(config):
                 pass
 
+    def test_separate_worker_process_cannot_multiply_limit(self) -> None:
+        context = multiprocessing.get_context("fork")
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-process-") as root:
+            lock_dir = str(Path(root) / "locks")
+            ready = context.Event()
+            release = context.Event()
+            process = context.Process(
+                target=_hold_auth_kdf_slot,
+                args=(lock_dir, ready, release),
+            )
+            process.start()
+            try:
+                self.assertTrue(ready.wait(timeout=5), "child did not acquire KDF slot")
+                config = AuthKdfAdmissionConfig(
+                    max_concurrent=1,
+                    lock_dir=Path(lock_dir),
+                )
+                with self.assertRaises(AuthKdfAdmissionBusy):
+                    with auth_kdf_slot(config):
+                        self.fail("second worker unexpectedly acquired the only slot")
+            finally:
+                release.set()
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=5)
+            self.assertEqual(process.exitcode, 0)
+
     def test_group_writable_admission_directory_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-mode-") as temp_dir:
             lock_dir = Path(temp_dir)
@@ -109,17 +145,18 @@ class AuthKdfAdmissionTest(unittest.TestCase):
                     self.fail("symlink admission directory unexpectedly yielded")
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
-    def test_symlink_slot_file_fails_closed(self) -> None:
+    def test_symlink_slot_file_fails_closed_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-slot-link-") as temp_dir:
             lock_dir = Path(temp_dir)
             target = lock_dir / "target"
-            target.write_text("", encoding="utf-8")
+            target.write_text("sentinel", encoding="utf-8")
             (lock_dir / "slot-0.lock").symlink_to(target)
             config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
 
             with self.assertRaises(AuthKdfAdmissionUnavailable):
                 with auth_kdf_slot(config):
                     self.fail("symlink slot unexpectedly yielded")
+            self.assertEqual(target.read_text(encoding="utf-8"), "sentinel")
 
 
 class AuthKdfAdmissionApiTest(unittest.TestCase):
