@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -42,6 +43,32 @@ class ReconnectPolicyTest(unittest.TestCase):
             ReconnectPolicy(initial_seconds=5, max_seconds=1)
         with self.assertRaises(ValueError):
             ReconnectPolicy(jitter_ratio=1.1)
+
+    def test_non_finite_retry_timings_are_rejected(self) -> None:
+        fields = (
+            "initial_seconds",
+            "max_seconds",
+            "multiplier",
+            "jitter_ratio",
+            "max_elapsed_seconds",
+        )
+        for field in fields:
+            for value in (math.nan, math.inf, -math.inf):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, "retry timing values must be finite"):
+                        ReconnectPolicy(**{field: value})
+
+    def test_documented_zero_retry_limits_and_delays_remain_valid(self) -> None:
+        policy = ReconnectPolicy(
+            initial_seconds=0,
+            max_seconds=0,
+            multiplier=1,
+            jitter_ratio=0,
+            max_attempts=0,
+            max_elapsed_seconds=0,
+        )
+        self.assertEqual(policy.delay_for(1), 0)
+        self.assertFalse(policy.exhausted(100, 1000))
 
 
 class ErrorClassificationTest(unittest.TestCase):
