@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import unittest
 from pathlib import Path
@@ -58,29 +59,57 @@ THRESHOLD_DRY_RUNS = {
 }
 
 
+def string_constants(path: Path) -> dict[str, str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            constants[target.id] = node.value.value
+    return constants
+
+
 class OperationsAlertDetectorCoverageTests(unittest.TestCase):
     def load_catalog(self) -> dict[str, object]:
         return json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
 
-    def test_every_threshold_alert_has_explicit_dry_run_coverage(self) -> None:
+    def threshold_alerts(self) -> dict[str, dict[str, object]]:
         catalog = self.load_catalog()
-        threshold_alerts = {
-            alert["id"]
+        return {
+            alert["id"]: alert
             for alert in catalog["alerts"]
             if alert["trigger"]["mode"] == "threshold"
         }
 
-        self.assertEqual(threshold_alerts, set(THRESHOLD_DRY_RUNS))
+    def test_every_threshold_alert_has_explicit_dry_run_coverage(self) -> None:
+        threshold_alerts = self.threshold_alerts()
+
+        self.assertEqual(set(threshold_alerts), set(THRESHOLD_DRY_RUNS))
         for alert_id, (evaluator, dry_run_doc) in THRESHOLD_DRY_RUNS.items():
             with self.subTest(alert_id=alert_id):
+                evaluator_path = REPO_ROOT / evaluator
                 self.assertTrue(
-                    (REPO_ROOT / evaluator).is_file(),
+                    evaluator_path.is_file(),
                     f"missing dry-run evaluator for {alert_id}: {evaluator}",
                 )
                 self.assertTrue(
                     (REPO_ROOT / dry_run_doc).is_file(),
                     f"missing dry-run documentation for {alert_id}: {dry_run_doc}",
                 )
+
+                constants = string_constants(evaluator_path)
+                alert = threshold_alerts[alert_id]
+                self.assertEqual(constants.get("_ALERT_ID"), alert_id)
+                self.assertEqual(
+                    constants.get("_THRESHOLD_REF"),
+                    alert["trigger"]["threshold_ref"],
+                )
+                self.assertEqual(constants.get("_SIGNAL"), alert["signal"])
+                self.assertEqual(constants.get("_RUNBOOK"), alert["runbook"])
 
     def test_event_alerts_keep_generic_dry_run_coverage(self) -> None:
         catalog = self.load_catalog()
