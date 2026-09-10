@@ -42,6 +42,9 @@ class RetentionSnapshot:
     sessions_active: int
     sessions_expired: int
     gc_runs_required: int
+    users_with_active_sessions: int
+    users_with_multiple_active_sessions: int
+    max_active_sessions_per_user: int
 
     def as_dict(self) -> dict[str, int | str]:
         return {
@@ -50,6 +53,9 @@ class RetentionSnapshot:
             "sessions_active": self.sessions_active,
             "sessions_expired": self.sessions_expired,
             "gc_runs_required": self.gc_runs_required,
+            "users_with_active_sessions": self.users_with_active_sessions,
+            "users_with_multiple_active_sessions": self.users_with_multiple_active_sessions,
+            "max_active_sessions_per_user": self.max_active_sessions_per_user,
         }
 
 
@@ -66,7 +72,7 @@ def _finite_number(record: dict[str, Any], field: str) -> float:
     return number
 
 
-def _validate_record(token_hash: Any, record: Any) -> float:
+def _validate_record(token_hash: Any, record: Any) -> tuple[float, str]:
     if (
         not isinstance(token_hash, str)
         or len(token_hash) != TOKEN_HASH_LENGTH
@@ -87,7 +93,7 @@ def _validate_record(token_hash: Any, record: Any) -> float:
         raise RetentionInspectError("authentication session authority is invalid")
 
     _finite_number(record, "created_at")
-    return _finite_number(record, "expires_at")
+    return _finite_number(record, "expires_at"), user_id
 
 
 def _validated_now(value: float | None) -> float:
@@ -155,17 +161,25 @@ def inspect_auth_session_retention(
 
     total = 0
     expired = 0
+    active_sessions_by_user: dict[str, int] = {}
     for token_hash, record in state["sessions"].items():
-        expires_at = _validate_record(token_hash, record)
+        expires_at, user_id = _validate_record(token_hash, record)
         total += 1
         if expires_at <= effective_now:
             expired += 1
+            continue
+        active_sessions_by_user[user_id] = active_sessions_by_user.get(user_id, 0) + 1
 
     return RetentionSnapshot(
         sessions_total=total,
         sessions_active=total - expired,
         sessions_expired=expired,
         gc_runs_required=(expired + limit - 1) // limit,
+        users_with_active_sessions=len(active_sessions_by_user),
+        users_with_multiple_active_sessions=sum(
+            count > 1 for count in active_sessions_by_user.values()
+        ),
+        max_active_sessions_per_user=max(active_sessions_by_user.values(), default=0),
     )
 
 
