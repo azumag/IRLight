@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import time
 
 from auth_session_gc import DEFAULT_MAX_DELETIONS, prune_expired_sessions
 from auth_store import AuthStateError
@@ -18,6 +19,12 @@ from reaper import Reaper, ReaperConfig
 
 
 LOG = logging.getLogger("irlight.reaper_cli")
+
+
+def _elapsed_ms(started_at: float) -> int:
+    """Return a non-negative aggregate duration without exposing state data."""
+
+    return max(0, round((time.monotonic() - started_at) * 1000))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     # Provider/session cleanup must not be skipped because authentication state
     # is damaged. Run the bounded auth-session GC afterwards and surface a fixed
     # reason code instead of leaking authority paths or records.
+    auth_gc_started_at = time.monotonic()
     try:
         auth_gc = prune_expired_sessions(
             max_deletions=args.auth_session_gc_max_delete
@@ -68,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         result["auth_session_gc_status"] = "failed"
         result["auth_session_gc_reason"] = "AUTH_SESSION_GC_FAILED"
+        result["auth_session_gc_elapsed_ms"] = _elapsed_ms(auth_gc_started_at)
         print(result)
         return 1
 
@@ -76,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     result["auth_session_gc_scanned"] = auth_gc.scanned
     result["auth_session_gc_deleted"] = auth_gc.deleted
     result["auth_session_gc_expired_remaining"] = auth_gc.expired_remaining
+    result["auth_session_gc_elapsed_ms"] = _elapsed_ms(auth_gc_started_at)
     print(result)
     return 0
 
