@@ -74,6 +74,8 @@ def read_egress_status(
     status_path = Path(path)
     try:
         raw_text = status_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return _unknown("STATUS_INVALID")
     except (FileNotFoundError, OSError):
         return _unknown("STATUS_UNAVAILABLE")
     try:
