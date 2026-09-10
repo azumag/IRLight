@@ -81,7 +81,15 @@ def _prepare_lock_dir(path: Path) -> None:
         raise AuthKdfAdmissionUnavailable(
             "authentication KDF admission is unavailable"
         ) from exc
-    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISDIR(stat_result.st_mode):
+    # The default lives below /tmp, so reject a pre-created directory owned by
+    # another uid or writable by group/other. Otherwise another local process
+    # could replace slot files and turn the admission boundary into a race/DoS.
+    if (
+        stat.S_ISLNK(stat_result.st_mode)
+        or not stat.S_ISDIR(stat_result.st_mode)
+        or stat_result.st_uid != os.geteuid()
+        or stat_result.st_mode & 0o077
+    ):
         raise AuthKdfAdmissionUnavailable(
             "authentication KDF admission is unavailable"
         )
@@ -93,7 +101,12 @@ def _open_slot(path: Path) -> int:
         flags |= os.O_NOFOLLOW
     try:
         fd = os.open(path, flags, 0o600)
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        stat_result = os.fstat(fd)
+        if (
+            not stat.S_ISREG(stat_result.st_mode)
+            or stat_result.st_uid != os.geteuid()
+            or stat_result.st_mode & 0o077
+        ):
             os.close(fd)
             raise AuthKdfAdmissionUnavailable(
                 "authentication KDF admission is unavailable"
