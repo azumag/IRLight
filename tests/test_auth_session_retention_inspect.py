@@ -83,7 +83,13 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
 
     def test_strict_json_and_record_validation_fail_closed(self) -> None:
         invalid_documents = (
-            '{"sessions":{"' + "a" * 64 + '":{"user_id":"u","csrf_token":"' + CSRF + '","created_at":1,"expires_at":NaN}}}',
+            (
+                '{"sessions":{"'
+                + "a" * 64
+                + '":{"user_id":"u","csrf_token":"'
+                + CSRF
+                + '","created_at":1,"expires_at":NaN}}}'
+            ),
             '{"sessions":{},"sessions":{}}',
             json.dumps(
                 {
@@ -107,6 +113,23 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
                     path.write_text(document, encoding="utf-8")
                     with self.assertRaises(RetentionInspectError):
                         inspect_auth_session_retention(path=path, now=1.0)
+
+    def test_oversized_integer_timestamp_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth_sessions.json"
+            document = (
+                '{"sessions":{"'
+                + "a" * 64
+                + '":{"user_id":"u","csrf_token":"'
+                + CSRF
+                + '","created_at":1,"expires_at":'
+                + "9" * 400
+                + "}}}"
+            )
+            path.write_text(document, encoding="utf-8")
+
+            with self.assertRaises(RetentionInspectError):
+                inspect_auth_session_retention(path=path, now=1.0)
 
     def test_non_finite_inspection_time_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -132,7 +155,9 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
     def test_cli_failure_returns_fixed_non_secret_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "AUDIT_DUMMY_SECRET.json"
-            path.write_text('{"sessions":{"token":"AUDIT_DUMMY_SECRET"}}', encoding="utf-8")
+            path.write_text(
+                '{"sessions":{"token":"AUDIT_DUMMY_SECRET"}}', encoding="utf-8"
+            )
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 rc = main(["--state-file", str(path)])
