@@ -23,6 +23,7 @@ spec.loader.exec_module(module)
 
 REQUIRED_RUNBOOKS = {
     "docs/operations/media-node-heartbeat-stopped.md",
+    "docs/operations/media-node-resource-pressure.md",
     "docs/operations/session-process-crash-loop.md",
     "docs/operations/egress-widespread-failure.md",
     "docs/operations/ingest-connectivity-failure.md",
@@ -108,6 +109,41 @@ class OperationsAlertCatalogTests(unittest.TestCase):
                     candidate["runbook"],
                     "docs/operations/session-capacity-exhaustion.md",
                 )
+
+    def test_node_resource_alerts_have_dedicated_runbook_contract(self) -> None:
+        catalog = self.load_real_catalog()
+        alerts = {alert["id"]: alert for alert in catalog["alerts"]}
+        pressure = alerts["NODE_RESOURCE_PRESSURE"]
+        exhausted = alerts["NODE_RESOURCE_EXHAUSTED"]
+        runbook = "docs/operations/media-node-resource-pressure.md"
+
+        self.assertEqual(pressure["signal"], "media_nodes.resource_pressure")
+        self.assertEqual(
+            pressure["trigger"],
+            {
+                "mode": "threshold",
+                "threshold_ref": "operations.node_resource_pressure",
+            },
+        )
+        self.assertEqual(pressure["runbook"], runbook)
+        self.assertEqual(
+            pressure["dedup_keys"], ["environment", "node_id", "reason_code"]
+        )
+
+        self.assertEqual(exhausted["signal"], "media_nodes.resource_exhausted")
+        self.assertEqual(
+            exhausted["trigger"],
+            {"mode": "event", "event_type": "NODE_RESOURCE_EXHAUSTED"},
+        )
+        self.assertEqual(exhausted["runbook"], runbook)
+        self.assertEqual(
+            exhausted["dedup_keys"], ["environment", "node_id", "reason_code"]
+        )
+
+        for alert in (pressure, exhausted):
+            self.assertNotEqual(
+                alert["runbook"], "docs/operations/media-node-heartbeat-stopped.md"
+            )
 
     def test_every_alert_has_recovery_notification_and_safe_dedup_keys(self) -> None:
         catalog = self.load_real_catalog()
