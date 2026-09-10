@@ -24,6 +24,11 @@ from catalog_store import (
     update_destination as store_update_destination,
     verify_destination as store_verify_destination,
 )
+from destination_probe_admission import (
+    DestinationProbeAdmissionBusy,
+    DestinationProbeAdmissionUnavailable,
+    destination_probe_slot,
+)
 from destination_secret_store import (
     DestinationSecretConfigurationError,
     default_destination_secret_store,
@@ -183,7 +188,19 @@ def verify_destination(
     destination_id: str, current_user: CurrentUser, _csrf: Csrf = None
 ) -> dict[str, Any]:
     try:
-        return store_verify_destination(destination_id, str(current_user["id"]))
+        with destination_probe_slot():
+            return store_verify_destination(destination_id, str(current_user["id"]))
+    except DestinationProbeAdmissionBusy as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="destination verification is busy",
+            headers={"Retry-After": "1"},
+        ) from exc
+    except DestinationProbeAdmissionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="destination verification is unavailable",
+        ) from exc
     except CatalogNotFound as exc:
         raise _not_found(exc) from exc
     except CatalogVerifyFailed as exc:

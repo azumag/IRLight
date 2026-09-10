@@ -27,6 +27,7 @@ RELATED_PROCEDURES = {
     "state readiness": "docs/operations/state-readiness.md",
     "state restore drill": "docs/operations/state-restore-drill.md",
     "state provider reconciliation": "docs/operations/state-provider-reconciliation.md",
+    "destination verification admission": "docs/operations/destination-verification-admission.md",
     "media node resource pressure": "docs/operations/media-node-resource-pressure.md",
     "auth session gc": "docs/operations/auth-session-gc.md",
     "user session capacity": "docs/operations/session-capacity-exhaustion.md",
