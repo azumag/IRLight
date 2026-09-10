@@ -73,6 +73,28 @@ class AuthKdfAdmissionTest(unittest.TestCase):
             with auth_kdf_slot(config):
                 pass
 
+    def test_group_writable_admission_directory_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-mode-") as temp_dir:
+            lock_dir = Path(temp_dir)
+            lock_dir.chmod(0o770)
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
+
+            with self.assertRaises(AuthKdfAdmissionUnavailable):
+                with auth_kdf_slot(config):
+                    self.fail("group-writable admission directory unexpectedly yielded")
+
+    def test_group_writable_slot_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-slot-mode-") as temp_dir:
+            lock_dir = Path(temp_dir)
+            slot = lock_dir / "slot-0.lock"
+            slot.write_text("", encoding="utf-8")
+            slot.chmod(0o660)
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
+
+            with self.assertRaises(AuthKdfAdmissionUnavailable):
+                with auth_kdf_slot(config):
+                    self.fail("group-writable slot unexpectedly yielded")
+
     def test_symlink_admission_directory_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-parent-") as parent:
             root = Path(parent)
