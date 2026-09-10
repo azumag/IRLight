@@ -144,6 +144,10 @@ class OperationsAssetFailureAlertTests(unittest.TestCase):
         for field, value in (
             ("signal", "assets.queue_depth"),
             ("severity", "critical"),
+            (
+                "trigger",
+                {"mode": "threshold", "threshold_ref": "operations.wrong"},
+            ),
             ("runbook", "docs/operations/datastore-unavailable.md"),
         ):
             with self.subTest(field=field):
