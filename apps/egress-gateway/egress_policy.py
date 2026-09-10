@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -103,6 +104,17 @@ class ReconnectPolicy:
     max_elapsed_seconds: float = 0.0
 
     def __post_init__(self) -> None:
+        if not all(
+            math.isfinite(value)
+            for value in (
+                self.initial_seconds,
+                self.max_seconds,
+                self.multiplier,
+                self.jitter_ratio,
+                self.max_elapsed_seconds,
+            )
+        ):
+            raise ValueError("retry timing values must be finite")
         if self.initial_seconds < 0 or self.max_seconds < 0:
             raise ValueError("retry delays must be non-negative")
         if self.max_seconds < self.initial_seconds:
