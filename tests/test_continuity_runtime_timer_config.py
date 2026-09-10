@@ -18,7 +18,8 @@ class ContinuityRuntimeTimerConfigTest(unittest.TestCase):
             self.assertEqual(finite_env_float("SOURCE_RETRY_SECONDS", 3.0), 3.0)
 
     def test_existing_finite_value_semantics_are_preserved(self) -> None:
-        for raw, expected in (("3", 3.0), ("0", 0.0), ("-1", -1.0), ("0.25", 0.25)):
+        cases = (("3", 3.0), ("0", 0.0), ("-1", -1.0), ("0.25", 0.25))
+        for raw, expected in cases:
             with self.subTest(raw=raw):
                 with patch.dict(
                     os.environ, {"SOURCE_RETRY_SECONDS": raw}, clear=True
@@ -28,7 +29,16 @@ class ContinuityRuntimeTimerConfigTest(unittest.TestCase):
                     )
 
     def test_non_finite_values_are_rejected(self) -> None:
-        for raw in ("NaN", "nan", "Infinity", "+Infinity", "-Infinity", "inf", "-inf"):
+        values = (
+            "NaN",
+            "nan",
+            "Infinity",
+            "+Infinity",
+            "-Infinity",
+            "inf",
+            "-inf",
+        )
+        for raw in values:
             with self.subTest(raw=raw):
                 with patch.dict(
                     os.environ, {"SOURCE_RETRY_SECONDS": raw}, clear=True
@@ -46,11 +56,13 @@ class ContinuityRuntimeTimerConfigTest(unittest.TestCase):
                 finite_env_float("SOURCE_RETRY_SECONDS", 3.0)
             except RuntimeTimerConfigError as exc:
                 message = str(exc)
+                cause = exc.__cause__
             else:
                 self.fail("malformed timer unexpectedly accepted")
 
         self.assertEqual(message, "SOURCE_RETRY_SECONDS must be a finite number")
         self.assertNotIn(raw, message)
+        self.assertIsNone(cause)
 
     def test_non_finite_default_is_also_rejected(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
