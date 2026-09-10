@@ -1,14 +1,14 @@
 """Host-wide admission control for active Destination verification probes.
 
-The verification route performs outbound DNS / TCP / TLS / SRT work.  Uvicorn
+The verification route performs outbound DNS / TCP / TLS / SRT work. Uvicorn
 executes synchronous routes in a worker thread, and deployments may use more
 than one worker process, so a process-local semaphore alone does not provide a
-useful bound.  This module uses non-blocking ``flock`` leases on a small set of
-slot files.  The kernel releases the lease automatically when a worker exits,
+useful bound. This module uses non-blocking ``flock`` leases on a small set of
+slot files. The kernel releases the lease automatically when a worker exits,
 which avoids stale lease records after crashes.
 
-This is deliberately an admission gate only.  It does not change Destination
-state, start Media Nodes, call providers, or retry probes.  Cluster-wide limits
+This is deliberately an admission gate only. It does not change Destination
+state, start Media Nodes, call providers, or retry probes. Cluster-wide limits
 across hosts/containers remain a deployment concern; the default lock directory
 is shared by all workers in one Control Plane container/host and can be moved to
 a shared runtime filesystem explicitly.
@@ -17,8 +17,8 @@ a shared runtime filesystem explicitly.
 from __future__ import annotations
 
 import fcntl
-import math
 import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,18 +82,30 @@ def _prepare_lock_dir(path: Path) -> None:
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         ) from exc
-    if not path.is_dir() or path.is_symlink():
+    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISDIR(stat_result.st_mode):
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         )
-    # Do not require an exact mode because an operator may intentionally use a
-    # shared runtime directory with a stricter umask/ACL.  The individual slot
-    # files are opened with mode 0600 and contain no request or credential data.
-    if not math.isfinite(float(stat_result.st_nlink)):
-        # Defensive type sanity for unusual stat implementations/test doubles.
+
+
+def _open_slot(path: Path) -> int:
+    flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise DestinationProbeAdmissionUnavailable(
+                "destination verification admission is unavailable"
+            )
+        return fd
+    except DestinationProbeAdmissionUnavailable:
+        raise
+    except OSError as exc:
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
-        )
+        ) from exc
 
 
 @contextmanager
@@ -108,13 +120,7 @@ def destination_probe_slot(
     acquired_fd: int | None = None
     try:
         for index in range(cfg.max_concurrent):
-            path = cfg.lock_dir / f"slot-{index}.lock"
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
-            except OSError as exc:
-                raise DestinationProbeAdmissionUnavailable(
-                    "destination verification admission is unavailable"
-                ) from exc
+            fd = _open_slot(cfg.lock_dir / f"slot-{index}.lock")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
