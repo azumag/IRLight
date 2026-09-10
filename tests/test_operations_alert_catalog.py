@@ -110,28 +110,40 @@ class OperationsAlertCatalogTests(unittest.TestCase):
                     "docs/operations/session-capacity-exhaustion.md",
                 )
 
-    def test_node_resource_pressure_has_dedicated_runbook_contract(self) -> None:
+    def test_node_resource_alerts_have_dedicated_runbook_contract(self) -> None:
         catalog = self.load_real_catalog()
         alerts = {alert["id"]: alert for alert in catalog["alerts"]}
-        alert = alerts["NODE_RESOURCE_PRESSURE"]
+        pressure = alerts["NODE_RESOURCE_PRESSURE"]
+        exhausted = alerts["NODE_RESOURCE_EXHAUSTED"]
+        runbook = "docs/operations/media-node-resource-pressure.md"
 
-        self.assertEqual(alert["signal"], "media_nodes.resource_pressure")
+        self.assertEqual(pressure["signal"], "media_nodes.resource_pressure")
         self.assertEqual(
-            alert["trigger"],
+            pressure["trigger"],
             {
                 "mode": "threshold",
                 "threshold_ref": "operations.node_resource_pressure",
             },
         )
+        self.assertEqual(pressure["runbook"], runbook)
         self.assertEqual(
-            alert["runbook"], "docs/operations/media-node-resource-pressure.md"
+            pressure["dedup_keys"], ["environment", "node_id", "reason_code"]
         )
+
+        self.assertEqual(exhausted["signal"], "media_nodes.resource_exhausted")
         self.assertEqual(
-            alert["dedup_keys"], ["environment", "node_id", "reason_code"]
+            exhausted["trigger"],
+            {"mode": "event", "event_type": "NODE_RESOURCE_EXHAUSTED"},
         )
-        self.assertNotEqual(
-            alert["runbook"], "docs/operations/media-node-heartbeat-stopped.md"
+        self.assertEqual(exhausted["runbook"], runbook)
+        self.assertEqual(
+            exhausted["dedup_keys"], ["environment", "node_id", "reason_code"]
         )
+
+        for alert in (pressure, exhausted):
+            self.assertNotEqual(
+                alert["runbook"], "docs/operations/media-node-heartbeat-stopped.md"
+            )
 
     def test_every_alert_has_recovery_notification_and_safe_dedup_keys(self) -> None:
         catalog = self.load_real_catalog()
