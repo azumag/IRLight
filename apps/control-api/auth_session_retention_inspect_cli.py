@@ -1,7 +1,7 @@
 """Read-only retention inspection for authentication session authority.
 
 The inspector intentionally does not acquire the auth-store lock because that
-lock path can create filesystem entries.  Auth writers replace the JSON file
+lock path can create filesystem entries. Auth writers replace the JSON file
 atomically, so opening one regular-file inode gives this command a consistent
 byte snapshot without mutating authority state.
 """
@@ -57,7 +57,10 @@ def _finite_number(record: dict[str, Any], field: str) -> float:
     value = record.get(field)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RetentionInspectError("authentication session authority is invalid")
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise RetentionInspectError("authentication session authority is invalid") from None
     if not math.isfinite(number):
         raise RetentionInspectError("authentication session authority is invalid")
     return number
@@ -92,7 +95,10 @@ def _validated_now(value: float | None) -> float:
         return time.time()
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RetentionInspectError("inspection time is invalid")
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise RetentionInspectError("inspection time is invalid") from None
     if not math.isfinite(number):
         raise RetentionInspectError("inspection time is invalid")
     return number
