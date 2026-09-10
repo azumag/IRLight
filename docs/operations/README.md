@@ -43,6 +43,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - Media Node heartbeat warning の read-only dry-run: [node-heartbeat-alert-dry-run.md](node-heartbeat-alert-dry-run.md)
 - Media Node capacity 80% warning の read-only dry-run: [media-node-capacity-alert-dry-run.md](media-node-capacity-alert-dry-run.md)
 - Session process crash-loop Critical alert の明示 threshold read-only dry-run: [session-process-crash-loop-alert-dry-run.md](session-process-crash-loop-alert-dry-run.md)
+- Session failure surge Critical alert の明示 threshold read-only dry-run: [session-failure-surge-alert-dry-run.md](session-failure-surge-alert-dry-run.md)
 
 障害の根因が authority、deploy regression、secret 監査などにある場合は、必須12シナリオの runbook だけで復旧を推測せず、上記の専用手順を優先してください。
 
