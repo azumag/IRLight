@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +63,32 @@ class EgressStatusReaderTest(unittest.TestCase):
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertFalse(result["connected"])
         self.assertEqual(result["reason_code"], "STATUS_STALE")
+
+    def test_nonfinite_max_age_config_falls_back_to_safe_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "CONNECTED",
+                        "connected": True,
+                        "observed_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"NODE_EGRESS_STATUS_MAX_AGE_SECONDS": "NaN"},
+            ):
+                configured = read_egress_status(path, now=131.0)
+            explicit = read_egress_status(
+                path,
+                now=131.0,
+                max_age_seconds=float("inf"),
+            )
+        self.assertEqual(configured["reason_code"], "STATUS_STALE")
+        self.assertEqual(explicit["reason_code"], "STATUS_STALE")
 
     def test_terminal_status_does_not_expire(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
