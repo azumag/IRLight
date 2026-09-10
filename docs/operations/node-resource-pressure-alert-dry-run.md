@@ -10,7 +10,7 @@ alert catalog の次の契約と一致する場合だけ評価します。
 - severity: `warning`
 - signal: `media_nodes.resource_pressure`
 - trigger: `threshold` / `operations.node_resource_pressure`
-- runbook: `docs/operations/media-node-heartbeat-stopped.md`
+- runbook: `docs/operations/media-node-resource-pressure.md`
 
 catalog がこの契約からずれている場合は `INVALID_CATALOG` とし、推測で評価を継続しません。
 
@@ -68,7 +68,7 @@ printf '%s\n' '{"resource_pressure":11}' | \
 - process kill、cache/drop、filesystem cleanup
 - alert / paging / webhook 等の外部通知
 
-Warning が一致しても、resource の種類や根因をこの aggregate scalar だけから推測しません。まず既存の `media-node-heartbeat-stopped.md` にある read-only な Node / host / Control Plane 切り分けを優先し、resource 固有の対応は実測に基づいて判断します。provider shape 変更や Node 増設など費用・capacity に影響する操作は自動実行しません。
+Warning が一致しても、resource の種類や根因をこの aggregate scalar だけから推測しません。`media-node-resource-pressure.md` の read-only triage を入口にし、必要に応じて heartbeat、capacity、Session crash-loop 等の専用 runbook を併用します。provider shape 変更や Node 増設など費用・capacity に影響する操作は自動実行しません。
 
 ## 検証観点
 
