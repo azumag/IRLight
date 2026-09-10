@@ -35,6 +35,7 @@ RELATED_PROCEDURES = {
     "media node availability alert dry-run": "docs/operations/media-node-availability-alert-dry-run.md",
     "node heartbeat alert dry-run": "docs/operations/node-heartbeat-alert-dry-run.md",
     "media node capacity alert dry-run": "docs/operations/media-node-capacity-alert-dry-run.md",
+    "session process crash-loop alert dry-run": "docs/operations/session-process-crash-loop-alert-dry-run.md",
 }
 
 NEW_RUNBOOKS = {
