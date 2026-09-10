@@ -43,6 +43,7 @@ Continuity Media Engineは既に `RECOVERY_STABLE_SECONDS`（既定3秒）を使
 - Control Plane再起動で安定窓を短縮しないようcandidate時刻は `sessions.json` に永続化する。
 - candidate中も `hold_deadline_at` はclearしない。保持期限直前の短いflapでHOLDING寿命を延長し続けないため、安定確認完了前の入力は正式復帰扱いにしない。
 - `RECOVERY_STABLE_SECONDS=0` はテスト等でgateを無効化するために利用できる。production推奨値はIssue #4の受け入れ条件どおり3〜5秒。
+- Continuity Engine の `INPUT_TIMEOUT_SECONDS` と `RECOVERY_STABLE_SECONDS` は有限値でなければならない。`NaN` / `Infinity` / `-Infinity` は起動時の状態機械構築で拒否し、無限の入力猶予や復帰判定不能として実行を継続しない。
 
 Node Agentはquality/event差分がないheartbeatでもSessionStoreへ最新observationを渡す。これにより、最初の `ingest.reconnected` 後に新しいNode-level eventが発生しなくても安定窓を完了できる。
 
