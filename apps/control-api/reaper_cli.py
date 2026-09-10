@@ -1,8 +1,8 @@
 """Standalone reaper entrypoint.
 
 Run periodically (cron / systemd timer) against the same STATE_DIR as the
-control plane. It cleans up timed-out sessions and orphaned provider resources
-without touching the media plane.
+control plane. It cleans up timed-out sessions, orphaned provider resources,
+and expired authentication sessions without touching the media plane.
 """
 
 from __future__ import annotations
@@ -10,10 +10,14 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 
+from auth_session_gc import DEFAULT_MAX_DELETIONS, prune_expired_sessions
+from auth_store import AuthStateError
 from fake_provider_for_api import default_provider, default_store
 from reaper import Reaper, ReaperConfig
+
+
+LOG = logging.getLogger("irlight.reaper_cli")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +31,12 @@ def main(argv: list[str] | None = None) -> int:
         "--heartbeat-grace-seconds",
         type=float,
         default=float(os.getenv("NODE_HEARTBEAT_GRACE_SECONDS", "120")),
+    )
+    parser.add_argument(
+        "--auth-session-gc-max-delete",
+        type=int,
+        default=DEFAULT_MAX_DELETIONS,
+        help="maximum expired authentication sessions to delete per sweep",
     )
     args = parser.parse_args(argv)
 
@@ -44,6 +54,28 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     result = reaper.run()
+
+    # Provider/session cleanup must not be skipped because authentication state
+    # is damaged. Run the bounded auth-session GC afterwards and surface a fixed
+    # reason code instead of leaking authority paths or records.
+    try:
+        auth_gc = prune_expired_sessions(
+            max_deletions=args.auth_session_gc_max_delete
+        )
+    except (AuthStateError, ValueError):
+        LOG.error(
+            "authentication session GC failed; inspect authentication authority state"
+        )
+        result["auth_session_gc_status"] = "failed"
+        result["auth_session_gc_reason"] = "AUTH_SESSION_GC_FAILED"
+        print(result)
+        return 1
+
+    # Keep the existing flat dict output contract used by cleanup smoke tests.
+    result["auth_session_gc_status"] = "ok"
+    result["auth_session_gc_scanned"] = auth_gc.scanned
+    result["auth_session_gc_deleted"] = auth_gc.deleted
+    result["auth_session_gc_expired_remaining"] = auth_gc.expired_remaining
     print(result)
     return 0
 
