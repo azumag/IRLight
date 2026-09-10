@@ -14,7 +14,7 @@ def finite_env_float(name: str, default: float) -> float:
     The caller remains responsible for range semantics such as whether zero or
     negative values are meaningful. This helper intentionally changes only the
     malformed/non-finite boundary so existing finite-value behavior is kept.
-    Raw environment values are never included in the error text.
+    Raw environment values are never included in error output.
     """
 
     raw = os.getenv(name)
@@ -23,10 +23,13 @@ def finite_env_float(name: str, default: float) -> float:
     else:
         try:
             value = float(raw)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
+            # float() includes the raw input in its ValueError text. Suppress
+            # that exception context so an uncaught configuration error cannot
+            # echo the original environment value into startup logs.
             raise RuntimeTimerConfigError(
                 f"{name} must be a finite number"
-            ) from exc
+            ) from None
 
     if not math.isfinite(value):
         raise RuntimeTimerConfigError(f"{name} must be a finite number")
