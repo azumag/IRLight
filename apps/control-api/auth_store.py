@@ -232,7 +232,9 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
             item, "password_hash", context="user state record"
         )
         _require_nonempty_string(item, "role", context="user state record")
-        _require_nonempty_string(item, "status", context="user state record")
+        status = _require_nonempty_string(item, "status", context="user state record")
+        if status != "active":
+            raise AuthStateError("user state record has invalid status")
         created_at = _require_finite_number(
             item, "created_at", context="user state record"
         )
