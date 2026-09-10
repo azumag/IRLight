@@ -73,13 +73,17 @@ def read_egress_status(
 ) -> dict[str, Any]:
     status_path = Path(path)
     try:
+        raw_text = status_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return _unknown("STATUS_UNAVAILABLE")
+    try:
         raw = json.loads(
-            status_path.read_text(encoding="utf-8"),
+            raw_text,
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_object_pairs,
         )
-    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
-        return _unknown("STATUS_UNAVAILABLE")
+    except (json.JSONDecodeError, ValueError):
+        return _unknown("STATUS_INVALID")
     if not isinstance(raw, dict):
         return _unknown("STATUS_INVALID")
 
