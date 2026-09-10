@@ -66,7 +66,9 @@ def _default_limit() -> int:
     try:
         value = int(raw)
     except ValueError:
-        return DEFAULT_MAX_CONCURRENT_SESSIONS
+        raise EntitlementStateError(
+            "default concurrent-session limit is invalid"
+        ) from None
     return max(0, value)
 
 
