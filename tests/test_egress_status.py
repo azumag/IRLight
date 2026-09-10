@@ -92,6 +92,15 @@ class EgressStatusReaderTest(unittest.TestCase):
             self.assertEqual(corrupt["status"], "UNKNOWN")
             self.assertEqual(corrupt["reason_code"], "STATUS_INVALID")
 
+    def test_invalid_utf8_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_bytes(b'{"status":"CONNECTED","note":"\xff"}')
+            result = read_egress_status(path, now=101.0, max_age_seconds=30.0)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["reason_code"], "STATUS_INVALID")
+
     def test_nonfinite_observed_at_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "egress.json")
