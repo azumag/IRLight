@@ -108,6 +108,8 @@ EGRESS_MAX_ATTEMPTS=0
 EGRESS_MAX_RETRY_SECONDS=0
 ```
 
+`EGRESS_RETRY_INITIAL_SECONDS`、`EGRESS_RETRY_MAX_SECONDS`、`EGRESS_RETRY_MULTIPLIER`、`EGRESS_RETRY_JITTER_RATIO`、`EGRESS_MAX_RETRY_SECONDS` は有限値でなければならず、`NaN` / `Infinity` / `-Infinity` は retry policy 構築時に拒否します。これにより非有限値で backoff や outage limit が永久待ち・判定不能になる状態を作りません。診断には raw 環境変数値や credentialed URL を含めません。
+
 `0` のretry limitは無制限です。最大経過時間は「最後に正常接続してからの累積稼働時間」ではなく、現在の連続outage episodeだけを計測します。正常接続した時点でfailure countとoutage timerをresetします。
 
 ## Failure classification
