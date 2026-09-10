@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -209,6 +210,87 @@ class SessionCapacityInspectTest(unittest.TestCase):
         self.assertEqual(payload["authority"], "entitlements")
         self.assertNotIn("sensitive-user-id", output.getvalue())
         self.assertNotIn(str(state_dir), output.getvalue())
+
+    def test_invalid_runtime_default_returns_safe_unavailable_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            previous = os.environ.get("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS")
+            os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = (
+                "sensitive-malformed-limit"
+            )
+            output = io.StringIO()
+            try:
+                with redirect_stdout(output):
+                    exit_code = main(
+                        [
+                            "--state-dir",
+                            str(state_dir),
+                            "--user-id",
+                            "sensitive-user-id",
+                        ]
+                    )
+            finally:
+                if previous is None:
+                    os.environ.pop("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS", None)
+                else:
+                    os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = previous
+
+        self.assertEqual(exit_code, 3)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["status"], "CAPACITY_UNAVAILABLE")
+        self.assertEqual(payload["authority"], "entitlements")
+        self.assertNotIn("sensitive-malformed-limit", output.getvalue())
+        self.assertNotIn("sensitive-user-id", output.getvalue())
+        self.assertNotIn(str(state_dir), output.getvalue())
+
+    def test_persisted_override_does_not_parse_invalid_runtime_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            (state_dir / "entitlements.json").write_text(
+                json.dumps(
+                    {
+                        "entitlements": {
+                            "user-a": {
+                                "id": "user:user-a",
+                                "user_id": "user-a",
+                                "plan": "supporter",
+                                "max_concurrent_sessions": 2,
+                                "updated_at": 1.0,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous = os.environ.get("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS")
+            os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = "not-a-number"
+            output = io.StringIO()
+            try:
+                with redirect_stdout(output):
+                    exit_code = main(
+                        [
+                            "--state-dir",
+                            str(state_dir),
+                            "--user-id",
+                            "user-a",
+                        ]
+                    )
+            finally:
+                if previous is None:
+                    os.environ.pop("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS", None)
+                else:
+                    os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = previous
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "available": 2,
+                "limit": 2,
+                "occupied": 0,
+                "status": "CAPACITY_AVAILABLE",
+            },
+        )
 
 
 if __name__ == "__main__":
