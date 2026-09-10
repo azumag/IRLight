@@ -18,7 +18,7 @@ Issue #11 の alert / notification 要件を、外部監視製品や通知先へ
 
 `MEDIA_NODE_CAPACITY_HIGH` は Issue #11 が明示している **Node capacity 80%超** warning を `issue11.media_node_capacity_80_percent` として参照します。論理 signal は `media_nodes.capacity_ratio` で、検証済み `max_sessions` に対する active / reserved Session の占有率を想定します。ユーザー単位の `max_concurrent_sessions` を扱う `session_capacity_inspect_cli.py` / `session-capacity-exhaustion.md` とは別契約です。Node capacity の collector / scheduler metric がまだ接続されていない環境では、この warning をユーザー entitlement の値から推測して発火させません。
 
-`NODE_RESOURCE_PRESSURE` は `media_nodes.resource_pressure` と専用 runbook `media-node-resource-pressure.md` を結びます。CPU、memory、disk I/O、network 等のどの scalar を採用するか、単位、aggregation window、production threshold は collector / deployment が明示する契約であり、repository は heartbeat や capacity 等の別 signal から代用・合成しません。`operations.node_resource_pressure` はその deployment threshold の参照名です。
+`NODE_RESOURCE_PRESSURE` と `NODE_RESOURCE_EXHAUSTED` は専用 runbook `media-node-resource-pressure.md` へまとめて routing します。前者は `media_nodes.resource_pressure` threshold、後者は `media_nodes.resource_exhausted` event です。CPU、memory、disk I/O、network 等のどの scalar / event reason を採用するか、単位、aggregation window、production threshold は collector / deployment が明示する契約であり、repository は heartbeat や capacity 等の別 signal から代用・合成しません。`operations.node_resource_pressure` は pressure warning 用 deployment threshold の参照名です。
 
 それ以外の rate / pressure / backlog の数値 threshold は、実測値と運用負荷を確認せず固定しません。`operations.*` の `threshold_ref` は deployment 側で値を定義する必要がある未接続の契約名です。ただし `MEDIA_NODES_ALL_UNAVAILABLE` の `operations.media_nodes_all_unavailable` は、少なくとも1件の Node が `desired_state=RUNNING` である状況で available count が 0 になる論理境界を repository 内の read-only Node authority から安全に評価できるため、専用 dry-run を接続しています。Node が存在しない idle 環境や全 Node が明示的に停止されている状態は outage と推測しません。provisioning / stopping 等で zero available が何秒継続したら通知するかは deployment 側の運用 threshold として残します。
 
@@ -36,7 +36,7 @@ repository root から次を実行すると catalog の strict JSON、schema、r
 python apps/control-api/operations_alert_catalog.py
 ```
 
-成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないこと、Node capacity 80% warning がユーザー entitlement capacity へ誤配線されないこと、Node resource-pressure warning が heartbeat runbook へ誤配線されないことも固定します。
+成功時は alert 本文や signal 値を出さず、件数だけを `VALID alerts=<n>` と表示します。CI では `tests/test_operations_alert_catalog.py` が同じ validator を使い、Issue #11 の必須 runbook すべてに少なくとも1つの alert が紐づくこと、critical / warning の代表 alert が欠落しないこと、Node capacity 80% warning がユーザー entitlement capacity へ誤配線されないこと、Node resource pressure / exhaustion が heartbeat runbook へ誤配線されないことも固定します。
 
 ## Event trigger の dry-run
 
