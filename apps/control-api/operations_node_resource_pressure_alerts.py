@@ -37,7 +37,7 @@ from operations_jsonl_safety import (
 _ALERT_ID = "NODE_RESOURCE_PRESSURE"
 _SIGNAL = "media_nodes.resource_pressure"
 _THRESHOLD_REF = "operations.node_resource_pressure"
-_RUNBOOK = "docs/operations/media-node-heartbeat-stopped.md"
+_RUNBOOK = "docs/operations/media-node-resource-pressure.md"
 _REQUIRED_FIELDS = {"resource_pressure"}
 _MAX_RECORD_BYTES = 4 * 1024
 
