@@ -37,6 +37,7 @@ RELATED_PROCEDURES = {
     "media node capacity alert dry-run": "docs/operations/media-node-capacity-alert-dry-run.md",
     "session process crash-loop alert dry-run": "docs/operations/session-process-crash-loop-alert-dry-run.md",
     "session failure surge alert dry-run": "docs/operations/session-failure-surge-alert-dry-run.md",
+    "egress failure surge alert dry-run": "docs/operations/egress-failure-surge-alert-dry-run.md",
 }
 
 NEW_RUNBOOKS = {
