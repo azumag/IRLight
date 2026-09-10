@@ -33,6 +33,19 @@ def _unknown(reason_code: str) -> dict[str, Any]:
     }
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key is not allowed: {key}")
+        result[key] = value
+    return result
+
+
 def _nonnegative_int(value: object, default: int = 0) -> int:
     try:
         return max(0, int(value))  # type: ignore[arg-type]
@@ -60,8 +73,12 @@ def read_egress_status(
 ) -> dict[str, Any]:
     status_path = Path(path)
     try:
-        raw = json.loads(status_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        raw = json.loads(
+            status_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_object_pairs,
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
         return _unknown("STATUS_UNAVAILABLE")
     if not isinstance(raw, dict):
         return _unknown("STATUS_INVALID")
