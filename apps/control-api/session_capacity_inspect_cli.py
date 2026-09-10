@@ -226,11 +226,18 @@ def main(argv: list[str] | None = None) -> int:
     except SessionCapacityInspectError:
         return _print_unavailable("entitlements")
 
+    default_limit = 0
+    if args.user_id not in entitlements:
+        try:
+            default_limit = _default_limit()
+        except EntitlementStateError:
+            return _print_unavailable("entitlements")
+
     payload = summarize_session_capacity(
         sessions,
         entitlements,
         user_id=args.user_id,
-        default_limit=_default_limit(),
+        default_limit=default_limit,
     )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 2 if payload["status"] != "CAPACITY_AVAILABLE" else 0
