@@ -36,4 +36,6 @@ The file-backed fake provider inventory used by multi-process dry-run and lifecy
 
 Runtime status files are not Control Plane authority, but consumers must still avoid interpreting ambiguous JSON as trustworthy health state. The Node Agent egress-status reader rejects duplicate object keys and the non-standard `NaN` / `Infinity` / `-Infinity` constants anywhere in `egress.json` before inspecting individual fields. Malformed or ambiguous JSON is reported as `UNKNOWN` with `STATUS_INVALID`; a missing or unreadable file remains `UNKNOWN` with `STATUS_UNAVAILABLE`. The reader never repairs or rewrites the runtime status file, and this hardening does not change egress reconnect behavior, destination configuration, provider actions, billing, or notification policy.
 
-Refs #87 #90
+The Continuity and Egress Gateway runtime status writers now apply the same strict numeric boundary on output. Their atomic writers serialize with `allow_nan=False` and convert encoder `TypeError` / `ValueError` failures to the fixed `RuntimeStatusWriteError` before `os.replace()`. A rejected payload therefore leaves the last readable `status.json` / `egress.json` untouched and removes its temporary file. Valid payload shape and ordering remain unchanged; this is serialization hardening only and does not alter reconnect, continuity switching, GStreamer pipeline, Destination/provider, Session, billing, or notification semantics.
+
+Refs #87 #90 #249
