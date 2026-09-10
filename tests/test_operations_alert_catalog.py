@@ -23,6 +23,7 @@ spec.loader.exec_module(module)
 
 REQUIRED_RUNBOOKS = {
     "docs/operations/media-node-heartbeat-stopped.md",
+    "docs/operations/media-node-resource-pressure.md",
     "docs/operations/session-process-crash-loop.md",
     "docs/operations/egress-widespread-failure.md",
     "docs/operations/ingest-connectivity-failure.md",
@@ -108,6 +109,29 @@ class OperationsAlertCatalogTests(unittest.TestCase):
                     candidate["runbook"],
                     "docs/operations/session-capacity-exhaustion.md",
                 )
+
+    def test_node_resource_pressure_has_dedicated_runbook_contract(self) -> None:
+        catalog = self.load_real_catalog()
+        alerts = {alert["id"]: alert for alert in catalog["alerts"]}
+        alert = alerts["NODE_RESOURCE_PRESSURE"]
+
+        self.assertEqual(alert["signal"], "media_nodes.resource_pressure")
+        self.assertEqual(
+            alert["trigger"],
+            {
+                "mode": "threshold",
+                "threshold_ref": "operations.node_resource_pressure",
+            },
+        )
+        self.assertEqual(
+            alert["runbook"], "docs/operations/media-node-resource-pressure.md"
+        )
+        self.assertEqual(
+            alert["dedup_keys"], ["environment", "node_id", "reason_code"]
+        )
+        self.assertNotEqual(
+            alert["runbook"], "docs/operations/media-node-heartbeat-stopped.md"
+        )
 
     def test_every_alert_has_recovery_notification_and_safe_dedup_keys(self) -> None:
         catalog = self.load_real_catalog()
