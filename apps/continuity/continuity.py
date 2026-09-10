@@ -23,6 +23,10 @@ from state import ActualAudio, AudioMode, ContinuityState, VideoSource  # noqa: 
 LOG = logging.getLogger("irlight.continuity")
 
 
+class RuntimeStatusWriteError(ValueError):
+    """Raised when a runtime status payload cannot be serialized as strict JSON."""
+
+
 def env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     return default if raw is None else float(raw)
@@ -38,7 +42,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            try:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise RuntimeStatusWriteError(
+                    "runtime status payload is not strict JSON"
+                ) from exc
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
