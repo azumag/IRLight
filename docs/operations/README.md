@@ -34,6 +34,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - authority readiness: [state-readiness.md](state-readiness.md)
 - backup restore drill: [state-restore-drill.md](state-restore-drill.md)
 - state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
+- Media Node resource pressure の一次対応: [media-node-resource-pressure.md](media-node-resource-pressure.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
