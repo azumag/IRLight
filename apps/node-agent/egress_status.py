@@ -17,6 +17,7 @@ ALLOWED_STATUSES = {
     "STOPPED",
 }
 TERMINAL_STATUSES = {"AUTH_FAILED", "FAILED", "STOPPED"}
+DEFAULT_MAX_AGE_SECONDS = 30.0
 
 
 def _unknown(reason_code: str) -> dict[str, Any]:
@@ -31,6 +32,19 @@ def _unknown(reason_code: str) -> dict[str, Any]:
         "destination_host": None,
         "observed_at": time.time(),
     }
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key is not allowed: {key}")
+        result[key] = value
+    return result
 
 
 def _nonnegative_int(value: object, default: int = 0) -> int:
@@ -52,6 +66,16 @@ def _nonnegative_finite_number(value: object) -> int | float | None:
     return value
 
 
+def _max_age_seconds(value: object) -> float:
+    try:
+        numeric = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_MAX_AGE_SECONDS
+    if not math.isfinite(numeric):
+        return DEFAULT_MAX_AGE_SECONDS
+    return numeric
+
+
 def read_egress_status(
     path: str | Path,
     *,
@@ -60,9 +84,19 @@ def read_egress_status(
 ) -> dict[str, Any]:
     status_path = Path(path)
     try:
-        raw = json.loads(status_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        raw_text = status_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return _unknown("STATUS_INVALID")
+    except (FileNotFoundError, OSError):
         return _unknown("STATUS_UNAVAILABLE")
+    try:
+        raw = json.loads(
+            raw_text,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_object_pairs,
+        )
+    except (json.JSONDecodeError, ValueError):
+        return _unknown("STATUS_INVALID")
     if not isinstance(raw, dict):
         return _unknown("STATUS_INVALID")
 
@@ -82,12 +116,11 @@ def read_egress_status(
         if not math.isfinite(observed_at) or observed_at < 0:
             return _unknown("STATUS_INVALID")
     if max_age_seconds is None:
-        try:
-            max_age_seconds = float(
-                os.getenv("NODE_EGRESS_STATUS_MAX_AGE_SECONDS", "30")
-            )
-        except ValueError:
-            max_age_seconds = 30.0
+        max_age_seconds = _max_age_seconds(
+            os.getenv("NODE_EGRESS_STATUS_MAX_AGE_SECONDS", "30")
+        )
+    else:
+        max_age_seconds = _max_age_seconds(max_age_seconds)
     if (
         status not in TERMINAL_STATUSES
         and max_age_seconds > 0

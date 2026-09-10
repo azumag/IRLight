@@ -32,4 +32,8 @@ The ingest authentication guard authority follows the same fail-closed boundary.
 
 The file-backed fake provider inventory used by multi-process dry-run and lifecycle tests follows the same fail-closed JSON discipline even though it is not the production cloud provider source of truth. `FileFakeProvider` rejects malformed JSON, duplicate object keys, non-standard non-finite constants, and records that do not match the shape produced by its own writer instead of silently treating a damaged file as an empty provider inventory. Its writer validates that shape, uses `allow_nan=False`, and discards the temporary file on validation or serialization failure so the last readable fake inventory remains available. This prevents local reaper/lifecycle tests from masking state corruption as “no provider resources”.
 
+## Runtime status inputs
+
+Runtime status files are not Control Plane authority, but consumers must still avoid interpreting ambiguous JSON as trustworthy health state. The Node Agent egress-status reader rejects duplicate object keys and the non-standard `NaN` / `Infinity` / `-Infinity` constants anywhere in `egress.json` before inspecting individual fields. Malformed or ambiguous JSON is reported as `UNKNOWN` with `STATUS_INVALID`; a missing or unreadable file remains `UNKNOWN` with `STATUS_UNAVAILABLE`. The reader never repairs or rewrites the runtime status file, and this hardening does not change egress reconnect behavior, destination configuration, provider actions, billing, or notification policy.
+
 Refs #87 #90
