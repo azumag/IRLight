@@ -38,6 +38,7 @@ RELATED_PROCEDURES = {
     "session process crash-loop alert dry-run": "docs/operations/session-process-crash-loop-alert-dry-run.md",
     "session failure surge alert dry-run": "docs/operations/session-failure-surge-alert-dry-run.md",
     "egress failure surge alert dry-run": "docs/operations/egress-failure-surge-alert-dry-run.md",
+    "egress reconnect rate alert dry-run": "docs/operations/egress-reconnect-rate-alert-dry-run.md",
 }
 
 NEW_RUNBOOKS = {
