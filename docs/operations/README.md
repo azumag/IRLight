@@ -42,6 +42,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - Media Node 全停止 Critical alert の read-only dry-run: [media-node-availability-alert-dry-run.md](media-node-availability-alert-dry-run.md)
 - Media Node heartbeat warning の read-only dry-run: [node-heartbeat-alert-dry-run.md](node-heartbeat-alert-dry-run.md)
 - Media Node capacity 80% warning の read-only dry-run: [media-node-capacity-alert-dry-run.md](media-node-capacity-alert-dry-run.md)
+- Media Node resource-pressure Warning alert の明示 threshold read-only dry-run: [node-resource-pressure-alert-dry-run.md](node-resource-pressure-alert-dry-run.md)
 - Session process crash-loop Critical alert の明示 threshold read-only dry-run: [session-process-crash-loop-alert-dry-run.md](session-process-crash-loop-alert-dry-run.md)
 - Session failure surge Critical alert の明示 threshold read-only dry-run: [session-failure-surge-alert-dry-run.md](session-failure-surge-alert-dry-run.md)
 - Egress failure surge Critical alert の明示 threshold read-only dry-run: [egress-failure-surge-alert-dry-run.md](egress-failure-surge-alert-dry-run.md)
