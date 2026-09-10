@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -19,6 +20,18 @@ from state import (  # noqa: E402
 class ContinuityStateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.state = ContinuityState(input_timeout=1.5, stable_window=3.0)
+
+    def test_rejects_non_finite_input_timeout(self) -> None:
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    ContinuityState(input_timeout=value, stable_window=3.0)
+
+    def test_rejects_non_finite_stable_window(self) -> None:
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    ContinuityState(input_timeout=1.5, stable_window=value)
 
     def test_starts_in_holding_with_silence(self) -> None:
         decision = self.state.decide(0.0)

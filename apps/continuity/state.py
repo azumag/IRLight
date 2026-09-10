@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from threading import RLock
@@ -48,10 +49,10 @@ class ContinuityState:
     """
 
     def __init__(self, *, input_timeout: float, stable_window: float) -> None:
-        if input_timeout <= 0:
-            raise ValueError("input_timeout must be positive")
-        if stable_window < 0:
-            raise ValueError("stable_window must be non-negative")
+        if not math.isfinite(input_timeout) or input_timeout <= 0:
+            raise ValueError("input_timeout must be a finite positive number")
+        if not math.isfinite(stable_window) or stable_window < 0:
+            raise ValueError("stable_window must be a finite non-negative number")
 
         self.input_timeout = input_timeout
         self.stable_window = stable_window
