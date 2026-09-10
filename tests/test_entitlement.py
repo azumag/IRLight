@@ -40,6 +40,27 @@ class EntitlementStoreTest(unittest.TestCase):
             else:
                 os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = previous
 
+    def test_malformed_runtime_default_fails_closed_without_masking_override(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = EntitlementStore(state_dir)
+            store.set("user-a", max_concurrent_sessions=2, plan="supporter")
+            previous = os.environ.get("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS")
+            os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = "not-a-number"
+            try:
+                persisted = store.get("user-a")
+                self.assertEqual(persisted["max_concurrent_sessions"], 2)
+
+                with self.assertRaisesRegex(
+                    EntitlementStateError,
+                    "default concurrent-session limit is invalid",
+                ):
+                    store.get("user-b")
+            finally:
+                if previous is None:
+                    os.environ.pop("IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS", None)
+                else:
+                    os.environ["IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS"] = previous
+
     def test_zero_limit_can_disable_session_creation(self) -> None:
         state_dir = tempfile.mkdtemp(prefix="irlight-entitlements-")
         entitlement = EntitlementStore(state_dir).set(
