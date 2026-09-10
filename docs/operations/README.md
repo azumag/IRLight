@@ -48,6 +48,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - Egress reconnect rate Warning alert の明示 threshold read-only dry-run: [egress-reconnect-rate-alert-dry-run.md](egress-reconnect-rate-alert-dry-run.md)
 - Ingest connectivity failure Critical alert の明示 threshold read-only dry-run: [ingest-unavailable-alert-dry-run.md](ingest-unavailable-alert-dry-run.md)
 - Asset processing failure-rate Warning alert の明示 threshold read-only dry-run: [asset-failure-rate-alert-dry-run.md](asset-failure-rate-alert-dry-run.md)
+- Billing webhook backlog Warning alert の明示 threshold read-only dry-run: [billing-webhook-alert-dry-run.md](billing-webhook-alert-dry-run.md)
 
 障害の根因が authority、deploy regression、secret 監査などにある場合は、必須12シナリオの runbook だけで復旧を推測せず、上記の専用手順を優先してください。
 
