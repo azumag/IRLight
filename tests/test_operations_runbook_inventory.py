@@ -27,6 +27,7 @@ RELATED_PROCEDURES = {
     "state readiness": "docs/operations/state-readiness.md",
     "state restore drill": "docs/operations/state-restore-drill.md",
     "state provider reconciliation": "docs/operations/state-provider-reconciliation.md",
+    "media node resource pressure": "docs/operations/media-node-resource-pressure.md",
     "auth session gc": "docs/operations/auth-session-gc.md",
     "user session capacity": "docs/operations/session-capacity-exhaustion.md",
     "log redaction audit": "docs/operations/log-redaction-audit.md",
@@ -51,6 +52,7 @@ NEW_RUNBOOKS = {
     "docs/operations/billing-webhook-stalled.md",
     "docs/operations/emergency-abuse-stop.md",
     "docs/operations/media-node-capacity-high.md",
+    "docs/operations/media-node-resource-pressure.md",
 }
 
 
