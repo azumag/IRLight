@@ -5,6 +5,7 @@ import os
 import time
 
 from continuity import ContinuityPipeline, atomic_write_json
+from runtime_timer_config import finite_env_float
 from standby_asset import (
     NODE_DEFAULT_IMAGE_PATH,
     gst_standby_source,
@@ -19,11 +20,17 @@ _SYNTHETIC_SOURCE = "videotestsrc name=standby_video is-live=true pattern=black 
 
 class StandbyAwareContinuityPipeline(ContinuityPipeline):
     def __init__(self) -> None:
+        # Validate SOURCE_RETRY_SECONDS before the base pipeline can use it in
+        # Event.wait().  Python accepts NaN/Infinity as floats, but either can
+        # turn retry timing into a disabled, unbounded, or platform-dependent
+        # wait.  Preserve the existing behavior of every finite value.
+        source_retry_seconds = finite_env_float("SOURCE_RETRY_SECONDS", 3.0)
         self.standby_selection = resolve_standby_asset(
             os.getenv("STANDBY_IMAGE_PATH"),
             os.getenv("STANDBY_FALLBACK_IMAGE_PATH", NODE_DEFAULT_IMAGE_PATH),
         )
         super().__init__()
+        self.source_retry_seconds = source_retry_seconds
         self.standby_status_path = self.state_dir / "standby.json"
 
     def _output_description(self, egress_literal: str, key_int: int) -> str:
