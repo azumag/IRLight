@@ -35,21 +35,42 @@ an authority write.
 
 ## Scheduling
 
-This change intentionally does not choose an infrastructure-specific scheduler.
-Production may invoke the command from a systemd timer, cron job, or deployment
-scheduler, but only one using the exact Control Plane `STATE_DIR`. Start with a
-low frequency such as hourly; session expiry is already enforced on reads, so
-GC frequency affects storage/I/O rather than authentication validity.
+The existing `deploy/systemd/irlight-reaper.service` already invokes
+`/app/reaper_cli.py` inside the running Control Plane container. The reaper CLI
+therefore also runs the bounded authentication-session GC on each normal reaper
+sweep, using the same mounted `STATE_DIR` as the API. No additional scheduler,
+container, datastore, or provider resource is required.
 
-Do not run the collector against a copied or guessed state directory, and do
-not work around an authority error by deleting initialization markers or
-creating an empty `auth_sessions.json`.
+The ordinary Session/provider reaper runs first. Authentication-session cleanup
+runs afterwards so damaged authentication authority cannot suppress cleanup of
+stale or orphaned provider resources. A successful sweep adds only aggregate
+`auth_session_gc_*` counters to the existing flat reaper result. If auth-session
+GC cannot safely inspect or update its authority, the reaper keeps the provider
+cleanup result, reports the fixed `AUTH_SESSION_GC_FAILED` reason, and exits
+non-zero without printing the authority path or record contents.
+
+The periodic default remains 1,000 expired authentication sessions per sweep.
+It can be changed explicitly when invoking the reaper:
+
+```bash
+python /app/reaper_cli.py --auth-session-gc-max-delete 1000
+```
+
+The accepted range is the same as the standalone collector: 1 through 10,000.
+Only records whose `expires_at <= now` are removed, so an active authentication
+Session is not selected by the GC. Session validity itself does not depend on
+GC frequency because expired Sessions are already rejected by request-time
+authentication.
+
+Do not point the reaper at a copied or guessed state directory, and do not work
+around an authority error by deleting initialization markers or creating an
+empty `auth_sessions.json`.
 
 ## Remaining admission-control work
 
-Expired-record retention is handled here. PBKDF2-heavy registration/login now
-also has a bounded multi-worker concurrency gate; see
-[auth-kdf-admission.md](auth-kdf-admission.md). Issue #86 still tracks policy
-that this repository should not infer without deployment evidence: source
-IP / normalized-email rate limits, trusted-proxy handling, cluster-wide quota
-across independent replicas, and any per-user active auth Session cap.
+Expired-record retention and its periodic execution are handled here.
+PBKDF2-heavy registration/login also has a bounded multi-worker concurrency
+gate; see [auth-kdf-admission.md](auth-kdf-admission.md). Issue #86 still tracks
+policy that this repository should not infer without deployment evidence:
+source IP / normalized-email rate limits, trusted-proxy handling, cluster-wide
+quota across independent replicas, and any per-user active auth Session cap.
