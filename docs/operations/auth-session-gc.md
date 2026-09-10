@@ -47,8 +47,9 @@ creating an empty `auth_sessions.json`.
 
 ## Remaining admission-control work
 
-This collector addresses expired-record retention only. Issue #86 also tracks
-rate limits and concurrency bounds around PBKDF2-heavy registration/login, plus
-any policy for per-user active-session caps. Those require a shared admission
-control design for multi-worker deployments and are not implicitly decided by
-this maintenance command.
+Expired-record retention is handled here. PBKDF2-heavy registration/login now
+also has a bounded multi-worker concurrency gate; see
+[auth-kdf-admission.md](auth-kdf-admission.md). Issue #86 still tracks policy
+that this repository should not infer without deployment evidence: source
+IP / normalized-email rate limits, trusted-proxy handling, cluster-wide quota
+across independent replicas, and any per-user active auth Session cap.
