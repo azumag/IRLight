@@ -90,6 +90,7 @@ class EgressStatusReaderTest(unittest.TestCase):
             path.write_text("{broken", encoding="utf-8")
             corrupt = read_egress_status(path)
             self.assertEqual(corrupt["status"], "UNKNOWN")
+            self.assertEqual(corrupt["reason_code"], "STATUS_INVALID")
 
     def test_nonfinite_observed_at_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +101,7 @@ class EgressStatusReaderTest(unittest.TestCase):
             )
             result = read_egress_status(path, now=100.0, max_age_seconds=30.0)
         self.assertEqual(result["status"], "UNKNOWN")
-        self.assertEqual(result["reason_code"], "STATUS_UNAVAILABLE")
+        self.assertEqual(result["reason_code"], "STATUS_INVALID")
 
     def test_nonfinite_constant_in_any_field_rejects_whole_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,7 +113,7 @@ class EgressStatusReaderTest(unittest.TestCase):
             result = read_egress_status(path, now=101.0, max_age_seconds=30.0)
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertFalse(result["connected"])
-        self.assertEqual(result["reason_code"], "STATUS_UNAVAILABLE")
+        self.assertEqual(result["reason_code"], "STATUS_INVALID")
 
     def test_duplicate_key_rejects_ambiguous_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +125,7 @@ class EgressStatusReaderTest(unittest.TestCase):
             result = read_egress_status(path, now=101.0, max_age_seconds=30.0)
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertFalse(result["connected"])
-        self.assertEqual(result["reason_code"], "STATUS_UNAVAILABLE")
+        self.assertEqual(result["reason_code"], "STATUS_INVALID")
 
     def test_nonfinite_or_negative_retry_timestamp_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
