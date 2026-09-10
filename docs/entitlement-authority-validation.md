@@ -16,6 +16,8 @@ Each persisted entitlement is keyed by a non-empty user ID. The record must cont
 
 The default entitlement returned for a user with no persisted record remains a runtime fallback derived from `IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS`; it is not a persisted record and therefore intentionally has `updated_at: null`.
 
+The runtime default is parsed fail-closed. A malformed non-integer `IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS` raises `EntitlementStateError` instead of silently falling back to the built-in limit and unexpectedly granting capacity. The historical negative-value behavior remains unchanged and clamps to zero, so an explicit negative value cannot grant capacity. Persisted per-user overrides do not depend on parsing the runtime default and remain readable when that fallback configuration is malformed.
+
 ## Failure and recovery behavior
 
 Invalid persisted authority raises `EntitlementStateError`. Read failures do not rewrite the file, drop the initialization marker, or replace the authority with an empty/default payload. Writers validate the complete in-memory authority before replacement, so a bad timestamp or record cannot overwrite the previous valid file.
