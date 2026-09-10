@@ -15,14 +15,19 @@ python apps/control-api/auth_session_retention_inspect_cli.py
 ```json
 {
   "gc_runs_required": 1,
+  "max_active_sessions_per_user": 3,
   "sessions_active": 12,
   "sessions_expired": 3,
   "sessions_total": 15,
-  "status": "OK"
+  "status": "OK",
+  "users_with_active_sessions": 8,
+  "users_with_multiple_active_sessions": 3
 }
 ```
 
 `gc_runs_required` は既定の GC batch size 1,000 件、または `--max-delete` で指定した 1〜10,000 件を使って、現在の期限切れ件数を回収するのに最低何 run 必要かを示す見積りである。CLI 自体は削除を実行しない。
+
+`users_with_active_sessions`、`users_with_multiple_active_sessions`、`max_active_sessions_per_user` は、ユーザー別 Session 上限を決める前に active Session の集中度を把握するための **識別子なし aggregate** である。期限切れ Session はこの3値へ含めない。ユーザー ID ごとの件数や上位ユーザー一覧は出力しないため、この CLI 単体から特定ユーザーの Session 保有状況は取得できない。
 
 実際の回収は、状態と運用タイミングを確認したうえで既存 CLI を使う。
 
@@ -57,14 +62,14 @@ exit code は `2`。壊れた authority を空 state とみなしたり、marker
 
 ## 監視への利用
 
-この CLI の aggregate count は、期限切れ Session が継続的に蓄積していないか、1 回の bounded GC で backlog を処理し切れるかを見るための入力として使える。ただし repository 内では次を勝手に決めない。
+この CLI の aggregate count は、期限切れ Session が継続的に蓄積していないか、1 回の bounded GC で backlog を処理し切れるか、active Session が少数ユーザーへ偏っているかを見るための入力として使える。ただし repository 内では次を勝手に決めない。
 
 - production で何件を warning / critical とするか。
 - GC の実行周期。
 - ユーザー別 active Session 上限。
 - alert の通知先や paging policy。
 
-これらは実利用量と deployment policy を確認して決める。inspector の結果だけを理由に有効 Session を失効させたり、既存配信を停止したりしない。
+これらは実利用量と deployment policy を確認して決める。inspector の結果だけを理由に有効 Session を失効させたり、既存配信を停止したりしない。特に `max_active_sessions_per_user` は強制上限ではなく、上限値を決めるための観測値にすぎない。
 
 ## 回帰テスト
 
@@ -72,6 +77,8 @@ exit code は `2`。壊れた authority を空 state とみなしたり、marker
 
 - expiry 境界 `expires_at <= now` の集計。
 - bounded GC run 数の算出。
+- active Session のユーザー集中度 aggregate と、期限切れ Session を除外すること。
+- 成功出力にユーザー ID を含めず、aggregate だけを返すこと。
 - inspection 前後で authority の content / mtime / directory entries が変わらないこと。
 - duplicate key、非有限値、不正 record の fail-closed。
 - symlink state の拒否。

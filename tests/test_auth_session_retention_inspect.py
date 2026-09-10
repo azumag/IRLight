@@ -24,9 +24,11 @@ from auth_session_retention_inspect_cli import (  # noqa: E402
 CSRF = "A" * 32
 
 
-def session_record(*, expires_at: float, created_at: float = 1.0) -> dict[str, object]:
+def session_record(
+    *, expires_at: float, created_at: float = 1.0, user_id: str = "user-1"
+) -> dict[str, object]:
     return {
-        "user_id": "user-1",
+        "user_id": user_id,
         "csrf_token": CSRF,
         "created_at": created_at,
         "expires_at": expires_at,
@@ -60,6 +62,56 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
             self.assertEqual(snapshot.sessions_expired, 2)
             self.assertEqual(snapshot.sessions_active, 1)
             self.assertEqual(snapshot.gc_runs_required, 2)
+            self.assertEqual(snapshot.users_with_active_sessions, 1)
+            self.assertEqual(snapshot.users_with_multiple_active_sessions, 0)
+            self.assertEqual(snapshot.max_active_sessions_per_user, 1)
+
+    def test_reports_active_session_concentration_without_user_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth_sessions.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sessions": {
+                            "a" * 64: session_record(
+                                expires_at=200.0, user_id="user-secret-a"
+                            ),
+                            "b" * 64: session_record(
+                                expires_at=300.0, user_id="user-secret-a"
+                            ),
+                            "c" * 64: session_record(
+                                expires_at=400.0, user_id="user-secret-b"
+                            ),
+                            "d" * 64: session_record(
+                                expires_at=100.0, user_id="user-expired-only"
+                            ),
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = inspect_auth_session_retention(path=path, now=100.0)
+            rendered = json.dumps(snapshot.as_dict(), sort_keys=True)
+
+            self.assertEqual(snapshot.sessions_active, 3)
+            self.assertEqual(snapshot.users_with_active_sessions, 2)
+            self.assertEqual(snapshot.users_with_multiple_active_sessions, 1)
+            self.assertEqual(snapshot.max_active_sessions_per_user, 2)
+            self.assertNotIn("user-secret-a", rendered)
+            self.assertNotIn("user-secret-b", rendered)
+            self.assertNotIn("user-expired-only", rendered)
+
+    def test_empty_authority_reports_zero_session_concentration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth_sessions.json"
+            path.write_text('{"sessions":{}}', encoding="utf-8")
+
+            snapshot = inspect_auth_session_retention(path=path, now=100.0)
+
+            self.assertEqual(snapshot.users_with_active_sessions, 0)
+            self.assertEqual(snapshot.users_with_multiple_active_sessions, 0)
+            self.assertEqual(snapshot.max_active_sessions_per_user, 0)
 
     def test_inspection_does_not_create_lock_marker_or_rewrite_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,6 +245,9 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(payload["sessions_total"], 1)
             self.assertEqual(payload["sessions_expired"], 1)
+            self.assertEqual(payload["users_with_active_sessions"], 0)
+            self.assertEqual(payload["users_with_multiple_active_sessions"], 0)
+            self.assertEqual(payload["max_active_sessions_per_user"], 0)
             self.assertNotIn(token_hash, rendered)
             self.assertNotIn("user-1", rendered)
             self.assertNotIn(CSRF, rendered)
