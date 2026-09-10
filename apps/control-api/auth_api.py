@@ -21,6 +21,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from auth_kdf_admission import (
+    AuthKdfAdmissionBusy,
+    AuthKdfAdmissionUnavailable,
+    auth_kdf_slot,
+)
 from auth_store import (
     AuthError,
     AuthStateError,
@@ -38,6 +43,8 @@ SESSION_COOKIE = "irlight_session"
 CSRF_COOKIE = "irlight_csrf"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
 AUTH_STATE_UNAVAILABLE_CODE = "AUTH_STATE_UNAVAILABLE"
+AUTH_COMPUTE_BUSY_CODE = "AUTH_COMPUTE_BUSY"
+AUTH_COMPUTE_UNAVAILABLE_CODE = "AUTH_COMPUTE_UNAVAILABLE"
 
 # A simple, dependency-free "looks like an email" check; real deliverability
 # is out of scope here and would need an external service.
@@ -63,6 +70,23 @@ def _auth_state_unavailable() -> HTTPException:
     return HTTPException(
         status_code=503,
         detail={"code": AUTH_STATE_UNAVAILABLE_CODE},
+    )
+
+
+def _auth_compute_busy() -> HTTPException:
+    """Return a retryable overload result before password work begins."""
+    return HTTPException(
+        status_code=503,
+        detail={"code": AUTH_COMPUTE_BUSY_CODE},
+        headers={"Retry-After": "1"},
+    )
+
+
+def _auth_compute_unavailable() -> HTTPException:
+    """Fail closed when the shared compute-admission boundary is unusable."""
+    return HTTPException(
+        status_code=503,
+        detail={"code": AUTH_COMPUTE_UNAVAILABLE_CODE},
     )
 
 
@@ -133,11 +157,19 @@ def require_csrf(
 @router.post("/register")
 def register(request: RegisterRequest) -> dict[str, Any]:
     try:
-        user = register_user(
-            email=request.email,
-            password=request.password,
-            display_name=request.display_name,
-        )
+        # Admission happens before register_user performs PBKDF2. The slot is
+        # intentionally non-blocking so an overload does not create an
+        # unbounded request queue in front of the expensive work.
+        with auth_kdf_slot():
+            user = register_user(
+                email=request.email,
+                password=request.password,
+                display_name=request.display_name,
+            )
+    except AuthKdfAdmissionBusy as exc:
+        raise _auth_compute_busy() from exc
+    except AuthKdfAdmissionUnavailable as exc:
+        raise _auth_compute_unavailable() from exc
     except AuthStateError as exc:
         raise _auth_state_unavailable() from exc
     except EmailAlreadyRegistered as exc:
@@ -150,8 +182,16 @@ def register(request: RegisterRequest) -> dict[str, Any]:
 @router.post("/login")
 def login(request: LoginRequest, response: Response) -> dict[str, Any]:
     try:
-        user = authenticate_user(email=request.email, password=request.password)
+        # Unknown and known addresses enter the same admission boundary before
+        # authenticate_user performs its single real/dummy PBKDF2 verification.
+        with auth_kdf_slot():
+            user = authenticate_user(email=request.email, password=request.password)
+        # Session issuance is not password work and must not hold a KDF slot.
         session = create_session(str(user["id"]), ttl_seconds=SESSION_TTL_SECONDS)
+    except AuthKdfAdmissionBusy as exc:
+        raise _auth_compute_busy() from exc
+    except AuthKdfAdmissionUnavailable as exc:
+        raise _auth_compute_unavailable() from exc
     except AuthStateError as exc:
         raise _auth_state_unavailable() from exc
     except InvalidCredentials as exc:
