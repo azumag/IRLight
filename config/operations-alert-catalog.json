@@ -33,7 +33,7 @@
         "mode": "event",
         "event_type": "NODE_RESOURCE_EXHAUSTED"
       },
-      "runbook": "docs/operations/media-node-heartbeat-stopped.md",
+      "runbook": "docs/operations/media-node-resource-pressure.md",
       "dedup_keys": ["environment", "node_id", "reason_code"],
       "recovery_notification": true
     },
