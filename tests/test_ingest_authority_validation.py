@@ -105,7 +105,10 @@ class IngestAuthorityValidationTest(unittest.TestCase):
             "username/session mismatch": ("username", "other-session"),
             "unknown scope": ("scope", "UNKNOWN"),
             "unsupported protocol": ("protocols", ["rtsp"]),
+            "duplicate protocols": ("protocols", ["rtmp", "rtmp"]),
+            "non-canonical protocol order": ("protocols", ["srt", "rtmp"]),
             "invalid digest": ("secret_sha256", "not-a-sha256"),
+            "uppercase digest": ("secret_sha256", valid_digest.upper()),
             "digest with whitespace": ("secret_sha256", whitespace_digest),
             "non-positive lifetime": ("expires_at", 100.0),
         }
@@ -117,6 +120,29 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                     _write_state(state_dir, record)
                     with self.assertRaises(IngestCredentialError):
                         IngestCredentialStore(state_dir)
+
+    def test_issue_persists_canonical_digest_and_protocols(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            public, secret = store.issue(
+                session_id="session-1",
+                user_id="user-1",
+                protocols=["SRT", "rtmp", "srt"],
+                now=100.0,
+            )
+
+            raw = json.loads(
+                Path(state_dir, "ingest_credentials.json").read_text(encoding="utf-8")
+            )
+            record = raw["credentials"][public["id"]]
+            expected_digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+            self.assertEqual(record["secret_sha256"], expected_digest)
+            self.assertEqual(record["secret_sha256"], record["secret_sha256"].lower())
+            self.assertEqual(record["protocols"], ["rtmp", "srt"])
+
+            # The writer's output must remain loadable under the strict reader.
+            reloaded = IngestCredentialStore(state_dir)
+            self.assertEqual(reloaded.get(public["id"])["protocols"], ["rtmp", "srt"])
 
     def test_pre_relay_record_without_scope_remains_compatible(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
