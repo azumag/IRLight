@@ -35,6 +35,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - backup restore drill: [state-restore-drill.md](state-restore-drill.md)
 - state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
 - Destination verification の同時実行 admission: [destination-verification-admission.md](destination-verification-admission.md)
+- 認証 password KDF の同時実行 admission: [auth-kdf-admission.md](auth-kdf-admission.md)
 - Media Node resource pressure の一次対応: [media-node-resource-pressure.md](media-node-resource-pressure.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
