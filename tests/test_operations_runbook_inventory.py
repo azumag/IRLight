@@ -40,6 +40,7 @@ RELATED_PROCEDURES = {
     "egress failure surge alert dry-run": "docs/operations/egress-failure-surge-alert-dry-run.md",
     "egress reconnect rate alert dry-run": "docs/operations/egress-reconnect-rate-alert-dry-run.md",
     "ingest unavailable alert dry-run": "docs/operations/ingest-unavailable-alert-dry-run.md",
+    "asset failure rate alert dry-run": "docs/operations/asset-failure-rate-alert-dry-run.md",
 }
 
 NEW_RUNBOOKS = {
