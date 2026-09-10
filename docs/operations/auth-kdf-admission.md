@@ -9,7 +9,7 @@ Issue #86 のうち、registration / login が行う PBKDF2-HMAC-SHA256 の**同
 - `IRLIGHT_AUTH_KDF_MAX_CONCURRENT`: `1..32`。未設定、不正値、範囲外は既定 `4`。
 - `IRLIGHT_AUTH_KDF_ADMISSION_DIR`: slot file を置く絶対 path。未設定または相対 path は `/tmp/irlight-auth-kdf-admission`。
 
-slot は `flock` で保持するため worker process が異常終了しても kernel が lock を解放します。slot file 名は固定の `slot-N.lock` で、email、password、user ID、session token、request body などは保存しません。directory と slot file は symlink / non-regular-file を拒否し、安全に admission boundary を構成できない場合は fail closed します。
+slot は `flock` で保持するため worker process が異常終了しても kernel が lock を解放します。slot file 名は固定の `slot-N.lock` で、email、password、user ID、session token、request body などは保存しません。directory と slot file は symlink / non-regular-file を拒否し、実効 UID の所有物かつ group / other から書込み・探索できない owner-only permission であることを要求します。安全に admission boundary を構成できない場合は fail closed します。
 
 ## API の過負荷契約
 
@@ -44,7 +44,7 @@ register は現行 store が hash generation と authority write を一つの `r
 - 複数 host / container replica をまたぐ cluster-wide quota
 - ユーザー単位の active auth Session 上限
 
-独立した host / container がそれぞれ既定 directory を使う場合、上限は replica ごとに適用されます。cluster-wide な lock filesystem を採用する場合は、その filesystem の可用性・`flock` semantics・failure mode を deployment 設計として確認してください。外部 datastore や有料サービスをこの gate が自動的に追加することはありません。
+独立した host / container がそれぞれ既定 directory を使う場合、上限は replica ごとに適用されます。cluster-wide な lock filesystem を採用する場合は、その filesystem の可用性・`flock` semantics・failure mode に加え、すべての worker が同じ実効 UID / owner-only permission 契約を満たせることを deployment 設計として確認してください。外部 datastore や有料サービスをこの gate が自動的に追加することはありません。
 
 ## 確認ポイント
 
