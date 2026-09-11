@@ -1,8 +1,16 @@
+FROM python:3.14-slim AS certs
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+
+# Ubuntu's minimal base image does not ship a usable CA bundle. Bootstrap only
+# the public root bundle from the already-trusted official Python slim image so
+# Canonical mirrors can be contacted over HTTPS; the Ubuntu ca-certificates
+# package is then installed normally and owns the final trust store.
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # Keep real package/dependency errors fatal while tolerating short-lived mirror
 # stalls. Prefer HTTPS on hosted runners, retry bounded transport failures, and
