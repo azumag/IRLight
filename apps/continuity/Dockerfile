@@ -15,13 +15,17 @@ COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 # Keep real package/dependency errors fatal while tolerating short-lived mirror
 # stalls. Prefer HTTPS on hosted runners, retry bounded transport failures, and
 # make any incomplete index refresh fail before package installation begins.
+# APT's per-request timeout is not a whole-command deadline, so wrap update and
+# install as well; a stalled mirror can never consume the entire CI job budget.
 RUN sed -i \
     -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
     -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
     /etc/apt/sources.list.d/ubuntu.sources \
-    && echo "apt network policy: https retries=4 timeout=10s update-error-mode=any" \
-    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=4 -o Acquire::https::Timeout=10 update \
-    && apt-get -o Acquire::Retries=4 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
+    && echo "apt network policy: https retries=4 request-timeout=10s update-deadline=120s install-deadline=600s update-error-mode=any" \
+    && timeout --signal=TERM --kill-after=10s 120s \
+       apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=4 -o Acquire::https::Timeout=10 update \
+    && timeout --signal=TERM --kill-after=10s 600s \
+       apt-get -o Acquire::Retries=4 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
     python3 \
     python3-gi \
     gir1.2-gstreamer-1.0 \
