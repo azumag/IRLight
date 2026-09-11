@@ -163,13 +163,35 @@ def _auth_cache_max_age_seconds() -> float:
     return min(3600.0, max(1.0, value))
 
 
-def _cache_valid_until(record: dict[str, Any], *, now: float | None = None) -> float:
-    current = time.time() if now is None else now
+def _finite_nonnegative_cache_timestamp(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
     try:
-        credential_expires_at = float(record.get("expires_at", current))
-    except (TypeError, ValueError):
-        credential_expires_at = current
-    return min(credential_expires_at, current + _auth_cache_max_age_seconds())
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def _cache_valid_until(
+    record: dict[str, Any], *, now: float | None = None
+) -> float | None:
+    current = _finite_nonnegative_cache_timestamp(
+        time.time() if now is None else now
+    )
+    credential_expires_at = _finite_nonnegative_cache_timestamp(
+        record.get("expires_at")
+    )
+    if current is None or credential_expires_at is None:
+        return None
+    if credential_expires_at <= current:
+        return None
+    return min(
+        credential_expires_at,
+        current + _auth_cache_max_age_seconds(),
+    )
 
 
 def _raise_auth_blocked(decision: Any) -> None:
