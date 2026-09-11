@@ -28,6 +28,6 @@ Phase 0 Control UI の状態鮮度・通信断時の fail-closed 表示契約は
 ## CI の外部パッケージ取得
 
 Continuity image は Ubuntu / GStreamer の依存が大きいため、`apt` の取得処理では
-一時的な mirror/network 障害に対して最大3回の再試行と30秒の通信 timeout を使う。
+一時的な mirror/network 障害に対して最大2回の再試行と10秒の通信 timeout を使う。
 再試行後も取得できない場合や package 名・repository の不整合は従来どおり失敗とし、
 Docker integration / recovery / netem の gate 自体は skip や allow-failure にしない。
