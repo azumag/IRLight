@@ -29,6 +29,15 @@ class RuntimeImageAptPolicyTest(unittest.TestCase):
                     text,
                 )
 
+    def test_continuity_restarts_a_timed_out_index_refresh_but_stays_bounded(self) -> None:
+        text = (ROOT / "apps" / "continuity" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("update-attempts=3", text)
+        self.assertIn("update_attempt=1", text)
+        self.assertIn('if [ "${update_attempt}" -ge 3 ]', text)
+        self.assertIn("exit \"${update_status}\"", text)
+
 
 if __name__ == "__main__":
     unittest.main()
