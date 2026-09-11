@@ -6,4 +6,6 @@ The Node Agent's relay-client observer stamps the MediaMTX reader snapshot that 
 
 Invalid clocks raise a fixed `RuntimeError` before `_path_snapshot()` is called. This deliberately avoids generating a `CONNECTED`, `DISCONNECTED`, or `UNKNOWN` observation with an untrustworthy `observed_at` value and avoids performing a MediaMTX request for an observation that cannot be safely timestamped.
 
+The Node Agent does not replace this clock-validation failure with a second wall-clock sample. The failure propagates out of relay observation construction so the current heartbeat attempt fails through the existing bounded heartbeat error path; a later heartbeat may retry after the clock is usable again. MediaMTX API failures remain fail-safe `UNKNOWN` observations because those are converted inside the observer after a validated timestamp has already been captured.
+
 The same validation applies to an explicitly supplied `now` value and to the default `time.time()` sample. Existing relay reader-count semantics, MediaMTX request behavior, relay status vocabulary, and heartbeat persistence remain unchanged.
