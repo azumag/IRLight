@@ -34,9 +34,11 @@ bundle だけを bootstrap し、その後 Ubuntu 自身の `ca-certificates` pa
 install して final trust store を所有させる。
 
 Continuity / Control API / Node Agent の各 runtime image では、一時的な package mirror
-や network 障害に対して最大4回の再試行と10秒の通信 timeoutを使う。index 更新が一部でも
-取得できない場合は package install へ進まず失敗させる。再試行後も取得できない場合や
-package 名・repository の不整合は従来どおり失敗とし、Docker integration / recovery /
-netem の gate 自体は skip や allow-failure にしない。これにより一時的な mirror 障害は
-bounded に吸収しつつ、到達不能な mirror で shared Docker build が job 上限まで無期限に
-待ち続ける経路も避ける。
+や network 障害に対して最大4回の再試行と10秒の request timeoutを使う。APT の request
+timeout は `apt-get` プロセス全体の上限ではないため、さらに index 更新を120秒、package
+install を600秒の hard deadline で囲む。期限超過は non-zero で失敗し、後続処理へ進まない。
+index 更新が一部でも取得できない場合も package install へ進まず失敗させる。再試行後も
+取得できない場合、TLS 検証失敗、package 名・repository の不整合は従来どおり失敗とし、
+Docker integration / recovery / netem の gate 自体は skip や allow-failure にしない。
+これにより一時的な mirror 障害は bounded に吸収しつつ、APT 内部の一部処理が停止しても
+shared Docker build が job 上限まで待ち続ける経路を防ぐ。
