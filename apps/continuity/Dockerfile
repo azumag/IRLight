@@ -4,7 +4,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Keep real package/dependency errors fatal while tolerating short-lived mirror
+# stalls. The fixed retry/timeout values also bound how long CI waits on a
+# degraded archive before surfacing the original apt failure.
+RUN echo "apt network policy: retries=3 timeout=30s" \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
     python3 \
     python3-gi \
     gir1.2-gstreamer-1.0 \
