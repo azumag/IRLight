@@ -47,7 +47,9 @@ Control Planeの成功応答には `cache_valid_until` を含めます。これ�
 - credential自身の `expires_at`
 - Control Planeの `IRLIGHT_INGEST_AUTH_CACHE_MAX_AGE_SECONDS`（既定300秒）
 
-Node Agentも `NODE_INGEST_AUTH_CACHE_MAX_AGE_SECONDS`（既定300秒）でさらに上限をかけます。
+Control Planeは `cache_valid_until` の計算に使う現在時刻とcredential expiryについて、boolやnumeric stringを数値へ暗黙変換せず、finiteかつ0以上の `int` / `float` のみを受理します。credential expiryが現在時刻以下の場合もfallback用cacheはprimeしません。型違い、NaN、±Infinity、負値、float化不能な巨大整数などで安全な期限を作れない場合、liveなControl Plane 2xx自体は現在の認証判断として維持しつつ `cache_valid_until: null` を返し、Node側のfallback grantを新規作成しません。
+
+Node Agent側も `cache_valid_until` とlocal clockを同じくstrictなfinite/non-negative numeric境界で検証し、無効値をfallback cacheへ保存しません。`NODE_INGEST_AUTH_CACHE_MAX_AGE_SECONDS`（既定300秒）でもさらに上限をかけます。
 
 したがってControl Plane停止中にcredentialが別経路でrevokeされた場合、最悪でもこのbounded stale windowを超えて許可されません。Control Planeが到達可能な状態でrevoke後のauthが1回でも行われれば、明示401によってNode cacheは即時削除されます。
 
@@ -86,6 +88,10 @@ IRLIGHT_INGEST_AUTH_CACHE_MAX_AGE_SECONDS=300
 
 ## テスト
 
+- `tests/test_ingest_api_validation.py`
+  - Control Planeのcache deadlineがcredential expiryと最大ageの短い方になること
+  - bool / numeric string / NaN / ±Infinity / 負値 / 巨大整数のclock・expiryでcacheをprimeしないこと
+  - `expires_at <= now` でcacheをprimeしないこと
 - `tests/test_ingest_auth_proxy.py`
   - successでcache prime
   - upstream 5xxで同credentialをfallback許可
