@@ -453,16 +453,7 @@ class NodeAgent:
     def _relay_client_observation(self) -> dict[str, object] | None:
         if self.egress_mode != "RELAY_ONLY" or self.relay_client_observer is None:
             return None
-        try:
-            return self.relay_client_observer.observe()
-        except RuntimeError as exc:
-            return {
-                "status": "UNKNOWN",
-                "connected": False,
-                "reader_count": 0,
-                "reason_code": str(exc)[:100],
-                "observed_at": time.time(),
-            }
+        return self.relay_client_observer.observe()
 
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -33,6 +34,18 @@ class RelayClientConfig:
             path=os.getenv("NODE_RELAY_PATH", "output/relay"),
             timeout_seconds=min(max(timeout_seconds, 0.2), 10.0),
         )
+
+
+def _validated_observed_at(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("relay client observation clock is invalid")
+    try:
+        observed_at = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise RuntimeError("relay client observation clock is invalid") from exc
+    if not math.isfinite(observed_at) or observed_at < 0:
+        raise RuntimeError("relay client observation clock is invalid")
+    return observed_at
 
 
 class RelayClientObserver:
@@ -77,7 +90,7 @@ class RelayClientObserver:
         return None
 
     def observe(self, *, now: float | None = None) -> dict[str, Any]:
-        observed_at = time.time() if now is None else now
+        observed_at = _validated_observed_at(time.time() if now is None else now)
         base = {
             "status": "UNKNOWN",
             "connected": False,
