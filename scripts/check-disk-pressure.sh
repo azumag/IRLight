@@ -20,10 +20,15 @@ is_uint() {
 if ! is_uint "$warning_percent" || ! is_uint "$critical_percent"; then
   unknown invalid_threshold
 fi
-if (( warning_percent < 0 || warning_percent > 100 || critical_percent < 0 || critical_percent > 100 )); then
+# Bound input size before Bash arithmetic so an accidental or hostile oversized
+# environment value cannot wrap. Force decimal to avoid octal interpretation of
+# values such as 080.
+if (( ${#warning_percent} > 3 || ${#critical_percent} > 3 )); then
   unknown invalid_threshold
 fi
-if (( warning_percent >= critical_percent )); then
+warning_percent=$((10#$warning_percent))
+critical_percent=$((10#$critical_percent))
+if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
   unknown invalid_threshold
 fi
 
@@ -41,7 +46,11 @@ if ! read -r available_kb usage_field <<<"$metrics"; then
 fi
 usage_percent="${usage_field%%%}"
 
-if ! is_uint "$available_kb" || ! is_uint "$usage_percent" || (( usage_percent > 100 )); then
+if ! is_uint "$available_kb" || ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
+  unknown invalid_df_output
+fi
+usage_percent=$((10#$usage_percent))
+if (( usage_percent > 100 )); then
   unknown invalid_df_output
 fi
 
