@@ -231,7 +231,9 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
         password_hash = _require_nonempty_string(
             item, "password_hash", context="user state record"
         )
-        _require_nonempty_string(item, "role", context="user state record")
+        role = _require_nonempty_string(item, "role", context="user state record")
+        if role != role.strip():
+            raise AuthStateError("user state record has invalid role")
         status = _require_nonempty_string(item, "status", context="user state record")
         if status != "active":
             raise AuthStateError("user state record has invalid status")
