@@ -6,15 +6,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 # Keep package-index failures fatal, but bound transient Debian mirror stalls so
-# the shared Docker smoke runner fails/retries promptly instead of hanging until
-# the job-level timeout.
-RUN apt-get \
+# the shared Docker smoke runner fails promptly instead of consuming the entire
+# job budget. APT's request timeout is supplemented with a whole-command limit.
+RUN timeout --signal=TERM --kill-after=10s 120s \
+      apt-get \
       -o APT::Update::Error-Mode=any \
       -o Acquire::Retries=4 \
       -o Acquire::http::Timeout=10 \
       -o Acquire::https::Timeout=10 \
       update \
-    && apt-get \
+    && timeout --signal=TERM --kill-after=10s 600s \
+      apt-get \
       -o Acquire::Retries=4 \
       -o Acquire::http::Timeout=10 \
       -o Acquire::https::Timeout=10 \
