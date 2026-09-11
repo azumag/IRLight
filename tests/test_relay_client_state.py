@@ -120,6 +120,24 @@ class RelayClientObserverTest(unittest.TestCase):
                 agent._relay_client_observation()
             snapshot.assert_not_called()
 
+    def test_agent_preserves_mediamtx_failure_as_unknown_with_valid_clock(self) -> None:
+        observer = self._observer()
+        agent = object.__new__(NodeAgent)
+        agent.egress_mode = "RELAY_ONLY"
+        agent.relay_client_observer = observer
+        with patch("relay_client.time.time", return_value=125.0), patch.object(
+            observer,
+            "_path_snapshot",
+            side_effect=RuntimeError("MediaMTX API unavailable: test"),
+        ):
+            result = agent._relay_client_observation()
+        assert result is not None
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["reader_count"], 0)
+        self.assertEqual(result["reason_code"], "MediaMTX API unavailable: test")
+        self.assertEqual(result["observed_at"], 125.0)
+
 
 class RelayClientHeartbeatTest(unittest.TestCase):
     def setUp(self) -> None:
