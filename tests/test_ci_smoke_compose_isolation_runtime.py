@@ -20,6 +20,14 @@ class ComposeSmokeRuntimeIsolationContractTest(unittest.TestCase):
         )
         self.assertNotIn("\n  scripts/smoke-compose.sh\n", self.suite)
 
+    def test_shared_suite_bounds_each_smoke_independently(self) -> None:
+        self.assertIn("smoke_timeout_seconds=180", self.suite)
+        self.assertIn(
+            'timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke"',
+            self.suite,
+        )
+        self.assertIn("Docker smoke timed out", self.suite)
+
     def test_wrapper_uses_private_run_scoped_resources(self) -> None:
         for expected in (
             "umask 077",
