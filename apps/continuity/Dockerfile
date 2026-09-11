@@ -30,8 +30,9 @@ RUN sed -i \
          if timeout --signal=TERM --kill-after=10s 120s \
               apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=4 -o Acquire::https::Timeout=10 update; then \
            break; \
+         else \
+           update_status=$?; \
          fi; \
-         update_status=$?; \
          if [ "${update_attempt}" -ge 3 ]; then \
            echo "apt index refresh failed after 3 bounded attempts (last status ${update_status})" >&2; \
            exit "${update_status}"; \
