@@ -24,3 +24,23 @@ Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 
 Phase 0 Control UI の状態鮮度・通信断時の fail-closed 表示契約は
 `docs/control-ui-state-safety.md` を参照。
+
+## CI の外部パッケージ取得
+
+Continuity image は Ubuntu / GStreamer の依存が大きいため、`apt` の取得処理では
+Ubuntu の archive/security mirror を HTTPS で参照する。minimal Ubuntu image には
+初回 HTTPS 用の CA bundle がないため、official `python:3.14-slim` image から公開 root
+bundle だけを bootstrap し、その後 Ubuntu 自身の `ca-certificates` package を通常どおり
+install して final trust store を所有させる。
+
+Continuity / Control API / Node Agent の各 runtime image では、一時的な package mirror
+や network 障害に対して APT transport 内で最大4回の再試行と10秒の request timeoutを使う。
+APT の request timeout は `apt-get` プロセス全体の上限ではないため、さらに index 更新を
+1回120秒、package install を600秒の hard deadline で囲む。Continuity の index 更新だけは、
+120秒で停止した接続を同じ process のまま待ち続けず、最大3回まで `apt-get update` 自体を
+再起動する。3回すべて失敗した場合も non-zero のまま終了するため、最悪時間は bounded である。
+index 更新が一部でも取得できない場合も package install へ進まず失敗させる。再試行後も
+取得できない場合、TLS 検証失敗、package 名・repository の不整合は従来どおり失敗とし、
+Docker integration / recovery / netem の gate 自体は skip や allow-failure にしない。
+これにより一時的な mirror 障害は bounded に吸収しつつ、APT 内部の一部処理が停止しても
+shared Docker build が job 上限まで待ち続ける経路を防ぐ。

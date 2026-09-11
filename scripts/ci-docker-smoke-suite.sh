@@ -8,6 +8,13 @@ set -uo pipefail
 #
 # Keep running after an individual failure so one flaky/failed smoke does not
 # hide the results of the remaining scenarios. Each smoke owns its own cleanup.
+# Bound every scenario independently so one wedged Docker/curl/ffmpeg operation
+# cannot consume the complete 60-minute suite budget and hide later results.
+# A recent healthy full suite finished in about 15 minutes, while the isolation
+# wrapper already permits a nested 120-second overlap probe, so 180 seconds gives
+# that slowest known scenario headroom without making the per-scenario bound lax.
+smoke_timeout_seconds=180
+
 smokes=(
   # The wrapper runs smoke-compose.sh while an unrelated sentinel project is
   # alive, then overlaps a second run to prove a fixed-port collision cannot
@@ -35,11 +42,15 @@ smokes=(
 failures=()
 for smoke in "${smokes[@]}"; do
   echo "::group::$smoke"
-  if bash "$smoke"; then
+  if timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke"; then
     echo "PASS: $smoke"
   else
     status=$?
-    echo "::error title=Docker smoke failed::$smoke exited with status $status"
+    if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+      echo "::error title=Docker smoke timed out::$smoke exceeded ${smoke_timeout_seconds}s (status $status)"
+    else
+      echo "::error title=Docker smoke failed::$smoke exited with status $status"
+    fi
     failures+=("$smoke:$status")
   fi
   echo "::endgroup::"

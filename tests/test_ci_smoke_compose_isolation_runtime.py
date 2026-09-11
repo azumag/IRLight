@@ -5,6 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WRAPPER = ROOT / "scripts" / "ci-smoke-compose-isolation-runtime.sh"
 SUITE = ROOT / "scripts" / "ci-docker-smoke-suite.sh"
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class ComposeSmokeRuntimeIsolationContractTest(unittest.TestCase):
@@ -12,6 +13,7 @@ class ComposeSmokeRuntimeIsolationContractTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.wrapper = WRAPPER.read_text(encoding="utf-8")
         cls.suite = SUITE.read_text(encoding="utf-8")
+        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
     def test_shared_suite_runs_central_smoke_through_runtime_wrapper(self) -> None:
         self.assertIn(
@@ -19,6 +21,29 @@ class ComposeSmokeRuntimeIsolationContractTest(unittest.TestCase):
             self.suite,
         )
         self.assertNotIn("\n  scripts/smoke-compose.sh\n", self.suite)
+
+    def test_shared_suite_bounds_each_smoke_independently(self) -> None:
+        self.assertIn("smoke_timeout_seconds=180", self.suite)
+        self.assertIn(
+            'timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke"',
+            self.suite,
+        )
+        self.assertIn("Docker smoke timed out", self.suite)
+
+    def test_workflow_bounds_warm_cache_without_discarding_it(self) -> None:
+        warm = self.workflow.index("- name: Warm shared local images")
+        reclaim = self.workflow.index("- name: Bound Docker build cache before smoke suite")
+        exercise = self.workflow.index("- name: Exercise Docker integration smoke suite")
+        self.assertLess(warm, reclaim)
+        self.assertLess(reclaim, exercise)
+        self.assertIn(
+            "docker builder prune --all --force --keep-storage 6GB",
+            self.workflow,
+        )
+        self.assertNotIn("docker builder prune --all --force\n", self.workflow)
+        self.assertIn("docker image prune --force", self.workflow)
+        self.assertIn("docker system df", self.workflow)
+        self.assertIn("df -h /", self.workflow)
 
     def test_wrapper_uses_private_run_scoped_resources(self) -> None:
         for expected in (
