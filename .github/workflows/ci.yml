@@ -74,7 +74,7 @@ jobs:
           persist-credentials: false
       - name: Warm shared local images
         run: docker compose -f docker-compose.poc.yml build continuity control-ui node-agent
-      - name: Reclaim Docker build cache before smoke suite
+      - name: Bound Docker build cache before smoke suite
         run: |
           set -euo pipefail
           echo "::group::Docker storage before cache prune"
@@ -82,12 +82,12 @@ jobs:
           docker system df
           echo "::endgroup::"
 
-          # The warm build leaves the final tagged images loaded, so its
-          # BuildKit cache and dangling image records are expendable. Reclaim
-          # them before the isolation smoke creates two overlapping stacks;
-          # otherwise the GitHub-hosted runner can exhaust its root filesystem
-          # even though the smoke itself passes.
-          docker builder prune --all --force
+          # Keep the newest warm-build cache so the run-scoped Compose projects
+          # can reuse expensive Ubuntu/GStreamer layers, but cap it so the
+          # overlapping isolation smoke still has filesystem headroom. A full
+          # `builder prune --all` here defeats the shared-cache design and turns
+          # the isolation probe back into a cold rebuild.
+          docker builder prune --all --force --keep-storage 6GB
           docker image prune --force
 
           echo "::group::Docker storage after cache prune"
