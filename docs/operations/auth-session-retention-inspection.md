@@ -40,6 +40,8 @@ python apps/control-api/auth_session_gc.py --max-delete 1000
 
 inspector は auth store の通常 lock helper を呼ばない。現在の lock helper は lock file / directory を作成できるため、診断だけで filesystem を変化させないためである。auth authority writer は一時ファイルから `os.replace()` するため、inspector は開いた regular-file inode の byte snapshot を検査する。
 
+inspector は authority を開く前に effective inspection clock も検証する。明示された inspection time と既定の system clock は同じ有限値境界を通り、`NaN` / `Infinity` / `-Infinity` を拒否する。異常な clock 値で active / expired の集計を推測せず、authority file に触れる前に fail-closed にする。
+
 さらに次を fail-closed にする。
 
 - `auth_sessions.json` が regular file ではない、または symlink である。
@@ -81,5 +83,6 @@ exit code は `2`。壊れた authority を空 state とみなしたり、marker
 - 成功出力にユーザー ID を含めず、aggregate だけを返すこと。
 - inspection 前後で authority の content / mtime / directory entries が変わらないこと。
 - duplicate key、非有限値、不正 record の fail-closed。
+- default system clock が非有限値なら authority access 前に拒否すること。
 - symlink state の拒否。
 - 成功・失敗出力に token hash、user ID、CSRF token、入力 path を出さないこと。
