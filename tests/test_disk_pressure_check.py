@@ -73,13 +73,26 @@ class DiskPressureCheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("status=CRITICAL", result.stdout)
 
+    def test_thresholds_are_parsed_as_bounded_decimal_values(self) -> None:
+        result = self._run(usage=80, warning="080", critical="090")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("warning_percent=80", result.stdout)
+        self.assertIn("critical_percent=90", result.stdout)
+
     def test_invalid_thresholds_fail_closed_before_df(self) -> None:
-        result = self._run(warning="90", critical="80")
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_DISK_PRESSURE status=UNKNOWN reason=invalid_threshold",
-        )
+        for warning, critical in (
+            ("90", "80"),
+            ("80x", "90"),
+            ("9999", "10000"),
+        ):
+            with self.subTest(warning=warning, critical=critical):
+                result = self._run(warning=warning, critical=critical)
+                self.assertEqual(result.returncode, 3)
+                self.assertEqual(
+                    result.stdout.strip(),
+                    "IRLIGHT_DISK_PRESSURE status=UNKNOWN reason=invalid_threshold",
+                )
 
     def test_df_failure_is_unknown_without_raw_error(self) -> None:
         result = self._run(df_exit=7)
