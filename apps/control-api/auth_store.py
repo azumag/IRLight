@@ -308,12 +308,16 @@ def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
             item, "csrf_token", context="authentication session record"
         )
         _validate_csrf_token(csrf_token)
-        _require_finite_number(
+        created_at = _require_finite_number(
             item, "created_at", context="authentication session record"
         )
-        _require_finite_number(
+        expires_at = _require_finite_number(
             item, "expires_at", context="authentication session record"
         )
+        if created_at < 0:
+            raise AuthStateError("authentication session record has invalid created_at")
+        if expires_at < created_at:
+            raise AuthStateError("authentication session record has invalid expires_at")
     return value
 
 
@@ -426,6 +430,7 @@ def create_session(
     token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
     csrf_token = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
     now = time.time()
+    expires_at = now + max(ttl_seconds, 0)
     with _state_lock(exclusive=True):
         sessions = _validate_sessions(
             read_json(AUTH_SESSIONS_PATH, _default_sessions())
@@ -434,10 +439,10 @@ def create_session(
             "user_id": user_id,
             "csrf_token": csrf_token,
             "created_at": now,
-            "expires_at": now + ttl_seconds,
+            "expires_at": expires_at,
         }
         atomic_write_json(AUTH_SESSIONS_PATH, sessions)
-    return {"token": token, "csrf_token": csrf_token, "expires_at": now + ttl_seconds}
+    return {"token": token, "csrf_token": csrf_token, "expires_at": expires_at}
 
 
 def get_session_user(token: str) -> dict[str, Any] | None:
