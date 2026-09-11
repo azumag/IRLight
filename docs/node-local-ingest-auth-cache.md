@@ -47,7 +47,7 @@ Control Planeの成功応答には `cache_valid_until` を含めます。これ�
 - credential自身の `expires_at`
 - Control Planeの `IRLIGHT_INGEST_AUTH_CACHE_MAX_AGE_SECONDS`（既定300秒）
 
-Control Planeは `cache_valid_until` の計算に使う現在時刻とcredential expiryについて、boolやnumeric stringを数値へ暗黙変換せず、finiteかつ0以上の `int` / `float` のみを受理します。credential expiryが現在時刻以下の場合もfallback用cacheはprimeしません。型違い、NaN、±Infinity、負値、float化不能な巨大整数などで安全な期限を作れない場合、liveなControl Plane 2xx自体は現在の認証判断として維持しつつ `cache_valid_until: null` を返し、Node側のfallback grantを新規作成しません。
+Control Planeのcache deadline計算は、現在時刻とcredential expiryについてboolやnumeric stringを数値へ暗黙変換せず、finiteかつ0以上の `int` / `float` のみを受理します。credential expiryが現在時刻以下の場合もfallback用cacheはprimeしません。認証自体が正常に完了していても、型違い、NaN、±Infinity、負値、float化不能な巨大整数などで安全なcache deadlineを作れない場合は `cache_valid_until: null` とし、Node側のfallback grantを新規作成しません。Control Planeのclock異常がcredential authority検証で先に検出された場合も認証要求はfail closedし、新しいcache grantは発行されません。
 
 Node Agent側も `cache_valid_until` とlocal clockを同じくstrictなfinite/non-negative numeric境界で検証し、無効値をfallback cacheへ保存しません。`NODE_INGEST_AUTH_CACHE_MAX_AGE_SECONDS`（既定300秒）でもさらに上限をかけます。
 
