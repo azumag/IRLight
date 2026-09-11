@@ -5,11 +5,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 # Keep real package/dependency errors fatal while tolerating short-lived mirror
-# stalls. The fixed retry/timeout values also bound how long CI waits on a
-# degraded archive before surfacing the original apt failure.
-RUN echo "apt network policy: retries=2 timeout=10s" \
-    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update \
-    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
+# stalls. Prefer HTTPS on hosted runners, retry bounded transport failures, and
+# make any incomplete index refresh fail before package installation begins.
+RUN sed -i \
+    -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+    -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+    /etc/apt/sources.list.d/ubuntu.sources \
+    && echo "apt network policy: https retries=2 timeout=10s update-error-mode=any" \
+    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=2 -o Acquire::https::Timeout=10 update \
+    && apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
     python3 \
     python3-gi \
     gir1.2-gstreamer-1.0 \
