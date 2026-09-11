@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "node-agent"))
 
+import egress_status  # noqa: E402
 from egress_status import read_egress_status  # noqa: E402
 
 
@@ -63,6 +64,43 @@ class EgressStatusReaderTest(unittest.TestCase):
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertFalse(result["connected"])
         self.assertEqual(result["reason_code"], "STATUS_STALE")
+
+    def test_invalid_inspection_clock_fails_before_status_read(self) -> None:
+        invalid_values = [
+            ("bool", True),
+            ("negative", -1.0),
+            ("nan", float("nan")),
+            ("positive infinity", float("inf")),
+            ("negative infinity", float("-inf")),
+            ("float overflow", 10**10000),
+        ]
+        for label, value in invalid_values:
+            with self.subTest(value=label), patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("status file must not be read"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "egress status clock is invalid"):
+                    read_egress_status(Path("unused.json"), now=value)  # type: ignore[arg-type]
+
+        with patch.object(
+            egress_status.time,
+            "time",
+            return_value=float("nan"),
+        ), patch.object(
+            Path,
+            "read_text",
+            side_effect=AssertionError("status file must not be read"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "egress status clock is invalid"):
+                read_egress_status(Path("unused.json"))
+
+    def test_unknown_status_uses_validated_inspection_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = read_egress_status(Path(tmp, "missing.json"), now=321.0)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual(result["reason_code"], "STATUS_UNAVAILABLE")
+        self.assertEqual(result["observed_at"], 321.0)
 
     def test_nonfinite_max_age_config_falls_back_to_safe_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
