@@ -5,8 +5,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates srt-tools \
+# Keep package-index failures fatal, but bound transient Debian mirror stalls so
+# the shared Docker smoke runner fails/retries promptly instead of hanging until
+# the job-level timeout.
+RUN apt-get \
+      -o APT::Update::Error-Mode=any \
+      -o Acquire::Retries=4 \
+      -o Acquire::http::Timeout=10 \
+      -o Acquire::https::Timeout=10 \
+      update \
+    && apt-get \
+      -o Acquire::Retries=4 \
+      -o Acquire::http::Timeout=10 \
+      -o Acquire::https::Timeout=10 \
+      install -y --no-install-recommends ca-certificates srt-tools \
     && rm -rf /var/lib/apt/lists/*
 COPY apps/control-api/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
