@@ -77,6 +77,19 @@ def _cache_key(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _validated_cache_time(value: object | None, *, field: str) -> float:
+    candidate = time.time() if value is None else value
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+        raise RuntimeError(f"ingest auth cache {field} is invalid")
+    try:
+        normalized = float(candidate)
+    except (OverflowError, ValueError) as exc:
+        raise RuntimeError(f"ingest auth cache {field} is invalid") from exc
+    if not math.isfinite(normalized) or normalized < 0:
+        raise RuntimeError(f"ingest auth cache {field} is invalid")
+    return normalized
+
+
 class PositiveAuthCache:
     """Memory-only digest cache for previously authorized publisher requests."""
 
@@ -97,11 +110,15 @@ class PositiveAuthCache:
         self,
         payload: dict[str, Any],
         *,
-        upstream_valid_until: float,
+        upstream_valid_until: object,
         now: float | None = None,
     ) -> bool:
-        current = time.time() if now is None else now
-        expires_at = min(upstream_valid_until, current + self.max_age_seconds)
+        current = _validated_cache_time(now, field="clock")
+        valid_until = _validated_cache_time(
+            upstream_valid_until,
+            field="valid-until",
+        )
+        expires_at = min(valid_until, current + self.max_age_seconds)
         if not math.isfinite(expires_at) or expires_at <= current:
             return False
         key = _cache_key(payload)
@@ -112,7 +129,7 @@ class PositiveAuthCache:
         return True
 
     def allowed(self, payload: dict[str, Any], *, now: float | None = None) -> bool:
-        current = time.time() if now is None else now
+        current = _validated_cache_time(now, field="clock")
         key = _cache_key(payload)
         with self.lock:
             self._prune(current)
@@ -128,7 +145,7 @@ class PositiveAuthCache:
             self._entries.pop(key, None)
 
     def size(self, *, now: float | None = None) -> int:
-        current = time.time() if now is None else now
+        current = _validated_cache_time(now, field="clock")
         with self.lock:
             self._prune(current)
             return len(self._entries)
@@ -291,12 +308,15 @@ class IngestAuthProxy:
             self.cache.evict(payload)
             return _json_response(502, {"detail": "invalid auth upstream response"})
 
-        try:
-            cache_valid_until = float(result.get("cache_valid_until", 0.0))
-        except (TypeError, ValueError):
-            cache_valid_until = 0.0
+        cache_valid_until = result.get("cache_valid_until", 0.0)
         if self._cacheable(payload):
-            self.cache.store(payload, upstream_valid_until=cache_valid_until)
+            try:
+                self.cache.store(payload, upstream_valid_until=cache_valid_until)
+            except RuntimeError:
+                # The current request was authorized by the Control Plane, so
+                # preserve that response but never prime a fallback grant from
+                # an invalid local clock or validity timestamp.
+                pass
         headers = {"Retry-After": retry_after} if retry_after else {}
         return ProxyResponse(status=status, body=body, headers=headers)
 
@@ -319,7 +339,14 @@ class IngestAuthProxy:
         return _json_response(200, {"authorized": True, "internal": True})
 
     def _fallback(self, payload: dict[str, Any]) -> ProxyResponse:
-        if not self._cacheable(payload) or not self.cache.allowed(payload):
+        cache_allowed = False
+        if self._cacheable(payload):
+            try:
+                cache_allowed = self.cache.allowed(payload)
+            except RuntimeError:
+                # A stale grant is unsafe when its age cannot be measured.
+                cache_allowed = False
+        if not cache_allowed:
             return _json_response(
                 503,
                 {"detail": "ingest auth upstream unavailable"},
