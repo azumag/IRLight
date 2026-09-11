@@ -56,8 +56,8 @@ class IngestApiValidationTest(unittest.TestCase):
             -1,
             10**10000,
         )
-        for value in invalid_values:
-            with self.subTest(value=repr(value)):
+        for index, value in enumerate(invalid_values):
+            with self.subTest(case=index, value_type=type(value).__name__):
                 self.assertIsNone(
                     _cache_valid_until({"expires_at": value}, now=100.0)
                 )
@@ -72,8 +72,8 @@ class IngestApiValidationTest(unittest.TestCase):
             -1,
             10**10000,
         )
-        for value in invalid_values:
-            with self.subTest(value=repr(value)):
+        for index, value in enumerate(invalid_values):
+            with self.subTest(case=index, value_type=type(value).__name__):
                 self.assertIsNone(
                     _cache_valid_until({"expires_at": 1000.0}, now=value)
                 )
