@@ -1299,7 +1299,7 @@ def _heartbeat_locked(
         raise HTTPException(status_code=404, detail="unknown node")
     _require_node_access(node, authorization)
 
-    observed_at = time.time()
+    observed_at = _require_finite_number(time.time(), "heartbeat clock", minimum=0)
     node["status"] = request.status
     node["last_heartbeat_at"] = observed_at
     node["media_health"] = request.media_health
