@@ -19,9 +19,9 @@ RUN sed -i \
     -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
     -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
     /etc/apt/sources.list.d/ubuntu.sources \
-    && echo "apt network policy: https retries=2 timeout=10s update-error-mode=any" \
-    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=2 -o Acquire::https::Timeout=10 update \
-    && apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
+    && echo "apt network policy: https retries=4 timeout=10s update-error-mode=any" \
+    && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=4 -o Acquire::https::Timeout=10 update \
+    && apt-get -o Acquire::Retries=4 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
     python3 \
     python3-gi \
     gir1.2-gstreamer-1.0 \
