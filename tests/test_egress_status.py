@@ -67,15 +67,15 @@ class EgressStatusReaderTest(unittest.TestCase):
 
     def test_invalid_inspection_clock_fails_before_status_read(self) -> None:
         invalid_values = [
-            True,
-            -1.0,
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            10**10000,
+            ("bool", True),
+            ("negative", -1.0),
+            ("nan", float("nan")),
+            ("positive infinity", float("inf")),
+            ("negative infinity", float("-inf")),
+            ("float overflow", 10**10000),
         ]
-        for value in invalid_values:
-            with self.subTest(value=repr(value)), patch.object(
+        for label, value in invalid_values:
+            with self.subTest(value=label), patch.object(
                 Path,
                 "read_text",
                 side_effect=AssertionError("status file must not be read"),
