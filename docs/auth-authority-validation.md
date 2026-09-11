@@ -16,6 +16,8 @@ Authentication session records also require their map key to be the exact lowerc
 
 Authentication-session records require a non-empty user ID and a CSRF token in the exact URL-safe 32-character form emitted by `secrets.token_urlsafe(24)`, plus finite numeric `created_at` and `expires_at` values. Truncated, oversized, padded, non-URL-safe, or non-ASCII CSRF tokens are rejected as damaged authority rather than being compared against request cookies or headers. Boolean, string, null, and non-finite timestamp values are invalid authority rather than values to coerce. A session is expired when `expires_at <= now`.
 
+The request-authentication path validates its effective system clock before it opens the session authority. `NaN`, positive or negative infinity, and other values that cannot be represented as a finite float raise `AuthStateError` instead of participating in the expiry comparison. This prevents a `NaN` clock from making an already expired session appear active; while the clock is invalid, authentication fails closed rather than guessing from persisted state.
+
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
 
 ## API failure contract
