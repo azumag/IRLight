@@ -67,6 +67,42 @@ class RelayClientObserverTest(unittest.TestCase):
             self.assertEqual(result["reader_count"], 0)
             self.assertEqual(result["reason_code"], "RELAY_SOURCE_OFFLINE")
 
+    def test_invalid_clock_fails_before_mediamtx_request(self) -> None:
+        observer = self._observer()
+        cases = [
+            ("bool", True),
+            ("negative", -1.0),
+            ("nan", float("nan")),
+            ("positive-infinity", float("inf")),
+            ("negative-infinity", float("-inf")),
+            ("overflowing-integer", 10**10000),
+            ("string", "123"),
+        ]
+        for label, value in cases:
+            with self.subTest(case=label), patch.object(
+                observer,
+                "_path_snapshot",
+            ) as snapshot:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "relay client observation clock is invalid",
+                ):
+                    observer.observe(now=value)  # type: ignore[arg-type]
+                snapshot.assert_not_called()
+
+    def test_invalid_default_clock_fails_before_mediamtx_request(self) -> None:
+        observer = self._observer()
+        with patch("relay_client.time.time", return_value=float("nan")), patch.object(
+            observer,
+            "_path_snapshot",
+        ) as snapshot:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "relay client observation clock is invalid",
+            ):
+                observer.observe()
+            snapshot.assert_not_called()
+
 
 class RelayClientHeartbeatTest(unittest.TestCase):
     def setUp(self) -> None:
