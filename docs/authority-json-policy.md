@@ -38,4 +38,8 @@ Runtime status files are not Control Plane authority, but consumers must still a
 
 The Continuity and Egress Gateway runtime status writers now apply the same strict numeric boundary on output. Their atomic writers serialize with `allow_nan=False` and convert encoder `TypeError` / `ValueError` failures to the fixed `RuntimeStatusWriteError` before `os.replace()`. A rejected payload therefore leaves the last readable `status.json` / `egress.json` untouched and removes its temporary file. Valid payload shape and ordering remain unchanged; this is serialization hardening only and does not alter reconnect, continuity switching, GStreamer pipeline, Destination/provider, Session, billing, or notification semantics.
 
+## Runtime clock inputs
+
+The Control Plane validates its own effective Node heartbeat clock as a non-negative finite number before changing Node heartbeat fields or invoking Session heartbeat and pipeline-health updates. Negative values, `NaN` / `Infinity`, and integers that overflow finite float normalization fail closed as `NodeStateError`, and the rejected heartbeat does not replace `nodes.json`. This only hardens the runtime clock boundary; Node status vocabulary, heartbeat cadence, health grace periods, Session capacity, provider, billing, and notification semantics are unchanged.
+
 Refs #87 #90 #249
