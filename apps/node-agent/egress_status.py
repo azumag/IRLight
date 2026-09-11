@@ -20,7 +20,20 @@ TERMINAL_STATUSES = {"AUTH_FAILED", "FAILED", "STOPPED"}
 DEFAULT_MAX_AGE_SECONDS = 30.0
 
 
-def _unknown(reason_code: str) -> dict[str, Any]:
+def _validated_now(value: object | None) -> float:
+    candidate = time.time() if value is None else value
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+        raise RuntimeError("egress status clock is invalid")
+    try:
+        numeric = float(candidate)
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeError("egress status clock is invalid") from None
+    if not math.isfinite(numeric) or numeric < 0:
+        raise RuntimeError("egress status clock is invalid")
+    return numeric
+
+
+def _unknown(reason_code: str, *, observed_at: float) -> dict[str, Any]:
     return {
         "status": "UNKNOWN",
         "connected": False,
@@ -30,7 +43,7 @@ def _unknown(reason_code: str) -> dict[str, Any]:
         "next_retry_at": None,
         "destination_scheme": None,
         "destination_host": None,
-        "observed_at": time.time(),
+        "observed_at": observed_at,
     }
 
 
@@ -82,13 +95,14 @@ def read_egress_status(
     now: float | None = None,
     max_age_seconds: float | None = None,
 ) -> dict[str, Any]:
+    current = _validated_now(now)
     status_path = Path(path)
     try:
         raw_text = status_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return _unknown("STATUS_INVALID")
+        return _unknown("STATUS_INVALID", observed_at=current)
     except (FileNotFoundError, OSError):
-        return _unknown("STATUS_UNAVAILABLE")
+        return _unknown("STATUS_UNAVAILABLE", observed_at=current)
     try:
         raw = json.loads(
             raw_text,
@@ -96,15 +110,14 @@ def read_egress_status(
             object_pairs_hook=_reject_duplicate_object_pairs,
         )
     except (json.JSONDecodeError, ValueError):
-        return _unknown("STATUS_INVALID")
+        return _unknown("STATUS_INVALID", observed_at=current)
     if not isinstance(raw, dict):
-        return _unknown("STATUS_INVALID")
+        return _unknown("STATUS_INVALID", observed_at=current)
 
     status = str(raw.get("status", "UNKNOWN"))
     if status not in ALLOWED_STATUSES:
-        return _unknown("STATUS_INVALID")
+        return _unknown("STATUS_INVALID", observed_at=current)
 
-    current = time.time() if now is None else now
     raw_observed_at = raw.get("observed_at")
     if raw_observed_at is None:
         observed_at = current
@@ -112,9 +125,9 @@ def read_egress_status(
         try:
             observed_at = float(raw_observed_at)
         except (TypeError, ValueError, OverflowError):
-            return _unknown("STATUS_INVALID")
+            return _unknown("STATUS_INVALID", observed_at=current)
         if not math.isfinite(observed_at) or observed_at < 0:
-            return _unknown("STATUS_INVALID")
+            return _unknown("STATUS_INVALID", observed_at=current)
     if max_age_seconds is None:
         max_age_seconds = _max_age_seconds(
             os.getenv("NODE_EGRESS_STATUS_MAX_AGE_SECONDS", "30")
@@ -126,9 +139,7 @@ def read_egress_status(
         and max_age_seconds > 0
         and current - observed_at > max_age_seconds
     ):
-        result = _unknown("STATUS_STALE")
-        result["observed_at"] = observed_at
-        return result
+        return _unknown("STATUS_STALE", observed_at=observed_at)
 
     return {
         "status": status,
