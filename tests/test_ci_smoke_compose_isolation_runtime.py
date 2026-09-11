@@ -30,15 +30,17 @@ class ComposeSmokeRuntimeIsolationContractTest(unittest.TestCase):
         )
         self.assertIn("Docker smoke timed out", self.suite)
 
-    def test_workflow_reclaims_warm_build_cache_before_overlap_smoke(self) -> None:
+    def test_workflow_bounds_warm_cache_without_discarding_it(self) -> None:
         warm = self.workflow.index("- name: Warm shared local images")
-        reclaim = self.workflow.index(
-            "- name: Reclaim Docker build cache before smoke suite"
-        )
+        reclaim = self.workflow.index("- name: Bound Docker build cache before smoke suite")
         exercise = self.workflow.index("- name: Exercise Docker integration smoke suite")
         self.assertLess(warm, reclaim)
         self.assertLess(reclaim, exercise)
-        self.assertIn("docker builder prune --all --force", self.workflow)
+        self.assertIn(
+            "docker builder prune --all --force --keep-storage 6GB",
+            self.workflow,
+        )
+        self.assertNotIn("docker builder prune --all --force\n", self.workflow)
         self.assertIn("docker image prune --force", self.workflow)
         self.assertIn("docker system df", self.workflow)
         self.assertIn("df -h /", self.workflow)
