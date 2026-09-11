@@ -12,6 +12,7 @@ knows the media stack is unrecoverable.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Any
@@ -35,6 +36,20 @@ def media_health_failure_grace_seconds() -> float:
     return max(0.0, value)
 
 
+def _validated_observed_at(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("pipeline health observed_at must be a finite non-negative number")
+    try:
+        current = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError(
+            "pipeline health observed_at must be a finite non-negative number"
+        ) from None
+    if not math.isfinite(current) or current < 0:
+        raise ValueError("pipeline health observed_at must be a finite non-negative number")
+    return current
+
+
 def apply_pipeline_health(
     store: SessionStore,
     *,
@@ -53,7 +68,7 @@ def apply_pipeline_health(
     are persisted together with the heartbeat record.
     """
 
-    current = time.time() if observed_at is None else float(observed_at)
+    current = _validated_observed_at(time.time() if observed_at is None else observed_at)
     normalized_health = str(media_health).strip().lower()
     normalized_status = str(node_status).strip().upper()
 
