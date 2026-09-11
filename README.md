@@ -31,7 +31,7 @@ Continuity image は Ubuntu / GStreamer の依存が大きいため、`apt` の�
 Ubuntu の archive/security mirror を HTTPS で参照する。minimal Ubuntu image には
 初回 HTTPS 用の CA bundle がないため、official `python:3.14-slim` image から公開 root
 bundle だけを bootstrap し、その後 Ubuntu 自身の `ca-certificates` package を通常どおり
-install して final trust store を所有させる。一時的な network 障害には最大2回の再試行と
+install して final trust store を所有させる。一時的な network 障害には最大4回の再試行と
 10秒の通信 timeout を使い、index 更新が一部でも取得できなければ package install へ
 進まず失敗させる。再試行後も取得できない場合や package 名・repository の不整合は
 従来どおり失敗とし、Docker integration / recovery / netem の gate 自体は skip や
