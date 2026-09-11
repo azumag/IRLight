@@ -278,6 +278,40 @@ class NodeInternalApiTest(unittest.TestCase):
         self.assertTrue(node["active_publisher"])
         self.assertIsNotNone(node["last_heartbeat_at"])
 
+    def test_heartbeat_invalid_control_plane_clock_fails_before_mutation(self) -> None:
+        response = self._bootstrap()
+        node_id = str(response["node_id"])
+        baseline = copy.deepcopy(
+            list_nodes(authorization="Bearer test-admin-token")["nodes"][node_id]
+        )
+        invalid_clocks = (
+            ("negative", -1.0),
+            ("nan", float("nan")),
+            ("positive infinity", float("inf")),
+            ("overflowing integer", 10**400),
+        )
+
+        for label, invalid_clock in invalid_clocks:
+            with self.subTest(label=label):
+                with patch("node_internal.time.time", return_value=invalid_clock), patch(
+                    "node_internal._write_authority"
+                ) as write_authority:
+                    with self.assertRaisesRegex(NodeStateError, "heartbeat clock"):
+                        heartbeat(
+                            node_id,
+                            HeartbeatRequest(
+                                status="READY",
+                                media_health="running",
+                                active_publisher=True,
+                            ),
+                            authorization=f"Bearer {response['node_access_token']}",
+                        )
+                write_authority.assert_not_called()
+                current = list_nodes(authorization="Bearer test-admin-token")["nodes"][
+                    node_id
+                ]
+                self.assertEqual(current, baseline)
+
     def test_stop_is_idempotent(self) -> None:
         response = self._bootstrap()
         node_id = str(response["node_id"])
