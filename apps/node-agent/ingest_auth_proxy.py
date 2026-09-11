@@ -110,7 +110,7 @@ class PositiveAuthCache:
         self,
         payload: dict[str, Any],
         *,
-        upstream_valid_until: float,
+        upstream_valid_until: object,
         now: float | None = None,
     ) -> bool:
         current = _validated_cache_time(now, field="clock")
@@ -308,10 +308,7 @@ class IngestAuthProxy:
             self.cache.evict(payload)
             return _json_response(502, {"detail": "invalid auth upstream response"})
 
-        try:
-            cache_valid_until = float(result.get("cache_valid_until", 0.0))
-        except (TypeError, ValueError, OverflowError):
-            cache_valid_until = 0.0
+        cache_valid_until = result.get("cache_valid_until", 0.0)
         if self._cacheable(payload):
             try:
                 self.cache.store(payload, upstream_valid_until=cache_valid_until)
