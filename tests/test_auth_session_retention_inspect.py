@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -191,6 +192,23 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
                 with self.subTest(value=value):
                     with self.assertRaises(RetentionInspectError):
                         inspect_auth_session_retention(path=path, now=value)
+
+    def test_default_clock_is_validated_before_authority_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth_sessions.json"
+            path.write_text('{"sessions":{}}', encoding="utf-8")
+            for value in (math.nan, math.inf, -math.inf):
+                with self.subTest(value=value):
+                    with patch(
+                        "auth_session_retention_inspect_cli.time.time",
+                        return_value=value,
+                    ):
+                        with patch(
+                            "auth_session_retention_inspect_cli._load_read_only_snapshot"
+                        ) as loader:
+                            with self.assertRaises(RetentionInspectError):
+                                inspect_auth_session_retention(path=path)
+                            loader.assert_not_called()
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink is unavailable")
     def test_symlink_state_file_is_rejected_without_reading_target(self) -> None:

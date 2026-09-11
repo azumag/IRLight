@@ -97,12 +97,11 @@ def _validate_record(token_hash: Any, record: Any) -> tuple[float, str]:
 
 
 def _validated_now(value: float | None) -> float:
-    if value is None:
-        return time.time()
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    candidate = time.time() if value is None else value
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
         raise RetentionInspectError("inspection time is invalid")
     try:
-        number = float(value)
+        number = float(candidate)
     except (OverflowError, ValueError):
         raise RetentionInspectError("inspection time is invalid") from None
     if not math.isfinite(number):
