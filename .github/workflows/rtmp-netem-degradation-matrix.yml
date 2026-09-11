@@ -41,7 +41,10 @@ permissions:
 jobs:
   rtmp-netem-degradation-matrix:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The real profile matrix includes a cold Continuity image build. Leave
+    # enough headroom for the bounded apt retry budget without weakening any
+    # profile duration or recovery assertion.
+    timeout-minutes: 25
     env:
       PROFILE_SET: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_set || 'all' }}
       NETEM_PROFILE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_seconds || '12' }}

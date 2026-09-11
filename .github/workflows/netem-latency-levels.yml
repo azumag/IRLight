@@ -34,7 +34,10 @@ jobs:
   latency-levels:
     name: ${{ matrix.protocol }} latency 50/100/300/1000ms
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # SRT can consume most of the old 20-minute ceiling on a cold image build.
+    # Preserve every latency profile and assertion while allowing the bounded
+    # apt retry budget introduced for transient mirror failures.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

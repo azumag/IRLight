@@ -74,6 +74,26 @@ jobs:
           persist-credentials: false
       - name: Warm shared local images
         run: docker compose -f docker-compose.poc.yml build continuity control-ui node-agent
+      - name: Bound Docker build cache before smoke suite
+        run: |
+          set -euo pipefail
+          echo "::group::Docker storage before cache prune"
+          df -h /
+          docker system df
+          echo "::endgroup::"
+
+          # Keep the newest warm-build cache so the run-scoped Compose projects
+          # can reuse expensive Ubuntu/GStreamer layers, but cap it so the
+          # overlapping isolation smoke still has filesystem headroom. A full
+          # `builder prune --all` here defeats the shared-cache design and turns
+          # the isolation probe back into a cold rebuild.
+          docker builder prune --all --force --keep-storage 6GB
+          docker image prune --force
+
+          echo "::group::Docker storage after cache prune"
+          df -h /
+          docker system df
+          echo "::endgroup::"
       - name: Exercise Docker integration smoke suite
         run: bash ./scripts/ci-docker-smoke-suite.sh
 

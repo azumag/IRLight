@@ -1,10 +1,47 @@
+FROM python:3.14-slim AS certs
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Ubuntu's minimal base image does not ship a usable CA bundle. Bootstrap only
+# the public root bundle from the already-trusted official Python slim image so
+# Canonical mirrors can be contacted over HTTPS; the Ubuntu ca-certificates
+# package is then installed normally and owns the final trust store.
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# Keep real package/dependency errors fatal while tolerating short-lived mirror
+# stalls. Prefer HTTPS on hosted runners, retry bounded transport failures, and
+# make any incomplete index refresh fail before package installation begins.
+# APT's per-request timeout is not a whole-command deadline, so each update
+# attempt is hard-limited too. Restarting the process up to twice after a failed
+# attempt gives a transiently wedged mirror/connection a fresh chance while the
+# total wait remains bounded well below the CI job deadline.
+RUN sed -i \
+    -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+    -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+    /etc/apt/sources.list.d/ubuntu.sources \
+    && echo "apt network policy: https request-retries=4 request-timeout=10s update-attempts=3 update-deadline=120s install-deadline=600s update-error-mode=any" \
+    && update_attempt=1 \
+    && while :; do \
+         echo "apt index refresh attempt ${update_attempt}/3"; \
+         if timeout --signal=TERM --kill-after=10s 120s \
+              apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=4 -o Acquire::https::Timeout=10 update; then \
+           break; \
+         else \
+           update_status=$?; \
+         fi; \
+         if [ "${update_attempt}" -ge 3 ]; then \
+           echo "apt index refresh failed after 3 bounded attempts (last status ${update_status})" >&2; \
+           exit "${update_status}"; \
+         fi; \
+         update_attempt=$((update_attempt + 1)); \
+         sleep 2; \
+       done \
+    && timeout --signal=TERM --kill-after=10s 600s \
+       apt-get -o Acquire::Retries=4 -o Acquire::https::Timeout=10 install -y --no-install-recommends \
     python3 \
     python3-gi \
     gir1.2-gstreamer-1.0 \
