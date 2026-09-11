@@ -308,12 +308,16 @@ def _validate_sessions(value: dict[str, Any]) -> dict[str, Any]:
             item, "csrf_token", context="authentication session record"
         )
         _validate_csrf_token(csrf_token)
-        _require_finite_number(
+        created_at = _require_finite_number(
             item, "created_at", context="authentication session record"
         )
-        _require_finite_number(
+        expires_at = _require_finite_number(
             item, "expires_at", context="authentication session record"
         )
+        if created_at < 0:
+            raise AuthStateError("authentication session record has invalid created_at")
+        if expires_at < created_at:
+            raise AuthStateError("authentication session record has invalid expires_at")
     return value
 
 
