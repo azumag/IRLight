@@ -14,13 +14,13 @@ from auth_store import AuthStateError, get_session_user  # noqa: E402
 
 class AuthSessionRequestClockTest(unittest.TestCase):
     def test_invalid_system_clock_fails_before_authority_access(self) -> None:
-        for bad_now in (
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            10**10_000,
+        for label, bad_now in (
+            ("nan", float("nan")),
+            ("positive-infinity", float("inf")),
+            ("negative-infinity", float("-inf")),
+            ("float-overflow", 10**10_000),
         ):
-            with self.subTest(bad_now=repr(bad_now)):
+            with self.subTest(bad_now=label):
                 with (
                     patch("auth_store.time.time", return_value=bad_now),
                     patch("auth_store._state_lock") as state_lock,
