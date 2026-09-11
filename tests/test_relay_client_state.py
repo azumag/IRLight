@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "apps" / "node-agent"))
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import node_internal  # noqa: E402
+from agent import NodeAgent  # noqa: E402
 from node_internal import (  # noqa: E402
     BootstrapRequest,
     HeartbeatRequest,
@@ -101,6 +102,22 @@ class RelayClientObserverTest(unittest.TestCase):
                 "relay client observation clock is invalid",
             ):
                 observer.observe()
+            snapshot.assert_not_called()
+
+    def test_agent_does_not_resample_invalid_relay_clock(self) -> None:
+        observer = self._observer()
+        agent = object.__new__(NodeAgent)
+        agent.egress_mode = "RELAY_ONLY"
+        agent.relay_client_observer = observer
+        with patch("relay_client.time.time", return_value=float("nan")), patch.object(
+            observer,
+            "_path_snapshot",
+        ) as snapshot:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "relay client observation clock is invalid",
+            ):
+                agent._relay_client_observation()
             snapshot.assert_not_called()
 
 
