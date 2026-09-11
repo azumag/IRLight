@@ -7,14 +7,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # for FPS/GOP/timestamp health. Neither MediaMTX API nor RTSP are published by
 # the production public overlay.
 # Keep index/package failures fatal, but bound transient Debian mirror stalls so
-# CI does not spend the full job budget waiting on an unreachable package host.
-RUN apt-get \
+# CI cannot spend the entire job budget waiting on an unreachable package host.
+# APT's request timeout is supplemented with a whole-command limit.
+RUN timeout --signal=TERM --kill-after=10s 120s \
+      apt-get \
       -o APT::Update::Error-Mode=any \
       -o Acquire::Retries=4 \
       -o Acquire::http::Timeout=10 \
       -o Acquire::https::Timeout=10 \
       update \
-    && apt-get \
+    && timeout --signal=TERM --kill-after=10s 600s \
+      apt-get \
       -o Acquire::Retries=4 \
       -o Acquire::http::Timeout=10 \
       -o Acquire::https::Timeout=10 \
