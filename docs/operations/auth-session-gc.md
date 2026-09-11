@@ -28,6 +28,12 @@ Oldest expired records are removed first with a stable token-hash tie breaker.
 If more expired records remain, the JSON result reports `expired_remaining` and
 a later maintenance run may continue cleanup.
 
+The collector validates its effective clock value before acquiring the
+authentication-state lock or reading authority. Both an explicitly supplied
+`now` and the default system clock must normalize to a finite runtime number;
+`NaN`, infinity, and integer values too large for finite float normalization are
+rejected without touching `auth_sessions.json`.
+
 The collector validates the complete authority before deleting anything.
 Malformed, missing-after-initialization, non-finite, or otherwise invalid state
 fails closed and is not rewritten. A run with no records to delete also avoids

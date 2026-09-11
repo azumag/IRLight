@@ -183,6 +183,15 @@ class AuthSessionGcTest(unittest.TestCase):
             prune_expired_sessions(now=float("inf"))
         with self.assertRaises(ValueError):
             prune_expired_sessions(now=float("nan"))
+        with self.assertRaises(ValueError):
+            prune_expired_sessions(now=10**10_000)
+
+    def test_default_clock_is_validated_before_authority_access(self) -> None:
+        with patch("auth_session_gc.time.time", return_value=float("inf")):
+            with patch("auth_session_gc._state_lock") as state_lock:
+                with self.assertRaises(ValueError):
+                    prune_expired_sessions()
+                state_lock.assert_not_called()
 
 
 if __name__ == "__main__":
