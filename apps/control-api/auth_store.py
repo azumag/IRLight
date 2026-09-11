@@ -164,6 +164,19 @@ def _require_finite_number(record: dict[str, Any], field: str, *, context: str) 
     return number
 
 
+def _validated_clock_now() -> float:
+    candidate = time.time()
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+        raise AuthStateError("authentication clock is invalid")
+    try:
+        current = float(candidate)
+    except (OverflowError, ValueError):
+        raise AuthStateError("authentication clock is invalid") from None
+    if not math.isfinite(current):
+        raise AuthStateError("authentication clock is invalid")
+    return current
+
+
 def _parse_password_hash(value: str) -> tuple[bytes, bytes]:
     """Parse only the password-hash format emitted by this IRLight build.
 
@@ -428,6 +441,7 @@ def create_session(
 
 
 def get_session_user(token: str) -> dict[str, Any] | None:
+    current = _validated_clock_now()
     with _state_lock(exclusive=False):
         sessions = _validate_sessions(
             read_json(AUTH_SESSIONS_PATH, _default_sessions())
@@ -436,7 +450,7 @@ def get_session_user(token: str) -> dict[str, Any] | None:
         record = dict(stored) if isinstance(stored, dict) else None
         if record is None:
             return None
-        if record["expires_at"] <= time.time():
+        if record["expires_at"] <= current:
             return None
     user = get_user(record["user_id"])
     if user is None or user.get("status") != "active":
