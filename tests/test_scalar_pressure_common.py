@@ -17,7 +17,7 @@ class ScalarPressureCommonTest(unittest.TestCase):
             [
                 "bash",
                 "-c",
-                'source "$1"; pressure_usage_percent "$2" "$3"; '
+                'source "$1"; pressure_usage_percent "$2" "$3" || exit $?; '
                 'printf "%s\\n" "$PRESSURE_VALUE"',
                 "scalar-pressure-test",
                 str(HELPER),
