@@ -48,6 +48,7 @@ RELATED_PROCEDURES = {
     "asset failure rate alert dry-run": "docs/operations/asset-failure-rate-alert-dry-run.md",
     "billing webhook alert dry-run": "docs/operations/billing-webhook-alert-dry-run.md",
     "targeted IPv6 default route diagnostics": "docs/operations/targeted-ipv6-default-route-diagnostics.md",
+    "targeted network egress health": "docs/operations/targeted-network-egress-health.md",
 }
 
 NEW_RUNBOOKS = {
