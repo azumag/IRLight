@@ -35,6 +35,7 @@ smokes=(
   # Keep rtmp2sink opt-in until these migration probes remain green without
   # weakening the legacy compatibility gates.
   scripts/smoke-egress-rtmp2-reconnect.sh
+  scripts/smoke-egress-rtmp2-stop-terminal.sh
   scripts/smoke-egress-rtmp2-dns-tls.sh
   scripts/smoke-egress-rtmp2-publish-conflict.sh
 )
