@@ -13,14 +13,35 @@ file_nr_path="${6:-${IRLIGHT_FILE_NR_PATH:-/proc/sys/fs/file-nr}}"
 conntrack_count_path="${7:-${IRLIGHT_CONNTRACK_COUNT_PATH:-/proc/sys/net/netfilter/nf_conntrack_count}}"
 conntrack_max_path="${8:-${IRLIGHT_CONNTRACK_MAX_PATH:-/proc/sys/net/netfilter/nf_conntrack_max}}"
 threads_max_path="${9:-${IRLIGHT_THREADS_MAX_PATH:-/proc/sys/kernel/threads-max}}"
+component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
+
+component_timeout_valid=true
+if [[ ! "$component_timeout_seconds" =~ ^[0-9]+$ ]] || (( ${#component_timeout_seconds} > 3 )); then
+  component_timeout_valid=false
+else
+  component_timeout_seconds=$((10#$component_timeout_seconds))
+  if (( component_timeout_seconds < 1 || component_timeout_seconds > 300 )); then
+    component_timeout_valid=false
+  fi
+fi
 
 run_component() {
   local script="$1"
   shift
 
+  # A monitoring aggregate must not become permanently unavailable because one
+  # component wedges (for example, df waiting on a sick filesystem). Treat an
+  # invalid timeout configuration or missing timeout utility as UNKNOWN rather
+  # than silently running the component without a bound.
+  if [[ "$component_timeout_valid" != true ]] || ! command -v timeout >/dev/null 2>&1; then
+    printf '3\n'
+    return
+  fi
+
   local exit_code
   set +e
-  bash "$script" "$@" >/dev/null 2>&1
+  timeout --signal=TERM --kill-after=2s "${component_timeout_seconds}s" \
+    bash "$script" "$@" >/dev/null 2>&1
   exit_code=$?
   set -e
 

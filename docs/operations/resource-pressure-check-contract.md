@@ -17,6 +17,8 @@ IRLight の read-only resource pressure checks は、観測対象ごとの意味
 
 Overall severity は `CRITICAL > UNKNOWN > WARNING > OK` です。既知の `CRITICAL` は別 component の診断不能 (`UNKNOWN`) で隠しません。一方、既知の critical がない場合は `UNKNOWN` を `WARNING` / `OK` より優先し、診断不能を正常側へ丸めません。個々の component status は overall status に関係なく出力し、複数 severity が同時に発生したときも原因の切り分けに使えるよう維持します。
 
+aggregate は component ごとの実行時間も bounded にします。既定は10秒、`IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS` で1〜300秒の範囲に変更できます。component が timeout した場合、設定値が不正な場合、または GNU `timeout` を利用できない場合は、診断を無制限実行へ silently fallback せず、その component（設定不正時は全 component）を `UNKNOWN` として扱います。監視対象 filesystem や kernel interface の異常で diagnostic process 自体が永久に待ち続けないことを、この fail-closed contract の一部とします。
+
 ## Scalar checks
 
 `scripts/lib/scalar-pressure-common.sh` は次の機械的な処理だけを担当します。
