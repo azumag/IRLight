@@ -1,8 +1,8 @@
 # Targeted runtime pressure diagnostics
 
-Issue #11 の host-level pressure 監視を補完するため、監視対象 workload を明示できる場合だけ使う read-only companion checks を提供する。
+Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link を明示できる場合だけ使う read-only companion checks を提供する。
 
-`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限に余裕があることを意味しない。この手順では cgroup v2 の PSI stall と、単一 process の file descriptor soft limit への接近を別々に確認する。
+`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state を別々に確認する。
 
 ## cgroup v2 PSI
 
@@ -52,27 +52,55 @@ path は `IRLIGHT_PROCESS_FD_DIR` / `IRLIGHT_PROCESS_LIMITS_PATH` でも指定�
 IRLIGHT_PROCESS_FD_PRESSURE status=WARNING usage_percent=82 open_fds=820 soft_limit=1000 hard_limit=4096 warning_percent=80 critical_percent=90
 ```
 
+## Linux network link operational state
+
+host 全体の CPU / memory / PSI が正常でも、配信経路に使う NIC や VLAN の operational state が `down` / `lowerlayerdown` なら通信は成立しない。対象 interface は環境依存なので自動選択せず、`/sys/class/net/<interface>` を明示する。
+
+```bash
+bash scripts/check-network-link-health.sh /sys/class/net/<interface>
+```
+
+`IRLIGHT_NETWORK_INTERFACE_DIR` でも対象 directory を指定できる。Linux kernel が公開する `operstate` を read-only で読み、次の固定 contract で評価する。
+
+- `up`: `OK`
+- `dormant` / `testing`: `WARNING`。L1 が存在しても通常 traffic を流せる状態とは断定しない
+- `down` / `lowerlayerdown` / `notpresent`: `CRITICAL`
+- `unknown`: kernel/driver が operational state を確定できていないため `UNKNOWN`
+- 欠落、複数行、未知の token、読取不能: `UNKNOWN`
+
+`unknown` は「link down」と同義ではないため Critical に格上げしない。一方で監視側から `OK` と推測もしない。bridge、bond、VLAN、virtual device などでは意味のある監視対象を operator が明示し、interface 名や path を output に反射しない。
+
+出力例:
+
+```text
+IRLIGHT_NETWORK_LINK_HEALTH status=OK operstate=up
+```
+
+この check は link state の一点観測であり、帯域飽和、packet loss、RTT、route/DNS、remote ingest reachability、firewall policy を証明しない。それらは別の signal / end-to-end probe と組み合わせる。
+
 ## Exit code
 
-両 check とも同じ contract を使う。
+3つの check とも同じ status / exit contract を使う。
 
 | exit | status | meaning |
 | ---: | --- | --- |
-| 0 | `OK` | 対象 signal は warning 未満、または明示された local limit が unlimited |
-| 1 | `WARNING` | warning 閾値以上 critical 未満 |
-| 2 | `CRITICAL` | critical 閾値以上、または headroom がない / over-limit |
+| 0 | `OK` | 対象 signal は正常範囲、または明示された local limit が unlimited |
+| 1 | `WARNING` | warning 閾値以上 critical 未満、または link が transitional state |
+| 2 | `CRITICAL` | critical 閾値以上、headroom がない / over-limit、または明示した link が利用不能状態 |
 | 3 | `UNKNOWN` | 対象を安全に読み取り・評価できない |
 
 ## Safety
 
-どちらも診断専用で、cgroup control file、rlimit、process、socket、authority stateを変更しない。kill/restart、fd close、`prlimit`、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / state ownership を確認した runbook の明示操作として行う。
+すべて診断専用で、cgroup control file、rlimit、process、socket、network interface、route、authority stateを変更しない。kill/restart、fd close、`prlimit`、`ip link set`、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / interface / state ownership を確認した runbook の明示操作として行う。
 
 ## Verification
 
 ```bash
 python -m unittest discover -s tests -p 'test_cgroup_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_process_fd_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_network_link_health.py' -v
 bash -n \
   scripts/check-cgroup-psi-pressure.sh \
-  scripts/check-process-fd-pressure.sh
+  scripts/check-process-fd-pressure.sh \
+  scripts/check-network-link-health.sh
 ```
