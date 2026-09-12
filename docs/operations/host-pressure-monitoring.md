@@ -1,6 +1,6 @@
 # Host pressure monitoring
 
-Issue #11 の運用監視として、disk/inode pressure、memory pressure、host load pressure、Linux Pressure Stall Information (PSI)、system-wide file-handle pressure、netfilter conntrack pressure を一つの read-only check にまとめる。
+Issue #11 の運用監視として、disk/inode、memory、host load、Linux Pressure Stall Information (PSI)、system-wide file handle、netfilter conntrack、system-wide task/thread pressure を一つの read-only check にまとめる。
 
 ## Check
 
@@ -8,7 +8,9 @@ Issue #11 の運用監視として、disk/inode pressure、memory pressure、hos
 bash scripts/check-host-pressure.sh
 ```
 
-既定では disk check は `IRLIGHT_DISK_PATH`、`STATE_DIR`、`/state` の順で対象を選び、memory check は `/proc/meminfo`、load check は `/proc/loadavg`、PSI check は `/proc/pressure/{cpu,memory,io}`、file-handle check は `/proc/sys/fs/file-nr`、conntrack check は `/proc/sys/net/netfilter/nf_conntrack_count` と `/proc/sys/net/netfilter/nf_conntrack_max` を読む。限定された診断やテストでは第1引数にdisk path、第2引数にmeminfo path、第3引数にloadavg path、第4引数にonline CPU数、第5引数にPSI directory、第6引数にfile-nr path、第7引数にconntrack count path、第8引数にconntrack max pathを指定できる。
+既定では disk check は `IRLIGHT_DISK_PATH`、`STATE_DIR`、`/state` の順で対象を選び、memory check は `/proc/meminfo`、load と task check は `/proc/loadavg`、PSI check は `/proc/pressure/{cpu,memory,io}`、file-handle check は `/proc/sys/fs/file-nr`、conntrack check は `/proc/sys/net/netfilter/nf_conntrack_count` と `nf_conntrack_max`、task check の上限は `/proc/sys/kernel/threads-max` を読む。
+
+限定診断やテストでは、第1引数から順に disk path、meminfo path、loadavg path、online CPU数、PSI directory、file-nr path、conntrack count path、conntrack max path、threads-max path を指定できる。
 
 ```bash
 bash scripts/check-host-pressure.sh \
@@ -19,10 +21,11 @@ bash scripts/check-host-pressure.sh \
   /proc/pressure \
   /proc/sys/fs/file-nr \
   /proc/sys/net/netfilter/nf_conntrack_count \
-  /proc/sys/net/netfilter/nf_conntrack_max
+  /proc/sys/net/netfilter/nf_conntrack_max \
+  /proc/sys/kernel/threads-max
 ```
 
-CPU数を省略した場合、load check は `getconf _NPROCESSORS_ONLN` をread-onlyで参照する。
+CPU数を省略した場合、load check は `getconf _NPROCESSORS_ONLN` を read-only で参照する。
 
 各componentの閾値は環境変数で変更できる。
 
@@ -34,28 +37,31 @@ CPU数を省略した場合、load check は `getconf _NPROCESSORS_ONLN` をread
 - `IRLIGHT_PSI_FULL_WARNING_PERCENT` / `IRLIGHT_PSI_FULL_CRITICAL_PERCENT`
 - `IRLIGHT_FILE_HANDLE_WARNING_PERCENT` / `IRLIGHT_FILE_HANDLE_CRITICAL_PERCENT`
 - `IRLIGHT_CONNTRACK_WARNING_PERCENT` / `IRLIGHT_CONNTRACK_CRITICAL_PERCENT`
+- `IRLIGHT_TASK_WARNING_PERCENT` / `IRLIGHT_TASK_CRITICAL_PERCENT`
 
-load pressure は5分load averageをonline CPU数で正規化した値をpercentとして扱う。既定は100%でwarning、200%でcriticalとする。これはCPU utilizationそのものではなく、実行待ち・uninterruptible I/O waitを含むLinux load averageの継続的な混雑指標である。
+load pressure は5分load averageをonline CPU数で正規化したpercentで、既定は100%でwarning、200%でcriticalとする。CPU utilizationそのものではなく、実行待ちやuninterruptible I/O waitを含む継続的な混雑指標である。
 
-PSI pressure はLinux kernelの10秒平均 `avg10` を使う。`some` は少なくとも1 taskが対象resourceでstallしていた時間、`full` は全non-idle taskが同時にstallしていた時間を表す。CPUは`some`、memory/ioは`some`と`full`を評価する。初期閾値は `some >= 25%` でwarning、`some >= 50%` でcritical、`full >= 5%` でwarning、`full >= 20%` でcriticalとし、β運用の実測で調整する。PSIの欠落・壊れた値・NaN/Infinity・100%超過値は正常扱いせずUNKNOWNにする。
+PSI pressure はLinux kernelの10秒平均 `avg10` を使う。`some` は少なくとも1 taskが対象resourceでstallしていた時間、`full` は全non-idle taskが同時にstallしていた時間を表す。CPUは`some`、memory/ioは`some`と`full`を評価する。初期閾値は `some >= 25%` でwarning、`some >= 50%` でcritical、`full >= 5%` でwarning、`full >= 20%` でcriticalとする。欠落・壊れた値・NaN/Infinity・100%超過値はUNKNOWNにする。
 
-file-handle pressure は Linux の `/proc/sys/fs/file-nr` が返す `allocated unused maximum` を読み、`active = allocated - unused` の system-wide file handle 使用率を `maximum` に対して評価する。既定は80%でwarning、90%でcriticalとする。欠落、列数不正、非数値、負になり得る矛盾、`allocated > maximum`、0以下のmaximum、signed 64-bit整数を超える値は正常扱いせずUNKNOWNにする。これはkernel全体のfile handle容量であり、個別process/containerの `ulimit -n` やcgroup等の上限を代替しない。
+file-handle pressure は `/proc/sys/fs/file-nr` の `allocated unused maximum` から `active = allocated - unused` を求め、system-wide file handle 使用率を評価する。既定は80%/90%。欠落、列数不正、非数値、矛盾、0以下のmaximum、signed 64-bit範囲外はUNKNOWNにする。個別process/containerの `ulimit -n` を代替しない。
 
-conntrack pressure は Linux netfilter の現在の追跡entry数 `nf_conntrack_count` を上限 `nf_conntrack_max` に対して評価する。既定は80%でwarning、90%でcriticalとする。欠落、複数行、非数値、`count > maximum`、0以下のmaximum、signed 64-bit整数を超える値は正常扱いせずUNKNOWNにする。これはNAT/firewall等で使われるkernelのconnection tracking table容量であり、ネットワーク帯域、socket backlog、NIC drop、個別processのsocket上限を測るものではない。
+conntrack pressure は `nf_conntrack_count / nf_conntrack_max` を評価し、既定は80%/90%。欠落、複数行、非数値、`count > maximum`、0以下のmaximum、signed 64-bit範囲外はUNKNOWNにする。これはnetwork bandwidth、socket backlog、NIC drop、個別processのsocket上限とは別のsignalである。
+
+task pressure は `/proc/loadavg` の4番目の `running/total` から system-wide scheduling entity の `total` を取得し、`/proc/sys/kernel/threads-max` に対する比率を評価する。既定は80%でwarning、90%でcritical。Linuxのloadavgに含まれるtotalはprocessだけでなくthreadも含むため、PID番号空間そのものではなく、kernelのsystem-wide thread/task上限へ近づく兆候を見るためのsignalとして扱う。欠落、複数行、壊れた `running/total`、`running > total`、0以下のmaximum、`total > maximum`、signed 64-bit範囲外は正常扱いせずUNKNOWNにする。cgroup `pids.max` や個別serviceのprocess上限は別途監視が必要である。
 
 出力は1行の固定形式とする。
 
 ```text
-IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK
+IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK
 ```
 
 exit code は次の意味を持つ。
 
 | exit | status | meaning |
 | ---: | --- | --- |
-| 0 | `OK` | disk/inode、memory、load、PSI、file handle、conntrack が warning 未満 |
-| 1 | `WARNING` | 少なくとも1 componentが warning |
-| 2 | `CRITICAL` | 少なくとも1 componentが critical |
+| 0 | `OK` | 全componentがwarning未満 |
+| 1 | `WARNING` | 少なくとも1 componentがwarning |
+| 2 | `CRITICAL` | 少なくとも1 componentがcritical |
 | 3 | `UNKNOWN` | criticalは確認されていないが、少なくとも1 componentを安全に評価できない |
 
 集約時の優先順位は `CRITICAL > UNKNOWN > WARNING > OK` とする。既知のcriticalを別componentの診断失敗で隠さない一方、criticalがない場合のUNKNOWNは正常・warningへ推測補完しない。
@@ -73,13 +79,16 @@ bash scripts/check-file-handle-pressure.sh /proc/sys/fs/file-nr
 bash scripts/check-conntrack-pressure.sh \
   /proc/sys/net/netfilter/nf_conntrack_count \
   /proc/sys/net/netfilter/nf_conntrack_max
+bash scripts/check-task-pressure.sh \
+  /proc/loadavg \
+  /proc/sys/kernel/threads-max
 ```
 
-`disk_status` はblock容量とinodeの深刻な方、`memory_status` は`MemAvailable`を基準にしたhost memory pressure、`load_status` は5分load averageをCPU数で正規化した継続負荷、`psi_status` はCPU/memory/I/Oでtaskが実際にstallした割合、`file_handle_status` はkernel全体のactive file handle使用率、`conntrack_status` はnetfilter connection tracking tableの使用率を表す。hostの`OK`をcontainer/cgroup、swap、GPU memory、network帯域、packet loss、processごとのfile descriptor上限の余裕と読み替えない。
+`disk_status` はblock容量とinode、`memory_status` は`MemAvailable`、`load_status` は5分load average/CPU、`psi_status` はtask stall、`file_handle_status` はkernel file handle、`conntrack_status` はconnection tracking table、`task_status` はsystem-wide task/thread countの上限接近を表す。hostの`OK`をcontainer/cgroup、swap、GPU memory、network bandwidth、packet loss、processごとのfile descriptorやtask上限の余裕と読み替えない。
 
-load pressureが高い場合も、このcheckだけではCPU saturationとI/O waitを区別しない。PSIを併用するとtask stallの有無を確認できるが、原因processやdeviceまでは特定しない。file-handle pressureも、どのprocessがdescriptorを保持しているかは特定しない。conntrack pressureが高い場合も、どのSession・送信先・NAT flowがtableを消費しているかはこのcheckだけでは分からない。`vmstat`、`iostat`、`lsof`、`/proc/<pid>/fd`、`conntrack -S`、NIC/process/container metrics等の追加診断で原因を確認し、単純なprocess kill、table flush、再起動を自動実行しない。
+load/PSI/file handle/conntrack/task pressureのどれも原因processやSessionを単独では特定しない。`vmstat`、`iostat`、`ps`、`systemd-cgtop`、`lsof`、`/proc/<pid>/fd`、`conntrack -S`、NIC/process/container metricsなどで追加診断し、単純なprocess kill、table flush、再起動を自動実行しない。
 
-PSIが利用できないkernelやcontainer環境ではhost summaryはUNKNOWNになる。PSIを無効扱いしてOKへ丸めず、監視対象OSの要件を明示するか、PSI対応kernelへ揃える。`/proc/sys/fs/file-nr` が読めない制限されたcontainerでも同様にUNKNOWNとする。conntrackを利用しないhost、kernel module未ロード、または制限されたcontainerで `nf_conntrack_count` / `nf_conntrack_max` が読めない場合もUNKNOWNとなる。監視対象でconntrackを要件としない場合は、集約checkをそのままOKへ丸めるのではなく、監視設計側で対象componentの扱いを明示する。個別componentの結果が必要な場合は各checkを直接実行する。
+PSI、file-nr、conntrack、threads-max等を読めない制限されたcontainerではhost summaryはUNKNOWNになる。対象環境で不要なcomponentを暗黙にOKへ丸めず、監視設計側で要件と除外方針を明示する。
 
 ## Safety
 
@@ -94,11 +103,13 @@ python -m unittest discover -s tests -p 'test_load_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_file_handle_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
   scripts/check-psi-pressure.sh \
   scripts/check-file-handle-pressure.sh \
   scripts/check-conntrack-pressure.sh \
+  scripts/check-task-pressure.sh \
   scripts/check-host-pressure.sh
 ```
