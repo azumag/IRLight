@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# Shared, side-effect-free helpers for scalar pressure checks.
+# Shared helpers for scalar pressure checks. They do not print, exit, or mutate
+# runtime state; successful calls return normalized values via PRESSURE_* vars.
 # Callers own their output prefix, UNKNOWN reason strings, paths, and policy.
 
 pressure_is_uint() {
@@ -27,6 +28,7 @@ pressure_normalize_int64_uint() {
 pressure_normalize_threshold_pair() {
   local warning_raw="$1"
   local critical_raw="$2"
+  local threshold
 
   for threshold in "$warning_raw" "$critical_raw"; do
     if ! pressure_is_uint "$threshold" || (( ${#threshold} > 3 )); then
