@@ -25,6 +25,14 @@ Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 Phase 0 Control UI の状態鮮度・通信断時の fail-closed 表示契約は
 `docs/control-ui-state-safety.md` を参照。
 
+### Media Node provider 方針
+
+Phase B の Media Node は **ConoHa VPS を第一候補**として維持する。既存 provider 実装、時間課金、現行の `1 Session = 1 VPS` 構成との相性を優先する。
+
+将来、同時 Session 数・継続トラフィック・必要帯域・リージョン要件が増えた場合は、**Akamai Cloud を追加 provider 候補**として評価し、Control Plane がコスト・capacity・ネットワーク品質等に基づいて provider / region を選択できる構成を検討する。現時点では Akamai 実装や自動切替は Phase B の必須範囲に含めない。
+
+詳細は `docs/provider-selection.md`、将来TODOは Issue #287 を参照。
+
 ## CI の外部パッケージ取得
 
 Continuity image は Ubuntu / GStreamer の依存が大きいため、`apt` の取得処理では
