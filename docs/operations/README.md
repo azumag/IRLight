@@ -38,6 +38,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - 認証 password KDF の同時実行 admission: [auth-kdf-admission.md](auth-kdf-admission.md)
 - Media Node resource pressure の一次対応: [media-node-resource-pressure.md](media-node-resource-pressure.md)
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
+- cgroup PSI / process FD の targeted read-only 診断: [targeted-runtime-pressure-diagnostics.md](targeted-runtime-pressure-diagnostics.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
