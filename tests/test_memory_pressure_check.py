@@ -19,8 +19,12 @@ class MemoryPressureCheckTest(unittest.TestCase):
         available_kb: str = "500",
         warning: str = "80",
         critical: str = "90",
+        total_unit: str = "kB",
+        available_unit: str = "kB",
         include_total: bool = True,
         include_available: bool = True,
+        duplicate_total: bool = False,
+        duplicate_available: bool = False,
         path_exists: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-memory-check-") as temporary:
@@ -29,9 +33,13 @@ class MemoryPressureCheckTest(unittest.TestCase):
             if path_exists:
                 lines: list[str] = []
                 if include_total:
-                    lines.append(f"MemTotal: {total_kb} kB")
+                    lines.append(f"MemTotal: {total_kb} {total_unit}")
+                    if duplicate_total:
+                        lines.append(f"MemTotal: {total_kb} {total_unit}")
                 if include_available:
-                    lines.append(f"MemAvailable: {available_kb} kB")
+                    lines.append(f"MemAvailable: {available_kb} {available_unit}")
+                    if duplicate_available:
+                        lines.append(f"MemAvailable: {available_kb} {available_unit}")
                 meminfo.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
             env = os.environ.copy()
@@ -110,6 +118,10 @@ class MemoryPressureCheckTest(unittest.TestCase):
             {"total_kb": "0", "available_kb": "0"},
             {"total_kb": "1000", "available_kb": "1001"},
             {"total_kb": "9999999999999999999", "available_kb": "1"},
+            {"total_unit": "bytes"},
+            {"available_unit": "bytes"},
+            {"duplicate_total": True},
+            {"duplicate_available": True},
         )
         for kwargs in cases:
             with self.subTest(**kwargs):
