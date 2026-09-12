@@ -14,26 +14,13 @@ unknown() {
   exit 3
 }
 
-is_uint() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-normalize_int64_uint() {
-  local value="$1"
-  if ! is_uint "$value"; then
-    return 1
-  fi
-  while [[ ${#value} -gt 1 && ${value:0:1} == "0" ]]; do
-    value="${value:1}"
-  done
-  if (( ${#value} > 19 )); then
-    return 1
-  fi
-  if (( ${#value} == 19 )) && [[ "$value" > "9223372036854775807" ]]; then
-    return 1
-  fi
-  REPLY="$value"
-}
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+common_lib="$script_dir/lib/scalar-pressure-common.sh"
+if [[ ! -r "$common_lib" ]]; then
+  unknown shared_helper_unavailable
+fi
+# shellcheck source=lib/scalar-pressure-common.sh
+source "$common_lib" || unknown shared_helper_unavailable
 
 read_scalar() {
   local path="$1"
@@ -59,22 +46,14 @@ read_scalar() {
   REPLY="$value"
 }
 
-for threshold in "$warning_percent" "$critical_percent"; do
-  if ! is_uint "$threshold" || (( ${#threshold} > 3 )); then
-    unknown invalid_threshold
-  fi
-done
-
-warning_percent=$((10#$warning_percent))
-critical_percent=$((10#$critical_percent))
-if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
-  unknown invalid_threshold
-fi
+pressure_normalize_threshold_pair "$warning_percent" "$critical_percent" || unknown invalid_threshold
+warning_percent="$PRESSURE_WARNING_PERCENT"
+critical_percent="$PRESSURE_CRITICAL_PERCENT"
 
 read_scalar "$current_path" current_unavailable invalid_current
 current_raw="$REPLY"
-normalize_int64_uint "$current_raw" || unknown invalid_current
-current="$REPLY"
+pressure_normalize_int64_uint "$current_raw" || unknown invalid_current
+current="$PRESSURE_VALUE"
 current=$((10#$current))
 
 read_scalar "$maximum_path" maximum_unavailable invalid_maximum
@@ -88,8 +67,8 @@ if [[ "$maximum_raw" == "max" ]]; then
   exit 0
 fi
 
-normalize_int64_uint "$maximum_raw" || unknown invalid_maximum
-maximum="$REPLY"
+pressure_normalize_int64_uint "$maximum_raw" || unknown invalid_maximum
+maximum="$PRESSURE_VALUE"
 maximum=$((10#$maximum))
 
 # memory.max=0 is a valid finite configuration with no allocatable headroom.
@@ -112,17 +91,8 @@ if (( current > maximum )); then
   exit 2
 fi
 
-usage_percent="$(
-  awk -v current="$current" -v maximum="$maximum" \
-    'BEGIN { printf "%d", (current * 100.0) / maximum }'
-)"
-if ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-  unknown invalid_memory_values
-fi
-usage_percent=$((10#$usage_percent))
-if (( usage_percent > 100 )); then
-  unknown invalid_memory_values
-fi
+pressure_usage_percent "$current" "$maximum" || unknown invalid_memory_values
+usage_percent="$PRESSURE_VALUE"
 
 status="OK"
 exit_code=0
