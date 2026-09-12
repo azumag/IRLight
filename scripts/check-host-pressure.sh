@@ -13,7 +13,7 @@ run_component() {
 
   local exit_code
   set +e
-  "$script" "$@" >/dev/null 2>&1
+  bash "$script" "$@" >/dev/null 2>&1
   exit_code=$?
   set -e
 
