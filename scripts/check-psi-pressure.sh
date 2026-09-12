@@ -71,11 +71,15 @@ read_avg10() {
   local line=""
   local count=0
   local avg10=""
+  local avg60=""
+  local avg300=""
 
   while IFS= read -r line; do
     if [[ "$line" =~ ^${kind}[[:space:]]+avg10=([^[:space:]]+)[[:space:]]+avg60=([^[:space:]]+)[[:space:]]+avg300=([^[:space:]]+)[[:space:]]+total=([0-9]{1,20})$ ]]; then
       count=$((count + 1))
       avg10="${BASH_REMATCH[1]}"
+      avg60="${BASH_REMATCH[2]}"
+      avg300="${BASH_REMATCH[3]}"
     elif [[ "$line" == "$kind "* ]]; then
       return 1
     fi
@@ -84,9 +88,11 @@ read_avg10() {
   if (( count != 1 )); then
     return 1
   fi
-  if ! percent_to_basis_points "$avg10" >/dev/null; then
-    return 1
-  fi
+  for value in "$avg10" "$avg60" "$avg300"; do
+    if ! percent_to_basis_points "$value" >/dev/null; then
+      return 1
+    fi
+  done
   printf '%s\n' "$avg10"
 }
 
