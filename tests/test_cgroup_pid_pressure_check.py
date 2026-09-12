@@ -56,6 +56,14 @@ class CgroupPidPressureCheckTest(unittest.TestCase):
         self.assertIn("status=CRITICAL", result.stdout)
         self.assertIn("usage_percent=90", result.stdout)
 
+    def test_over_limit_is_critical_not_corrupt_telemetry(self) -> None:
+        result = self._run("101\n", "100\n")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_CGROUP_PID_PRESSURE status=CRITICAL usage_percent=OVER_LIMIT current=101 maximum=100 warning_percent=80 critical_percent=90",
+        )
+
     def test_unlimited_local_limit_is_ok(self) -> None:
         result = self._run("123\n", "max\n")
         self.assertEqual(result.returncode, 0)
@@ -129,15 +137,13 @@ class CgroupPidPressureCheckTest(unittest.TestCase):
                     "IRLIGHT_CGROUP_PID_PRESSURE status=UNKNOWN reason=invalid_maximum",
                 )
 
-    def test_inconsistent_values_are_unknown(self) -> None:
-        for current, maximum in (("101\n", "100\n"), ("1\n", "0\n")):
-            with self.subTest(current=current, maximum=maximum):
-                result = self._run(current, maximum)
-                self.assertEqual(result.returncode, 3)
-                self.assertEqual(
-                    result.stdout.strip(),
-                    "IRLIGHT_CGROUP_PID_PRESSURE status=UNKNOWN reason=invalid_pid_values",
-                )
+    def test_zero_finite_limit_is_unknown(self) -> None:
+        result = self._run("1\n", "0\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_CGROUP_PID_PRESSURE status=UNKNOWN reason=invalid_pid_values",
+        )
 
 
 if __name__ == "__main__":
