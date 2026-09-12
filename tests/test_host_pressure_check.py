@@ -248,6 +248,18 @@ esac
         self.assertIn("memory_status=UNKNOWN", result.stdout)
         self.assertIn("task_status=CRITICAL", result.stdout)
 
+    def test_mixed_severities_keep_details_while_critical_wins(self) -> None:
+        result = self._run(
+            disk_usage="85",
+            meminfo_valid=False,
+            total_tasks="950",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("disk_status=WARNING", result.stdout)
+        self.assertIn("memory_status=UNKNOWN", result.stdout)
+        self.assertIn("task_status=CRITICAL", result.stdout)
+
     def test_invalid_component_output_becomes_unknown(self) -> None:
         result = self._run(disk_usage="invalid")
         self.assertEqual(result.returncode, 3)

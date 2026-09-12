@@ -43,45 +43,58 @@ status_for_code() {
   esac
 }
 
-disk_code="$(run_component "$script_dir/check-disk-pressure.sh" "$disk_path")"
-memory_code="$(run_component "$script_dir/check-memory-pressure.sh" "$meminfo_path")"
-load_code="$(run_component "$script_dir/check-load-pressure.sh" "$loadavg_path" "$cpu_count")"
-psi_code="$(run_component "$script_dir/check-psi-pressure.sh" "$psi_dir")"
-file_handle_code="$(run_component "$script_dir/check-file-handle-pressure.sh" "$file_nr_path")"
-conntrack_code="$(run_component "$script_dir/check-conntrack-pressure.sh" "$conntrack_count_path" "$conntrack_max_path")"
-task_code="$(run_component "$script_dir/check-task-pressure.sh" "$loadavg_path" "$threads_max_path")"
+component_names=()
+component_codes=()
 
-disk_status="$(status_for_code "$disk_code")"
-memory_status="$(status_for_code "$memory_code")"
-load_status="$(status_for_code "$load_code")"
-psi_status="$(status_for_code "$psi_code")"
-file_handle_status="$(status_for_code "$file_handle_code")"
-conntrack_status="$(status_for_code "$conntrack_code")"
-task_status="$(status_for_code "$task_code")"
+add_component() {
+  local name="$1"
+  shift
 
-status="OK"
-exit_code=0
+  component_names+=("$name")
+  component_codes+=("$(run_component "$@")")
+}
 
-# A known critical condition must not be hidden by an unrelated UNKNOWN check.
-# Otherwise UNKNOWN is fail-closed and takes precedence over WARNING/OK.
-if (( disk_code == 2 || memory_code == 2 || load_code == 2 || psi_code == 2 || file_handle_code == 2 || conntrack_code == 2 || task_code == 2 )); then
-  status="CRITICAL"
-  exit_code=2
-elif (( disk_code == 3 || memory_code == 3 || load_code == 3 || psi_code == 3 || file_handle_code == 3 || conntrack_code == 3 || task_code == 3 )); then
-  status="UNKNOWN"
-  exit_code=3
-elif (( disk_code == 1 || memory_code == 1 || load_code == 1 || psi_code == 1 || file_handle_code == 1 || conntrack_code == 1 || task_code == 1 )); then
-  status="WARNING"
-  exit_code=1
-fi
+# Keep each component registered exactly once. The same registry drives both
+# overall severity aggregation and the per-component output fields below, so a
+# newly added check cannot accidentally participate in only one of them.
+add_component "disk" "$script_dir/check-disk-pressure.sh" "$disk_path"
+add_component "memory" "$script_dir/check-memory-pressure.sh" "$meminfo_path"
+add_component "load" "$script_dir/check-load-pressure.sh" "$loadavg_path" "$cpu_count"
+add_component "psi" "$script_dir/check-psi-pressure.sh" "$psi_dir"
+add_component "file_handle" "$script_dir/check-file-handle-pressure.sh" "$file_nr_path"
+add_component "conntrack" "$script_dir/check-conntrack-pressure.sh" "$conntrack_count_path" "$conntrack_max_path"
+add_component "task" "$script_dir/check-task-pressure.sh" "$loadavg_path" "$threads_max_path"
 
-printf 'IRLIGHT_HOST_PRESSURE status=%s disk_status=%s memory_status=%s load_status=%s psi_status=%s file_handle_status=%s conntrack_status=%s task_status=%s\n' \
-  "$status" \
-  "$disk_status" \
-  "$memory_status" \
-  "$load_status" \
-  "$psi_status" \
-  "$file_handle_status" \
-  "$conntrack_status" \
-  "$task_status"
-exit "$exit_code"
+component_statuses=()
+overall_code=0
+
+for code in "${component_codes[@]}"; do
+  component_statuses+=("$(status_for_code "$code")")
+
+  # A known critical condition must not be hidden by an unrelated UNKNOWN
+  # check. Otherwise UNKNOWN is fail-closed and takes precedence over
+  # WARNING/OK. This yields CRITICAL > UNKNOWN > WARNING > OK.
+  case "$code" in
+    2)
+      overall_code=2
+      ;;
+    3)
+      if (( overall_code != 2 )); then
+        overall_code=3
+      fi
+      ;;
+    1)
+      if (( overall_code == 0 )); then
+        overall_code=1
+      fi
+      ;;
+  esac
+done
+
+overall_status="$(status_for_code "$overall_code")"
+printf 'IRLIGHT_HOST_PRESSURE status=%s' "$overall_status"
+for index in "${!component_names[@]}"; do
+  printf ' %s_status=%s' "${component_names[$index]}" "${component_statuses[$index]}"
+done
+printf '\n'
+exit "$overall_code"

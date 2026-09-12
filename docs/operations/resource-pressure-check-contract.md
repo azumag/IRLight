@@ -11,6 +11,12 @@ IRLight の read-only resource pressure checks は、観測対象ごとの意味
 
 診断不能、破損した入力、契約外の値は正常と推測せず `UNKNOWN` へ fail closed します。ただし、観測対象の仕様上「有効だが headroom がない」「一時的に上限超過が成立し得る」状態は wrapper 固有の policy に従い `CRITICAL` とする場合があります。
 
+## Host aggregate
+
+`scripts/check-host-pressure.sh` は host-level component を一つの registry に登録し、その同じ registry から overall status と `<component>_status` の出力を生成します。新しい component を追加するときは aggregation 条件と出力 format を別々に更新せず、registry へ一度だけ追加します。
+
+Overall severity は `CRITICAL > UNKNOWN > WARNING > OK` です。既知の `CRITICAL` は別 component の診断不能 (`UNKNOWN`) で隠しません。一方、既知の critical がない場合は `UNKNOWN` を `WARNING` / `OK` より優先し、診断不能を正常側へ丸めません。個々の component status は overall status に関係なく出力し、複数 severity が同時に発生したときも原因の切り分けに使えるよう維持します。
+
 ## Scalar checks
 
 `scripts/lib/scalar-pressure-common.sh` は次の機械的な処理だけを担当します。
