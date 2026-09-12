@@ -31,8 +31,6 @@ class HostPressureCheckTest(unittest.TestCase):
         conntrack_max: str = "1000\n",
         total_tasks: str = "100",
         threads_max: str = "1000\n",
-        cgroup_pids_current: str = "100\n",
-        cgroup_pids_max: str = "1000\n",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-host-pressure-") as temporary:
             root = Path(temporary)
@@ -111,10 +109,6 @@ esac
             conntrack_max_path.write_text(conntrack_max, encoding="utf-8")
             threads_max_path = root / "threads-max"
             threads_max_path.write_text(threads_max, encoding="utf-8")
-            cgroup_pids_current_path = root / "pids.current"
-            cgroup_pids_current_path.write_text(cgroup_pids_current, encoding="utf-8")
-            cgroup_pids_max_path = root / "pids.max"
-            cgroup_pids_max_path.write_text(cgroup_pids_max, encoding="utf-8")
 
             env = os.environ.copy()
             env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -134,8 +128,6 @@ esac
                     str(conntrack_count_path),
                     str(conntrack_max_path),
                     str(threads_max_path),
-                    str(cgroup_pids_current_path),
-                    str(cgroup_pids_max_path),
                 ],
                 env=env,
                 text=True,
@@ -148,7 +140,7 @@ esac
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK cgroup_pid_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK",
         )
 
     def test_warning_propagates_from_memory(self) -> None:
@@ -157,7 +149,6 @@ esac
         self.assertIn("status=WARNING", result.stdout)
         self.assertIn("memory_status=WARNING", result.stdout)
         self.assertIn("task_status=OK", result.stdout)
-        self.assertIn("cgroup_pid_status=OK", result.stdout)
 
     def test_warning_propagates_from_inode_pressure(self) -> None:
         result = self._run(inode_usage="85")
@@ -188,16 +179,6 @@ esac
         result = self._run(total_tasks="800")
         self.assertEqual(result.returncode, 1)
         self.assertIn("task_status=WARNING", result.stdout)
-
-    def test_warning_propagates_from_cgroup_pid_pressure(self) -> None:
-        result = self._run(cgroup_pids_current="800\n")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("cgroup_pid_status=WARNING", result.stdout)
-
-    def test_unlimited_cgroup_pid_limit_remains_ok(self) -> None:
-        result = self._run(cgroup_pids_max="max\n")
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("cgroup_pid_status=OK", result.stdout)
 
     def test_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", meminfo_valid=False)
@@ -233,12 +214,6 @@ esac
         self.assertIn("status=UNKNOWN", result.stdout)
         self.assertIn("task_status=UNKNOWN", result.stdout)
 
-    def test_cgroup_pid_unknown_is_fail_closed_over_warning(self) -> None:
-        result = self._run(disk_usage="85", cgroup_pids_max="invalid\n")
-        self.assertEqual(result.returncode, 3)
-        self.assertIn("status=UNKNOWN", result.stdout)
-        self.assertIn("cgroup_pid_status=UNKNOWN", result.stdout)
-
     def test_known_critical_is_not_hidden_by_unknown(self) -> None:
         result = self._run(disk_usage="95", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
@@ -272,13 +247,6 @@ esac
         self.assertIn("status=CRITICAL", result.stdout)
         self.assertIn("memory_status=UNKNOWN", result.stdout)
         self.assertIn("task_status=CRITICAL", result.stdout)
-
-    def test_cgroup_pid_critical_is_not_hidden_by_other_unknown(self) -> None:
-        result = self._run(cgroup_pids_current="950\n", meminfo_valid=False)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("status=CRITICAL", result.stdout)
-        self.assertIn("memory_status=UNKNOWN", result.stdout)
-        self.assertIn("cgroup_pid_status=CRITICAL", result.stdout)
 
     def test_invalid_component_output_becomes_unknown(self) -> None:
         result = self._run(disk_usage="invalid")
