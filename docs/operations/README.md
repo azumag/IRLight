@@ -41,6 +41,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
 - cgroup PSI / process FD の targeted read-only 診断: [targeted-runtime-pressure-diagnostics.md](targeted-runtime-pressure-diagnostics.md)
 - IPv6 default route の targeted read-only 診断: [targeted-ipv6-default-route-diagnostics.md](targeted-ipv6-default-route-diagnostics.md)
+- link / IPv4 / IPv6 route の targeted egress 診断: [targeted-network-egress-health.md](targeted-network-egress-health.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
