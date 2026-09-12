@@ -92,8 +92,14 @@ fi
 normalize_int64_uint "$maximum_raw" || unknown invalid_maximum
 maximum="$REPLY"
 maximum=$((10#$maximum))
-if (( maximum <= 0 )); then
-  unknown invalid_pid_values
+
+# A finite limit of zero is valid and intentionally prevents new tasks.
+if (( maximum == 0 )); then
+  printf 'IRLIGHT_CGROUP_PID_PRESSURE status=CRITICAL usage_percent=NO_HEADROOM current=%s maximum=0 warning_percent=%s critical_percent=%s\n' \
+    "$current" \
+    "$warning_percent" \
+    "$critical_percent"
+  exit 2
 fi
 
 # cgroup policy permits organisational operations to make pids.current exceed
