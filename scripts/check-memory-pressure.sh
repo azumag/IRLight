@@ -36,10 +36,18 @@ fi
 
 if ! metrics="$(
   awk '
-    $1 == "MemTotal:" { total = $2 }
-    $1 == "MemAvailable:" { available = $2 }
+    $1 == "MemTotal:" {
+      total_count += 1
+      if ($3 != "kB") unit_invalid = 1
+      total = $2
+    }
+    $1 == "MemAvailable:" {
+      available_count += 1
+      if ($3 != "kB") unit_invalid = 1
+      available = $2
+    }
     END {
-      if (total == "" || available == "") {
+      if (total_count != 1 || available_count != 1 || unit_invalid) {
         exit 1
       }
       printf "%s %s\n", total, available
