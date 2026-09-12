@@ -110,6 +110,14 @@ class PsiPressureCheckTest(unittest.TestCase):
             "IRLIGHT_PSI_PRESSURE status=UNKNOWN reason=invalid_cpu_psi",
         )
 
+    def test_malformed_unused_rolling_average_is_unknown(self) -> None:
+        result = self._run(cpu_text="some avg10=1.00 avg60=NaN avg300=0.00 total=1\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_PSI_PRESSURE status=UNKNOWN reason=invalid_cpu_psi",
+        )
+
     def test_out_of_range_percentage_is_unknown(self) -> None:
         result = self._run(memory_some="100.01")
         self.assertEqual(result.returncode, 3)
