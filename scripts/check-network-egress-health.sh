@@ -9,6 +9,7 @@ address_family="${2:-${IRLIGHT_NETWORK_ADDRESS_FAMILY:-}}"
 interface_dir="${3:-${IRLIGHT_NETWORK_INTERFACE_DIR:-}}"
 ipv4_route_table="${4:-${IRLIGHT_IPV4_ROUTE_TABLE:-/proc/net/route}}"
 ipv6_route_table="${5:-${IRLIGHT_IPV6_ROUTE_TABLE:-/proc/net/ipv6_route}}"
+component_timeout_seconds="${IRLIGHT_NETWORK_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 unknown() {
   local reason="$1"
@@ -35,13 +36,32 @@ if [[ -z "$interface_dir" ]]; then
   interface_dir="/sys/class/net/$interface_name"
 fi
 
+component_timeout_valid=true
+if [[ ! "$component_timeout_seconds" =~ ^[0-9]+$ ]] || (( ${#component_timeout_seconds} > 3 )); then
+  component_timeout_valid=false
+else
+  component_timeout_seconds=$((10#$component_timeout_seconds))
+  if (( component_timeout_seconds < 1 || component_timeout_seconds > 300 )); then
+    component_timeout_valid=false
+  fi
+fi
+
 run_component() {
   local script="$1"
   shift
 
+  # Keep the aggregate bounded even if a proc/sysfs-backed component wedges.
+  # Invalid timeout configuration or a missing timeout utility must fail closed
+  # instead of silently falling back to an unbounded component execution.
+  if [[ "$component_timeout_valid" != true ]] || ! command -v timeout >/dev/null 2>&1; then
+    printf '3\n'
+    return
+  fi
+
   local exit_code
   set +e
-  bash "$script" "$@" >/dev/null 2>&1
+  timeout --signal=TERM --kill-after=2s "${component_timeout_seconds}s" \
+    bash "$script" "$@" >/dev/null 2>&1
   exit_code=$?
   set -e
 
