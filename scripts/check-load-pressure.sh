@@ -64,9 +64,11 @@ for value in "$load1" "$load5" "$load15"; do
 done
 
 if ! load_percent="$(
-  awk -v load="$load5" -v cpus="$cpu_count" 'BEGIN {
+  # Do not call the awk variable `load`: GNU awk reserves that name for a
+  # builtin and fails before evaluating the program on current CI runners.
+  awk -v load5_value="$load5" -v cpus="$cpu_count" 'BEGIN {
     if (cpus <= 0) exit 1
-    value = int((load * 100) / cpus)
+    value = int((load5_value * 100) / cpus)
     if (value < 0) exit 1
     printf "%d", value
   }'
