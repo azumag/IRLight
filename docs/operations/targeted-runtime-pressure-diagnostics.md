@@ -1,8 +1,8 @@
 # Targeted runtime pressure diagnostics
 
-Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link を明示できる場合だけ使う read-only companion checks を提供する。
+Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link / route を明示できる場合だけ使う read-only companion checks を提供する。
 
-`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state を別々に確認する。
+`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface・その IPv4 egress route が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state、同 interface の IPv4 default route を別々に確認する。
 
 ## cgroup v2 PSI
 
@@ -78,20 +78,40 @@ IRLIGHT_NETWORK_LINK_HEALTH status=OK operstate=up
 
 この check は link state の一点観測であり、帯域飽和、packet loss、RTT、route/DNS、remote ingest reachability、firewall policy を証明しない。それらは別の signal / end-to-end probe と組み合わせる。
 
+## Targeted IPv4 default route
+
+link が `up` でも、配信先へ出る interface に IPv4 default route がなければ IPv4 destination への egress は成立しない。対象 interface は自動選択せず、production の routing 設計で利用する名前を明示する。
+
+```bash
+bash scripts/check-ipv4-default-route.sh <interface>
+```
+
+既定では Linux の `/proc/net/route` を read-only で読む。fixture / container namespace 等で route table を明示する場合だけ第2引数または `IRLIGHT_IPV4_ROUTE_TABLE` を使える。interface は `IRLIGHT_NETWORK_INTERFACE` でも指定できる。
+
+判定は対象 interface の `Destination=00000000` / `Mask=00000000` の entry に限定し、`RTF_UP` が立ち `RTF_REJECT` が立っていない default route が1件以上あれば `OK` とする。default entry が存在しても down / reject なら `CRITICAL` (`default_route_unusable`)、default entry 自体がなければ `CRITICAL` (`default_route_missing`)。対象 interface の route record が壊れていて安全に不存在を断定できない場合、table header 不正、読取不能、target 不正は `UNKNOWN` に fail-closed する。有効な default route が確認できた場合は、別の壊れた target record があっても「利用可能 route の存在」というこの check の一点だけは成立するため `OK` とする。
+
+出力例:
+
+```text
+IRLIGHT_IPV4_DEFAULT_ROUTE status=OK route=default
+```
+
+この check は IPv4 default route の存在だけを確認する。route が実際に packet を通すこと、policy routing / network namespace / firewall / NAT / DNS / IPv6 route / remote RTMP endpoint の到達性は証明しない。IPv6-only または policy-routing-only の deployment に機械的に適用せず、その topology 用の別 signal を定義する。gateway、interface 名、route table path は output に反射しない。
+
 ## Exit code
 
-3つの check とも同じ status / exit contract を使う。
+4つの check とも同じ status / exit contract を使う。
 
 | exit | status | meaning |
 | ---: | --- | --- |
-| 0 | `OK` | 対象 signal は正常範囲、または明示された local limit が unlimited |
+| 0 | `OK` | 対象 signal は正常範囲、明示された local limit が unlimited、または必要な route が確認できた |
 | 1 | `WARNING` | warning 閾値以上 critical 未満、または link が transitional state |
-| 2 | `CRITICAL` | critical 閾値以上、headroom がない / over-limit、または明示した link が利用不能状態 |
+| 2 | `CRITICAL` | critical 閾値以上、headroom がない / over-limit、明示した link が利用不能、または必要な IPv4 default route がない / unusable |
 | 3 | `UNKNOWN` | 対象を安全に読み取り・評価できない |
 
 ## Safety
 
-すべて診断専用で、cgroup control file、rlimit、process、socket、network interface、route、authority stateを変更しない。kill/restart、fd close、`prlimit`、`ip link set`、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / interface / state ownership を確認した runbook の明示操作として行う。
+すべて診断専用で、cgroup control file、rlimit、process、socket、network interface、route、authority stateを変更しない。kill/restart、fd close、`prlimit`、`ip link set`、`ip route`、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / interface / route / state ownership を確認した runbook の明示操作として行う。
 
 ## Verification
 
@@ -99,8 +119,10 @@ IRLIGHT_NETWORK_LINK_HEALTH status=OK operstate=up
 python -m unittest discover -s tests -p 'test_cgroup_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_process_fd_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_network_link_health.py' -v
+python -m unittest discover -s tests -p 'test_ipv4_default_route.py' -v
 bash -n \
   scripts/check-cgroup-psi-pressure.sh \
   scripts/check-process-fd-pressure.sh \
-  scripts/check-network-link-health.sh
+  scripts/check-network-link-health.sh \
+  scripts/check-ipv4-default-route.sh
 ```
