@@ -64,6 +64,14 @@ class CgroupPidPressureCheckTest(unittest.TestCase):
             "IRLIGHT_CGROUP_PID_PRESSURE status=CRITICAL usage_percent=OVER_LIMIT current=101 maximum=100 warning_percent=80 critical_percent=90",
         )
 
+    def test_zero_limit_is_valid_and_critical(self) -> None:
+        result = self._run("0\n", "0\n")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_CGROUP_PID_PRESSURE status=CRITICAL usage_percent=NO_HEADROOM current=0 maximum=0 warning_percent=80 critical_percent=90",
+        )
+
     def test_unlimited_local_limit_is_ok(self) -> None:
         result = self._run("123\n", "max\n")
         self.assertEqual(result.returncode, 0)
@@ -136,14 +144,6 @@ class CgroupPidPressureCheckTest(unittest.TestCase):
                     result.stdout.strip(),
                     "IRLIGHT_CGROUP_PID_PRESSURE status=UNKNOWN reason=invalid_maximum",
                 )
-
-    def test_zero_finite_limit_is_unknown(self) -> None:
-        result = self._run("1\n", "0\n")
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_CGROUP_PID_PRESSURE status=UNKNOWN reason=invalid_pid_values",
-        )
 
 
 if __name__ == "__main__":
