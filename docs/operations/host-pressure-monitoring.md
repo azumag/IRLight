@@ -1,6 +1,6 @@
 # Host pressure monitoring
 
-Issue #11 の運用監視として、disk/inode、memory、host load、Linux Pressure Stall Information (PSI)、system-wide file handle、netfilter conntrack、system-wide task/thread pressure を一つの read-only check にまとめる。
+Issue #11 の運用監視として、disk/inode、memory、host load、Linux Pressure Stall Information (PSI)、system-wide file handle、netfilter conntrack、system-wide task/thread pressure、cgroup v2 PID pressure を一つの read-only check にまとめる。
 
 ## Check
 
@@ -8,9 +8,9 @@ Issue #11 の運用監視として、disk/inode、memory、host load、Linux Pre
 bash scripts/check-host-pressure.sh
 ```
 
-既定では disk check は `IRLIGHT_DISK_PATH`、`STATE_DIR`、`/state` の順で対象を選び、memory check は `/proc/meminfo`、load と task check は `/proc/loadavg`、PSI check は `/proc/pressure/{cpu,memory,io}`、file-handle check は `/proc/sys/fs/file-nr`、conntrack check は `/proc/sys/net/netfilter/nf_conntrack_count` と `nf_conntrack_max`、task check の上限は `/proc/sys/kernel/threads-max` を読む。
+既定では disk check は `IRLIGHT_DISK_PATH`、`STATE_DIR`、`/state` の順で対象を選び、memory check は `/proc/meminfo`、load と task check は `/proc/loadavg`、PSI check は `/proc/pressure/{cpu,memory,io}`、file-handle check は `/proc/sys/fs/file-nr`、conntrack check は `/proc/sys/net/netfilter/nf_conntrack_count` と `nf_conntrack_max`、task check の上限は `/proc/sys/kernel/threads-max`、cgroup PID check は `/sys/fs/cgroup/pids.current` と `/sys/fs/cgroup/pids.max` を読む。
 
-限定診断やテストでは、第1引数から順に disk path、meminfo path、loadavg path、online CPU数、PSI directory、file-nr path、conntrack count path、conntrack max path、threads-max path を指定できる。
+限定診断やテストでは、第1引数から順に disk path、meminfo path、loadavg path、online CPU数、PSI directory、file-nr path、conntrack count path、conntrack max path、threads-max path、cgroup pids.current path、cgroup pids.max path を指定できる。
 
 ```bash
 bash scripts/check-host-pressure.sh \
@@ -22,7 +22,9 @@ bash scripts/check-host-pressure.sh \
   /proc/sys/fs/file-nr \
   /proc/sys/net/netfilter/nf_conntrack_count \
   /proc/sys/net/netfilter/nf_conntrack_max \
-  /proc/sys/kernel/threads-max
+  /proc/sys/kernel/threads-max \
+  /sys/fs/cgroup/pids.current \
+  /sys/fs/cgroup/pids.max
 ```
 
 CPU数を省略した場合、load check は `getconf _NPROCESSORS_ONLN` を read-only で参照する。
@@ -38,6 +40,7 @@ CPU数を省略した場合、load check は `getconf _NPROCESSORS_ONLN` を rea
 - `IRLIGHT_FILE_HANDLE_WARNING_PERCENT` / `IRLIGHT_FILE_HANDLE_CRITICAL_PERCENT`
 - `IRLIGHT_CONNTRACK_WARNING_PERCENT` / `IRLIGHT_CONNTRACK_CRITICAL_PERCENT`
 - `IRLIGHT_TASK_WARNING_PERCENT` / `IRLIGHT_TASK_CRITICAL_PERCENT`
+- `IRLIGHT_CGROUP_PIDS_WARNING_PERCENT` / `IRLIGHT_CGROUP_PIDS_CRITICAL_PERCENT`
 
 load pressure は5分load averageをonline CPU数で正規化したpercentで、既定は100%でwarning、200%でcriticalとする。CPU utilizationそのものではなく、実行待ちやuninterruptible I/O waitを含む継続的な混雑指標である。
 
@@ -47,12 +50,14 @@ file-handle pressure は `/proc/sys/fs/file-nr` の `allocated unused maximum` �
 
 conntrack pressure は `nf_conntrack_count / nf_conntrack_max` を評価し、既定は80%/90%。欠落、複数行、非数値、`count > maximum`、0以下のmaximum、signed 64-bit範囲外はUNKNOWNにする。これはnetwork bandwidth、socket backlog、NIC drop、個別processのsocket上限とは別のsignalである。
 
-task pressure は `/proc/loadavg` の4番目の `running/total` から system-wide scheduling entity の `total` を取得し、`/proc/sys/kernel/threads-max` に対する比率を評価する。既定は80%でwarning、90%でcritical。Linuxのloadavgに含まれるtotalはprocessだけでなくthreadも含むため、PID番号空間そのものではなく、kernelのsystem-wide thread/task上限へ近づく兆候を見るためのsignalとして扱う。欠落、複数行、壊れた `running/total`、`running > total`、0以下のmaximum、`total > maximum`、signed 64-bit範囲外は正常扱いせずUNKNOWNにする。cgroup `pids.max` や個別serviceのprocess上限は別途監視が必要である。
+task pressure は `/proc/loadavg` の4番目の `running/total` から system-wide scheduling entity の `total` を取得し、`/proc/sys/kernel/threads-max` に対する比率を評価する。既定は80%でwarning、90%でcritical。Linuxのloadavgに含まれるtotalはprocessだけでなくthreadも含むため、PID番号空間そのものではなく、kernelのsystem-wide thread/task上限へ近づく兆候を見るためのsignalとして扱う。欠落、複数行、壊れた `running/total`、`running > total`、0以下のmaximum、`total > maximum`、signed 64-bit範囲外は正常扱いせずUNKNOWNにする。
+
+cgroup PID pressure は cgroup v2 の `pids.current / pids.max` を評価し、既定は80%でwarning、90%でcritical。`pids.max` が数値の場合は、対象cgroupでprocess/threadを追加できなくなる局所上限への接近を検知する。`pids.max` が正規の `max` の場合は対象cgroup自身に有限上限がないため `OK`（`usage_percent=NA`）とする。ただし親cgroupの上限、system-wide `threads-max`、PID namespaceの枯渇を意味するものではなく、それらは別signalとして扱う。欠落、複数行、非数値、0以下の有限上限、`pids.current > pids.max`、signed 64-bit範囲外はUNKNOWNにする。
 
 出力は1行の固定形式とする。
 
 ```text
-IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK
+IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK cgroup_pid_status=OK
 ```
 
 exit code は次の意味を持つ。
@@ -82,17 +87,20 @@ bash scripts/check-conntrack-pressure.sh \
 bash scripts/check-task-pressure.sh \
   /proc/loadavg \
   /proc/sys/kernel/threads-max
+bash scripts/check-cgroup-pid-pressure.sh \
+  /sys/fs/cgroup/pids.current \
+  /sys/fs/cgroup/pids.max
 ```
 
-`disk_status` はblock容量とinode、`memory_status` は`MemAvailable`、`load_status` は5分load average/CPU、`psi_status` はtask stall、`file_handle_status` はkernel file handle、`conntrack_status` はconnection tracking table、`task_status` はsystem-wide task/thread countの上限接近を表す。hostの`OK`をcontainer/cgroup、swap、GPU memory、network bandwidth、packet loss、processごとのfile descriptorやtask上限の余裕と読み替えない。
+`disk_status` はblock容量とinode、`memory_status` は`MemAvailable`、`load_status` は5分load average/CPU、`psi_status` はtask stall、`file_handle_status` はkernel file handle、`conntrack_status` はconnection tracking table、`task_status` はsystem-wide task/thread countの上限接近、`cgroup_pid_status` は現在のcgroup v2 PID上限への接近を表す。hostの`OK`をswap、GPU memory、network bandwidth、packet loss、processごとのfile descriptor、親cgroupやPID namespaceのtask上限の余裕と読み替えない。
 
-load/PSI/file handle/conntrack/task pressureのどれも原因processやSessionを単独では特定しない。`vmstat`、`iostat`、`ps`、`systemd-cgtop`、`lsof`、`/proc/<pid>/fd`、`conntrack -S`、NIC/process/container metricsなどで追加診断し、単純なprocess kill、table flush、再起動を自動実行しない。
+load/PSI/file handle/conntrack/task/cgroup PID pressureのどれも原因processやSessionを単独では特定しない。`vmstat`、`iostat`、`ps`、`systemd-cgtop`、`lsof`、`/proc/<pid>/fd`、`conntrack -S`、cgroup/NIC/process/container metricsなどで追加診断し、単純なprocess kill、table flush、再起動を自動実行しない。
 
-PSI、file-nr、conntrack、threads-max等を読めない制限されたcontainerではhost summaryはUNKNOWNになる。対象環境で不要なcomponentを暗黙にOKへ丸めず、監視設計側で要件と除外方針を明示する。
+PSI、file-nr、conntrack、threads-max、cgroup v2 PID controller等を読めない制限されたcontainerではhost summaryはUNKNOWNになる。対象環境で不要なcomponentを暗黙にOKへ丸めず、監視設計側で要件と除外方針を明示する。
 
 ## Safety
 
-このwrapperとcomponent checkは診断専用で、ファイル削除、Docker prune、volume削除、process kill/restart、conntrack table flush、sysctl変更、cache drop、swap変更、authority state変更を行わない。復旧は対象Sessionとstate ownershipを確認した別の明示操作として実施する。
+このwrapperとcomponent checkは診断専用で、ファイル削除、Docker prune、volume削除、process kill/restart、conntrack table flush、sysctl/cgroup変更、cache drop、swap変更、authority state変更を行わない。復旧は対象Sessionとstate ownershipを確認した別の明示操作として実施する。
 
 監視systemから呼び出す場合も、exit codeを契機に破壊的な自動復旧を直結させない。まずalertと診断へ接続し、復旧操作は個別runbookの条件を満たした場合に限る。
 
@@ -104,6 +112,7 @@ python -m unittest discover -s tests -p 'test_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_file_handle_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
@@ -111,5 +120,6 @@ bash -n \
   scripts/check-file-handle-pressure.sh \
   scripts/check-conntrack-pressure.sh \
   scripts/check-task-pressure.sh \
+  scripts/check-cgroup-pid-pressure.sh \
   scripts/check-host-pressure.sh
 ```
