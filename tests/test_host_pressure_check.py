@@ -26,6 +26,7 @@ class HostPressureCheckTest(unittest.TestCase):
         psi_cpu_some: str = "1.00",
         psi_memory_full: str = "0.00",
         psi_valid: bool = True,
+        file_nr: str = "100 0 1000\n",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-host-pressure-") as temporary:
             root = Path(temporary)
@@ -96,6 +97,9 @@ esac
                 (psi_dir / "memory").write_text("invalid\n", encoding="utf-8")
                 (psi_dir / "io").write_text("invalid\n", encoding="utf-8")
 
+            file_nr_path = root / "file-nr"
+            file_nr_path.write_text(file_nr, encoding="utf-8")
+
             env = os.environ.copy()
             env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
             env["IRLIGHT_TEST_DISK_USAGE"] = disk_usage
@@ -110,6 +114,7 @@ esac
                     str(loadavg),
                     cpu_count,
                     str(psi_dir),
+                    str(file_nr_path),
                 ],
                 env=env,
                 text=True,
@@ -122,7 +127,7 @@ esac
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK",
         )
 
     def test_warning_propagates_from_memory(self) -> None:
@@ -130,7 +135,7 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=WARNING load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=WARNING load_status=OK psi_status=OK file_handle_status=OK",
         )
 
     def test_warning_propagates_from_inode_pressure(self) -> None:
@@ -138,7 +143,7 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=WARNING memory_status=OK load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=WARNING memory_status=OK load_status=OK psi_status=OK file_handle_status=OK",
         )
 
     def test_warning_propagates_from_load_pressure(self) -> None:
@@ -146,7 +151,7 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=WARNING psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=WARNING psi_status=OK file_handle_status=OK",
         )
 
     def test_warning_propagates_from_psi_pressure(self) -> None:
@@ -154,7 +159,15 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=WARNING",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=WARNING file_handle_status=OK",
+        )
+
+    def test_warning_propagates_from_file_handle_pressure(self) -> None:
+        result = self._run(file_nr="850 0 1000\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=WARNING",
         )
 
     def test_unknown_is_fail_closed_over_warning(self) -> None:
@@ -162,7 +175,7 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=UNKNOWN load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=OK",
         )
 
     def test_load_unknown_is_fail_closed_over_warning(self) -> None:
@@ -170,7 +183,7 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=UNKNOWN psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=UNKNOWN psi_status=OK file_handle_status=OK",
         )
 
     def test_psi_unknown_is_fail_closed_over_warning(self) -> None:
@@ -178,7 +191,15 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=UNKNOWN",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=UNKNOWN file_handle_status=OK",
+        )
+
+    def test_file_handle_unknown_is_fail_closed_over_warning(self) -> None:
+        result = self._run(disk_usage="85", file_nr="invalid\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=OK file_handle_status=UNKNOWN",
         )
 
     def test_known_critical_is_not_hidden_by_unknown(self) -> None:
@@ -186,7 +207,7 @@ esac
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=CRITICAL memory_status=UNKNOWN load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=CRITICAL memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=OK",
         )
 
     def test_load_critical_is_not_hidden_by_other_unknown(self) -> None:
@@ -194,7 +215,7 @@ esac
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=CRITICAL psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=CRITICAL psi_status=OK file_handle_status=OK",
         )
 
     def test_psi_critical_is_not_hidden_by_other_unknown(self) -> None:
@@ -202,7 +223,15 @@ esac
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=CRITICAL",
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=CRITICAL file_handle_status=OK",
+        )
+
+    def test_file_handle_critical_is_not_hidden_by_other_unknown(self) -> None:
+        result = self._run(file_nr="950 0 1000\n", meminfo_valid=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=CRITICAL",
         )
 
     def test_invalid_component_output_becomes_unknown(self) -> None:
@@ -210,7 +239,7 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=UNKNOWN memory_status=OK load_status=OK psi_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=UNKNOWN memory_status=OK load_status=OK psi_status=OK file_handle_status=OK",
         )
 
 
