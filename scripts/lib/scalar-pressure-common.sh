@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# Shared, side-effect-free helpers for scalar pressure checks.
+# Shared helpers for scalar pressure checks. They do not print, exit, or mutate
+# runtime state; successful calls return normalized values via PRESSURE_* vars.
 # Callers own their output prefix, UNKNOWN reason strings, paths, and policy.
 
 pressure_is_uint() {
@@ -27,6 +28,7 @@ pressure_normalize_int64_uint() {
 pressure_normalize_threshold_pair() {
   local warning_raw="$1"
   local critical_raw="$2"
+  local threshold
 
   for threshold in "$warning_raw" "$critical_raw"; do
     if ! pressure_is_uint "$threshold" || (( ${#threshold} > 3 )); then
@@ -64,18 +66,24 @@ pressure_usage_percent() {
     return 1
   fi
 
-  local usage_percent
-  usage_percent="$(
-    awk -v current="$current" -v maximum="$maximum" \
-      'BEGIN { printf "%d", (current * 100.0) / maximum }'
-  )" || return 1
-  if ! pressure_is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-    return 1
-  fi
-  usage_percent=$((10#$usage_percent))
-  if (( usage_percent > 100 )); then
-    return 1
-  fi
+  # Compute floor(current * 100 / maximum) without floating-point rounding and
+  # without overflowing signed 64-bit arithmetic. For each integer percent p,
+  # current >= ceil(maximum * p / 100) iff p is not greater than the exact
+  # percentage. Split maximum into quotient/remainder before multiplying so all
+  # intermediates remain <= maximum.
+  local maximum_hundredth=$((maximum / 100))
+  local maximum_remainder=$((maximum % 100))
+  local percent threshold
+  for ((percent = 100; percent >= 0; percent--)); do
+    threshold=$((
+      maximum_hundredth * percent
+      + (maximum_remainder * percent + 99) / 100
+    ))
+    if (( current >= threshold )); then
+      PRESSURE_VALUE="$percent"
+      return 0
+    fi
+  done
 
-  PRESSURE_VALUE="$usage_percent"
+  return 1
 }

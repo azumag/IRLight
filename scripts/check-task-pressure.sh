@@ -14,39 +14,17 @@ unknown() {
   exit 3
 }
 
-is_uint() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-normalize_int64_uint() {
-  local value="$1"
-  if ! is_uint "$value"; then
-    return 1
-  fi
-  while [[ ${#value} -gt 1 && ${value:0:1} == "0" ]]; do
-    value="${value:1}"
-  done
-  if (( ${#value} > 19 )); then
-    return 1
-  fi
-  if (( ${#value} == 19 )) && [[ "$value" > "9223372036854775807" ]]; then
-    return 1
-  fi
-  REPLY="$value"
-}
-
-for threshold in "$warning_percent" "$critical_percent"; do
-  if ! is_uint "$threshold" || (( ${#threshold} > 3 )); then
-    unknown invalid_threshold
-  fi
-done
-
-# Force decimal so values such as 080 are not interpreted as octal by Bash.
-warning_percent=$((10#$warning_percent))
-critical_percent=$((10#$critical_percent))
-if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
-  unknown invalid_threshold
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+common_lib="$script_dir/lib/scalar-pressure-common.sh"
+if [[ ! -r "$common_lib" ]]; then
+  unknown shared_helper_unavailable
 fi
+# shellcheck source=lib/scalar-pressure-common.sh
+source "$common_lib" || unknown shared_helper_unavailable
+
+pressure_normalize_threshold_pair "$warning_percent" "$critical_percent" || unknown invalid_threshold
+warning_percent="$PRESSURE_WARNING_PERCENT"
+critical_percent="$PRESSURE_CRITICAL_PERCENT"
 
 if [[ ! -r "$loadavg_path" ]]; then
   unknown loadavg_unavailable
@@ -66,10 +44,10 @@ if [[ ! "$tasks_field" =~ ^([0-9]+)/([0-9]+)$ ]]; then
 fi
 running_raw="${BASH_REMATCH[1]}"
 total_raw="${BASH_REMATCH[2]}"
-normalize_int64_uint "$running_raw" || unknown invalid_loadavg
-running="$REPLY"
-normalize_int64_uint "$total_raw" || unknown invalid_loadavg
-total="$REPLY"
+pressure_normalize_int64_uint "$running_raw" || unknown invalid_loadavg
+running="$PRESSURE_VALUE"
+pressure_normalize_int64_uint "$total_raw" || unknown invalid_loadavg
+total="$PRESSURE_VALUE"
 running=$((10#$running))
 total=$((10#$total))
 if (( total <= 0 || running > total )); then
@@ -89,24 +67,15 @@ fi
 if [[ -n "${extra:-}" || -z "${maximum_raw:-}" ]]; then
   unknown invalid_threads_max
 fi
-normalize_int64_uint "$maximum_raw" || unknown invalid_threads_max
-maximum="$REPLY"
+pressure_normalize_int64_uint "$maximum_raw" || unknown invalid_threads_max
+maximum="$PRESSURE_VALUE"
 maximum=$((10#$maximum))
 if (( maximum <= 0 || total > maximum )); then
   unknown invalid_task_values
 fi
 
-usage_percent="$(
-  awk -v total="$total" -v maximum="$maximum" \
-    'BEGIN { printf "%d", (total * 100.0) / maximum }'
-)"
-if ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-  unknown invalid_task_values
-fi
-usage_percent=$((10#$usage_percent))
-if (( usage_percent > 100 )); then
-  unknown invalid_task_values
-fi
+pressure_usage_percent "$total" "$maximum" || unknown invalid_task_values
+usage_percent="$PRESSURE_VALUE"
 
 status="OK"
 exit_code=0

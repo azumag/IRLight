@@ -14,26 +14,13 @@ unknown() {
   exit 3
 }
 
-is_uint() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-normalize_int64_uint() {
-  local value="$1"
-  if ! is_uint "$value"; then
-    return 1
-  fi
-  while [[ ${#value} -gt 1 && ${value:0:1} == "0" ]]; do
-    value="${value:1}"
-  done
-  if (( ${#value} > 19 )); then
-    return 1
-  fi
-  if (( ${#value} == 19 )) && [[ "$value" > "9223372036854775807" ]]; then
-    return 1
-  fi
-  REPLY="$value"
-}
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+common_lib="$script_dir/lib/scalar-pressure-common.sh"
+if [[ ! -r "$common_lib" ]]; then
+  unknown shared_helper_unavailable
+fi
+# shellcheck source=lib/scalar-pressure-common.sh
+source "$common_lib" || unknown shared_helper_unavailable
 
 read_single_uint() {
   local path="$1"
@@ -53,22 +40,13 @@ read_single_uint() {
   if [[ "$raw" =~ [[:space:]] ]]; then
     unknown "$invalid_reason"
   fi
-  normalize_int64_uint "$raw" || unknown "$invalid_reason"
-  REPLY="$REPLY"
+  pressure_normalize_int64_uint "$raw" || unknown "$invalid_reason"
+  REPLY="$PRESSURE_VALUE"
 }
 
-for threshold in "$warning_percent" "$critical_percent"; do
-  if ! is_uint "$threshold" || (( ${#threshold} > 3 )); then
-    unknown invalid_threshold
-  fi
-done
-
-# Force decimal so values such as 080 are not interpreted as octal by Bash.
-warning_percent=$((10#$warning_percent))
-critical_percent=$((10#$critical_percent))
-if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
-  unknown invalid_threshold
-fi
+pressure_normalize_threshold_pair "$warning_percent" "$critical_percent" || unknown invalid_threshold
+warning_percent="$PRESSURE_WARNING_PERCENT"
+critical_percent="$PRESSURE_CRITICAL_PERCENT"
 
 read_single_uint "$count_path" conntrack_count_unavailable invalid_conntrack_count
 count="$REPLY"
@@ -81,17 +59,8 @@ if (( maximum <= 0 || count > maximum )); then
   unknown invalid_conntrack_values
 fi
 
-usage_percent="$(
-  awk -v count="$count" -v maximum="$maximum" \
-    'BEGIN { printf "%d", (count * 100.0) / maximum }'
-)"
-if ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-  unknown invalid_conntrack_values
-fi
-usage_percent=$((10#$usage_percent))
-if (( usage_percent > 100 )); then
-  unknown invalid_conntrack_values
-fi
+pressure_usage_percent "$count" "$maximum" || unknown invalid_conntrack_values
+usage_percent="$PRESSURE_VALUE"
 
 status="OK"
 exit_code=0

@@ -14,41 +14,21 @@ unknown() {
   exit 3
 }
 
-is_uint() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-normalize_int64_uint() {
-  local value="$1"
-  if ! is_uint "$value"; then
-    return 1
-  fi
-  while [[ ${#value} -gt 1 && ${value:0:1} == "0" ]]; do
-    value="${value:1}"
-  done
-  if (( ${#value} > 19 )); then
-    return 1
-  fi
-  if (( ${#value} == 19 )) && [[ "$value" > "9223372036854775807" ]]; then
-    return 1
-  fi
-  REPLY="$value"
-}
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+common_lib="$script_dir/lib/scalar-pressure-common.sh"
+if [[ ! -r "$common_lib" ]]; then
+  unknown shared_helper_unavailable
+fi
+# shellcheck source=lib/scalar-pressure-common.sh
+source "$common_lib" || unknown shared_helper_unavailable
 
 if [[ -z "$fd_dir" || -z "$limits_path" ]]; then
   unknown target_required
 fi
 
-for threshold in "$warning_percent" "$critical_percent"; do
-  if ! is_uint "$threshold" || (( ${#threshold} > 3 )); then
-    unknown invalid_threshold
-  fi
-done
-warning_percent=$((10#$warning_percent))
-critical_percent=$((10#$critical_percent))
-if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
-  unknown invalid_threshold
-fi
+pressure_normalize_threshold_pair "$warning_percent" "$critical_percent" || unknown invalid_threshold
+warning_percent="$PRESSURE_WARNING_PERCENT"
+critical_percent="$PRESSURE_CRITICAL_PERCENT"
 
 if [[ ! -d "$fd_dir" || ! -r "$fd_dir" ]]; then
   unknown fd_directory_unavailable
@@ -75,12 +55,12 @@ if (( limit_count != 1 )); then
 fi
 
 if [[ "$soft_limit" != "unlimited" ]]; then
-  normalize_int64_uint "$soft_limit" || unknown invalid_limits
-  soft_limit="$REPLY"
+  pressure_normalize_int64_uint "$soft_limit" || unknown invalid_limits
+  soft_limit="$PRESSURE_VALUE"
 fi
 if [[ "$hard_limit" != "unlimited" ]]; then
-  normalize_int64_uint "$hard_limit" || unknown invalid_limits
-  hard_limit="$REPLY"
+  pressure_normalize_int64_uint "$hard_limit" || unknown invalid_limits
+  hard_limit="$PRESSURE_VALUE"
 fi
 if [[ "$soft_limit" == "unlimited" && "$hard_limit" != "unlimited" ]]; then
   unknown invalid_limits
@@ -98,7 +78,7 @@ entries=("$fd_dir"/*)
 fd_count=${#entries[@]}
 for entry in "${entries[@]}"; do
   name="${entry##*/}"
-  if ! is_uint "$name"; then
+  if ! pressure_is_uint "$name"; then
     unknown invalid_fd_entry
   fi
 done
@@ -126,14 +106,8 @@ if (( fd_count > soft_limit )); then
   exit 2
 fi
 
-usage_percent="$(awk -v current="$fd_count" -v maximum="$soft_limit" 'BEGIN { printf "%d", (current * 100.0) / maximum }')"
-if ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-  unknown invalid_fd_values
-fi
-usage_percent=$((10#$usage_percent))
-if (( usage_percent > 100 )); then
-  unknown invalid_fd_values
-fi
+pressure_usage_percent "$fd_count" "$soft_limit" || unknown invalid_fd_values
+usage_percent="$PRESSURE_VALUE"
 
 status="OK"
 exit_code=0

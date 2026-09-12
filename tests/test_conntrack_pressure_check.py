@@ -75,6 +75,19 @@ class ConntrackPressureCheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("maximum=9223372036854775807", result.stdout)
 
+    def test_large_values_do_not_round_up_across_thresholds(self) -> None:
+        maximum = "9223372036854775807\n"
+
+        result = self._run("7378697629483820645\n", maximum)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("status=OK", result.stdout)
+        self.assertIn("usage_percent=79", result.stdout)
+
+        result = self._run("8301034833169298226\n", maximum)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("usage_percent=89", result.stdout)
+
     def test_invalid_threshold_is_unknown(self) -> None:
         result = self._run(
             env_overrides={"IRLIGHT_CONNTRACK_WARNING_PERCENT": "101"},

@@ -13,39 +13,17 @@ unknown() {
   exit 3
 }
 
-is_uint() {
-  [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-normalize_int64_uint() {
-  local value="$1"
-  if ! is_uint "$value"; then
-    return 1
-  fi
-  while [[ ${#value} -gt 1 && ${value:0:1} == "0" ]]; do
-    value="${value:1}"
-  done
-  if (( ${#value} > 19 )); then
-    return 1
-  fi
-  if (( ${#value} == 19 )) && [[ "$value" > "9223372036854775807" ]]; then
-    return 1
-  fi
-  REPLY="$value"
-}
-
-for threshold in "$warning_percent" "$critical_percent"; do
-  if ! is_uint "$threshold" || (( ${#threshold} > 3 )); then
-    unknown invalid_threshold
-  fi
-done
-
-# Force decimal so values such as 080 are not interpreted as octal by Bash.
-warning_percent=$((10#$warning_percent))
-critical_percent=$((10#$critical_percent))
-if (( warning_percent > 100 || critical_percent > 100 || warning_percent >= critical_percent )); then
-  unknown invalid_threshold
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+common_lib="$script_dir/lib/scalar-pressure-common.sh"
+if [[ ! -r "$common_lib" ]]; then
+  unknown shared_helper_unavailable
 fi
+# shellcheck source=lib/scalar-pressure-common.sh
+source "$common_lib" || unknown shared_helper_unavailable
+
+pressure_normalize_threshold_pair "$warning_percent" "$critical_percent" || unknown invalid_threshold
+warning_percent="$PRESSURE_WARNING_PERCENT"
+critical_percent="$PRESSURE_CRITICAL_PERCENT"
 
 if [[ ! -r "$file_nr_path" ]]; then
   unknown file_nr_unavailable
@@ -63,12 +41,12 @@ if [[ -n "${extra:-}" || -z "${allocated_raw:-}" || -z "${unused_raw:-}" || -z "
   unknown invalid_file_nr
 fi
 
-normalize_int64_uint "$allocated_raw" || unknown invalid_file_nr
-allocated="$REPLY"
-normalize_int64_uint "$unused_raw" || unknown invalid_file_nr
-unused="$REPLY"
-normalize_int64_uint "$maximum_raw" || unknown invalid_file_nr
-maximum="$REPLY"
+pressure_normalize_int64_uint "$allocated_raw" || unknown invalid_file_nr
+allocated="$PRESSURE_VALUE"
+pressure_normalize_int64_uint "$unused_raw" || unknown invalid_file_nr
+unused="$PRESSURE_VALUE"
+pressure_normalize_int64_uint "$maximum_raw" || unknown invalid_file_nr
+maximum="$PRESSURE_VALUE"
 
 allocated=$((10#$allocated))
 unused=$((10#$unused))
@@ -82,17 +60,8 @@ fi
 # maximum. On modern kernels unused is normally zero, but subtract it so older
 # kernels are evaluated by active handles rather than allocated capacity.
 active=$((allocated - unused))
-usage_percent="$(
-  awk -v active="$active" -v maximum="$maximum" \
-    'BEGIN { printf "%d", (active * 100.0) / maximum }'
-)"
-if ! is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-  unknown invalid_file_nr
-fi
-usage_percent=$((10#$usage_percent))
-if (( usage_percent > 100 )); then
-  unknown invalid_file_nr
-fi
+pressure_usage_percent "$active" "$maximum" || unknown invalid_file_nr
+usage_percent="$PRESSURE_VALUE"
 
 status="OK"
 exit_code=0

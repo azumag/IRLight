@@ -30,6 +30,7 @@ RELATED_PROCEDURES = {
     "destination verification admission": "docs/operations/destination-verification-admission.md",
     "auth kdf admission": "docs/operations/auth-kdf-admission.md",
     "media node resource pressure": "docs/operations/media-node-resource-pressure.md",
+    "resource pressure check contract": "docs/operations/resource-pressure-check-contract.md",
     "auth session gc": "docs/operations/auth-session-gc.md",
     "user session capacity": "docs/operations/session-capacity-exhaustion.md",
     "log redaction audit": "docs/operations/log-redaction-audit.md",
