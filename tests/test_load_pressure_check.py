@@ -35,9 +35,20 @@ class LoadPressureCheckTest(unittest.TestCase):
                 check=False,
             )
 
+    def _assert_returncode(
+        self,
+        result: subprocess.CompletedProcess[str],
+        expected: int,
+    ) -> None:
+        self.assertEqual(
+            result.returncode,
+            expected,
+            msg=f"stdout={result.stdout!r} stderr={result.stderr!r}",
+        )
+
     def test_ok_below_warning_threshold(self) -> None:
         result = self._run(loadavg="1.00 2.00 3.00 1/100 123\n")
-        self.assertEqual(result.returncode, 0)
+        self._assert_returncode(result, 0)
         self.assertEqual(
             result.stdout.strip(),
             "IRLIGHT_LOAD_PRESSURE status=OK load5=2.00 cpu_count=4 load_percent=50 warning_percent=100 critical_percent=200",
@@ -45,13 +56,13 @@ class LoadPressureCheckTest(unittest.TestCase):
 
     def test_warning_at_normalized_capacity(self) -> None:
         result = self._run(loadavg="1.00 4.00 3.00 1/100 123\n")
-        self.assertEqual(result.returncode, 1)
+        self._assert_returncode(result, 1)
         self.assertIn("status=WARNING", result.stdout)
         self.assertIn("load_percent=100", result.stdout)
 
     def test_critical_at_double_normalized_capacity(self) -> None:
         result = self._run(loadavg="1.00 8.00 3.00 1/100 123\n")
-        self.assertEqual(result.returncode, 2)
+        self._assert_returncode(result, 2)
         self.assertIn("status=CRITICAL", result.stdout)
         self.assertIn("load_percent=200", result.stdout)
 
@@ -63,13 +74,13 @@ class LoadPressureCheckTest(unittest.TestCase):
                 "IRLIGHT_LOAD_CRITICAL_PERCENT": "0250",
             },
         )
-        self.assertEqual(result.returncode, 0)
+        self._assert_returncode(result, 0)
         self.assertIn("warning_percent=125", result.stdout)
         self.assertIn("critical_percent=250", result.stdout)
 
     def test_invalid_cpu_count_is_unknown(self) -> None:
         result = self._run(cpu_count="0")
-        self.assertEqual(result.returncode, 3)
+        self._assert_returncode(result, 3)
         self.assertEqual(
             result.stdout.strip(),
             "IRLIGHT_LOAD_PRESSURE status=UNKNOWN reason=invalid_cpu_count",
@@ -79,7 +90,7 @@ class LoadPressureCheckTest(unittest.TestCase):
         for load5 in ("NaN", "Infinity", "-1.00", "+1.00", "1e3"):
             with self.subTest(load5=load5):
                 result = self._run(loadavg=f"0.10 {load5} 0.30 1/100 123\n")
-                self.assertEqual(result.returncode, 3)
+                self._assert_returncode(result, 3)
                 self.assertEqual(
                     result.stdout.strip(),
                     "IRLIGHT_LOAD_PRESSURE status=UNKNOWN reason=invalid_loadavg",
@@ -87,7 +98,7 @@ class LoadPressureCheckTest(unittest.TestCase):
 
     def test_missing_load_field_is_unknown(self) -> None:
         result = self._run(loadavg="0.10\n")
-        self.assertEqual(result.returncode, 3)
+        self._assert_returncode(result, 3)
         self.assertEqual(
             result.stdout.strip(),
             "IRLIGHT_LOAD_PRESSURE status=UNKNOWN reason=invalid_loadavg",
@@ -100,7 +111,7 @@ class LoadPressureCheckTest(unittest.TestCase):
                 "IRLIGHT_LOAD_CRITICAL_PERCENT": "100",
             }
         )
-        self.assertEqual(result.returncode, 3)
+        self._assert_returncode(result, 3)
         self.assertEqual(
             result.stdout.strip(),
             "IRLIGHT_LOAD_PRESSURE status=UNKNOWN reason=invalid_threshold",
