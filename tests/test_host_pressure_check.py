@@ -20,6 +20,9 @@ class HostPressureCheckTest(unittest.TestCase):
         inode_usage: str = "10",
         available_kb: str = "500",
         meminfo_valid: bool = True,
+        load5: str = "0.20",
+        loadavg_valid: bool = True,
+        cpu_count: str = "4",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-host-pressure-") as temporary:
             root = Path(temporary)
@@ -59,13 +62,29 @@ esac
             else:
                 meminfo.write_text("MemTotal: 1000 kB\n", encoding="utf-8")
 
+            loadavg = root / "loadavg"
+            if loadavg_valid:
+                loadavg.write_text(
+                    f"0.10 {load5} 0.30 1/100 123\n",
+                    encoding="utf-8",
+                )
+            else:
+                loadavg.write_text("0.10\n", encoding="utf-8")
+
             env = os.environ.copy()
             env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
             env["IRLIGHT_TEST_DISK_USAGE"] = disk_usage
             env["IRLIGHT_TEST_INODE_USAGE"] = inode_usage
 
             return subprocess.run(
-                ["bash", str(SCRIPT), str(state_dir), str(meminfo)],
+                [
+                    "bash",
+                    str(SCRIPT),
+                    str(state_dir),
+                    str(meminfo),
+                    str(loadavg),
+                    cpu_count,
+                ],
                 env=env,
                 text=True,
                 capture_output=True,
@@ -77,7 +96,7 @@ esac
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK",
         )
 
     def test_warning_propagates_from_memory(self) -> None:
@@ -85,7 +104,7 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=WARNING",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=WARNING load_status=OK",
         )
 
     def test_warning_propagates_from_inode_pressure(self) -> None:
@@ -93,7 +112,15 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=WARNING memory_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=WARNING memory_status=OK load_status=OK",
+        )
+
+    def test_warning_propagates_from_load_pressure(self) -> None:
+        result = self._run(load5="4.00")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=WARNING",
         )
 
     def test_unknown_is_fail_closed_over_warning(self) -> None:
@@ -101,7 +128,15 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=UNKNOWN",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=UNKNOWN load_status=OK",
+        )
+
+    def test_load_unknown_is_fail_closed_over_warning(self) -> None:
+        result = self._run(disk_usage="85", loadavg_valid=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=UNKNOWN",
         )
 
     def test_known_critical_is_not_hidden_by_unknown(self) -> None:
@@ -109,7 +144,15 @@ esac
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=CRITICAL memory_status=UNKNOWN",
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=CRITICAL memory_status=UNKNOWN load_status=OK",
+        )
+
+    def test_load_critical_is_not_hidden_by_other_unknown(self) -> None:
+        result = self._run(load5="8.00", meminfo_valid=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=CRITICAL",
         )
 
     def test_invalid_component_output_becomes_unknown(self) -> None:
@@ -117,7 +160,7 @@ esac
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=UNKNOWN memory_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=UNKNOWN memory_status=OK load_status=OK",
         )
 
 
