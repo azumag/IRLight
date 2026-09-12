@@ -92,8 +92,19 @@ fi
 normalize_int64_uint "$maximum_raw" || unknown invalid_maximum
 maximum="$REPLY"
 maximum=$((10#$maximum))
-if (( maximum <= 0 || current > maximum )); then
+if (( maximum <= 0 )); then
   unknown invalid_pid_values
+fi
+
+# cgroup policy permits organisational operations to make pids.current exceed
+# pids.max. That is an over-limit condition, not corrupt telemetry.
+if (( current > maximum )); then
+  printf 'IRLIGHT_CGROUP_PID_PRESSURE status=CRITICAL usage_percent=OVER_LIMIT current=%s maximum=%s warning_percent=%s critical_percent=%s\n' \
+    "$current" \
+    "$maximum" \
+    "$warning_percent" \
+    "$critical_percent"
+  exit 2
 fi
 
 usage_percent="$(
