@@ -66,18 +66,24 @@ pressure_usage_percent() {
     return 1
   fi
 
-  local usage_percent
-  usage_percent="$(
-    awk -v current="$current" -v maximum="$maximum" \
-      'BEGIN { printf "%d", (current * 100.0) / maximum }'
-  )" || return 1
-  if ! pressure_is_uint "$usage_percent" || (( ${#usage_percent} > 3 )); then
-    return 1
-  fi
-  usage_percent=$((10#$usage_percent))
-  if (( usage_percent > 100 )); then
-    return 1
-  fi
+  # Compute floor(current * 100 / maximum) without floating-point rounding and
+  # without overflowing signed 64-bit arithmetic. For each integer percent p,
+  # current >= ceil(maximum * p / 100) iff p is not greater than the exact
+  # percentage. Split maximum into quotient/remainder before multiplying so all
+  # intermediates remain <= maximum.
+  local maximum_hundredth=$((maximum / 100))
+  local maximum_remainder=$((maximum % 100))
+  local percent threshold
+  for ((percent = 100; percent >= 0; percent--)); do
+    threshold=$((
+      maximum_hundredth * percent
+      + (maximum_remainder * percent + 99) / 100
+    ))
+    if (( current >= threshold )); then
+      PRESSURE_VALUE="$percent"
+      return 0
+    fi
+  done
 
-  PRESSURE_VALUE="$usage_percent"
+  return 1
 }
