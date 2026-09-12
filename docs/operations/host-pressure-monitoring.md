@@ -66,6 +66,24 @@ exit code は次の意味を持つ。
 
 集約時の優先順位は `CRITICAL > UNKNOWN > WARNING > OK` とする。既知のcriticalを別componentの診断失敗で隠さない一方、criticalがない場合のUNKNOWNは正常・warningへ推測補完しない。
 
+## Targeted cgroup v2 PID check
+
+system-wide task pressure だけでは、service/container に設定された cgroup v2 の PID 上限枯渇は検知できない。監視対象の cgroup が明確な場合は、対象 cgroup の `pids.current` と `pids.max` を指定して read-only の companion check を実行する。
+
+```bash
+bash scripts/check-cgroup-pid-pressure.sh \
+  /sys/fs/cgroup/<target>/pids.current \
+  /sys/fs/cgroup/<target>/pids.max
+```
+
+環境変数 `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` / `IRLIGHT_CGROUP_PIDS_MAX_PATH` でも path を指定できる。既定閾値は80%でwarning、90%でcriticalで、`IRLIGHT_CGROUP_PIDS_WARNING_PERCENT` / `IRLIGHT_CGROUP_PIDS_CRITICAL_PERCENT` で変更できる。
+
+`pids.max` が有限値なら `pids.current / pids.max` を評価する。cgroup policy では task の移動や上限引き下げなどの organisational operation によって `pids.current > pids.max` が正規に発生し得るため、この状態は telemetry corruption ではなく `CRITICAL` として扱う。有限上限 `0` も正規の設定であり、新規 task を許容しないため `CRITICAL`（`usage_percent=NO_HEADROOM`）とする。`pids.max` が正規の `max` なら、その cgroup 自身には有限の local limit がないため `OK`（`usage_percent=NA`）とする。
+
+PID limit は階層的であり、child の `pids.max=max` でも parent cgroup の有限上限に制約される場合がある。この check は指定した2ファイルの local 状態だけを評価し、parent cgroup の effective limit、system-wide `threads-max`、PID namespace 枯渇を推測しない。そのため既定の host aggregate へ自動追加せず、監視対象 cgroup を明示できる service/container で opt-in する。
+
+欠落・複数行・非数値・signed 64-bit範囲外は `UNKNOWN` にする。check は cgroup control file へ書き込まない。
+
 ## Diagnosis
 
 summaryが `WARNING` / `CRITICAL` / `UNKNOWN` の場合はcomponent checkを個別に実行して詳細値とreasonを確認する。
@@ -92,7 +110,7 @@ PSI、file-nr、conntrack、threads-max等を読めない制限されたcontaine
 
 ## Safety
 
-このwrapperとcomponent checkは診断専用で、ファイル削除、Docker prune、volume削除、process kill/restart、conntrack table flush、sysctl変更、cache drop、swap変更、authority state変更を行わない。復旧は対象Sessionとstate ownershipを確認した別の明示操作として実施する。
+このwrapperとcomponent checkは診断専用で、ファイル削除、Docker prune、volume削除、process kill/restart、conntrack table flush、sysctl/cgroup変更、cache drop、swap変更、authority state変更を行わない。復旧は対象Sessionとstate ownershipを確認した別の明示操作として実施する。
 
 監視systemから呼び出す場合も、exit codeを契機に破壊的な自動復旧を直結させない。まずalertと診断へ接続し、復旧操作は個別runbookの条件を満たした場合に限る。
 
@@ -104,6 +122,7 @@ python -m unittest discover -s tests -p 'test_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_file_handle_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
@@ -111,5 +130,6 @@ bash -n \
   scripts/check-file-handle-pressure.sh \
   scripts/check-conntrack-pressure.sh \
   scripts/check-task-pressure.sh \
+  scripts/check-cgroup-pid-pressure.sh \
   scripts/check-host-pressure.sh
 ```
