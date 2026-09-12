@@ -43,11 +43,17 @@ to fail with `TLS_FAILED` without leaking the stream key.
 ## CI migration probes
 
 The shared Docker smoke suite runs the existing legacy scenarios unchanged and
-also runs three opt-in `rtmp2sink` variants:
+also runs four opt-in `rtmp2sink` variants:
 
 - local RTMP publish, remote target stop, reconnect, and recovery;
+- explicit Gateway stop while reconnect backoff is pending, followed by a
+  terminal unsafe-destination rejection without reconnect or secret leakage;
 - DNS failure plus self-signed RTMPS certificate rejection;
 - publish-conflict classification and secret non-disclosure.
+
+The explicit-stop scenario is intentionally shared with the legacy smoke. It
+proves that selecting `rtmp2sink` does not weaken the existing user-stop
+precedence or terminal-failure contract while migration evidence is collected.
 
 These probes intentionally use only local synthetic credentials. Passing them
 is evidence for the migration, not authorization to flip the production
