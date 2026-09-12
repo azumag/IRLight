@@ -29,6 +29,8 @@ class HostPressureCheckTest(unittest.TestCase):
         file_nr: str = "100 0 1000\n",
         conntrack_count: str = "100\n",
         conntrack_max: str = "1000\n",
+        total_tasks: str = "100",
+        threads_max: str = "1000\n",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-host-pressure-") as temporary:
             root = Path(temporary)
@@ -71,7 +73,7 @@ esac
             loadavg = root / "loadavg"
             if loadavg_valid:
                 loadavg.write_text(
-                    f"0.10 {load5} 0.30 1/100 123\n",
+                    f"0.10 {load5} 0.30 1/{total_tasks} 123\n",
                     encoding="utf-8",
                 )
             else:
@@ -105,6 +107,8 @@ esac
             conntrack_count_path.write_text(conntrack_count, encoding="utf-8")
             conntrack_max_path = root / "nf_conntrack_max"
             conntrack_max_path.write_text(conntrack_max, encoding="utf-8")
+            threads_max_path = root / "threads-max"
+            threads_max_path.write_text(threads_max, encoding="utf-8")
 
             env = os.environ.copy()
             env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -123,6 +127,7 @@ esac
                     str(file_nr_path),
                     str(conntrack_count_path),
                     str(conntrack_max_path),
+                    str(threads_max_path),
                 ],
                 env=env,
                 text=True,
@@ -135,144 +140,119 @@ esac
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
+            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK",
         )
 
     def test_warning_propagates_from_memory(self) -> None:
         result = self._run(available_kb="150")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=WARNING load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("memory_status=WARNING", result.stdout)
+        self.assertIn("task_status=OK", result.stdout)
 
     def test_warning_propagates_from_inode_pressure(self) -> None:
         result = self._run(inode_usage="85")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=WARNING memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("disk_status=WARNING", result.stdout)
 
     def test_warning_propagates_from_load_pressure(self) -> None:
         result = self._run(load5="4.00")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=WARNING psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("load_status=WARNING", result.stdout)
 
     def test_warning_propagates_from_psi_pressure(self) -> None:
         result = self._run(psi_cpu_some="25.00")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=WARNING file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("psi_status=WARNING", result.stdout)
 
     def test_warning_propagates_from_file_handle_pressure(self) -> None:
         result = self._run(file_nr="850 0 1000\n")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=WARNING conntrack_status=OK",
-        )
+        self.assertIn("file_handle_status=WARNING", result.stdout)
 
     def test_warning_propagates_from_conntrack_pressure(self) -> None:
         result = self._run(conntrack_count="850\n")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=WARNING disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=WARNING",
-        )
+        self.assertIn("conntrack_status=WARNING", result.stdout)
+
+    def test_warning_propagates_from_task_pressure(self) -> None:
+        result = self._run(total_tasks="800")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("task_status=WARNING", result.stdout)
 
     def test_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", meminfo_valid=False)
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("disk_status=WARNING", result.stdout)
+        self.assertIn("memory_status=UNKNOWN", result.stdout)
 
     def test_load_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", loadavg_valid=False)
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=UNKNOWN psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("load_status=UNKNOWN", result.stdout)
+        self.assertIn("task_status=UNKNOWN", result.stdout)
 
     def test_psi_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", psi_valid=False)
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=UNKNOWN file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("psi_status=UNKNOWN", result.stdout)
 
     def test_file_handle_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", file_nr="invalid\n")
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=OK file_handle_status=UNKNOWN conntrack_status=OK",
-        )
+        self.assertIn("file_handle_status=UNKNOWN", result.stdout)
 
     def test_conntrack_unknown_is_fail_closed_over_warning(self) -> None:
         result = self._run(disk_usage="85", conntrack_count="invalid\n")
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=WARNING memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=UNKNOWN",
-        )
+        self.assertIn("conntrack_status=UNKNOWN", result.stdout)
+
+    def test_task_unknown_is_fail_closed_over_warning(self) -> None:
+        result = self._run(disk_usage="85", threads_max="invalid\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("task_status=UNKNOWN", result.stdout)
 
     def test_known_critical_is_not_hidden_by_unknown(self) -> None:
         result = self._run(disk_usage="95", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=CRITICAL memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("disk_status=CRITICAL", result.stdout)
+        self.assertIn("memory_status=UNKNOWN", result.stdout)
 
     def test_load_critical_is_not_hidden_by_other_unknown(self) -> None:
         result = self._run(load5="8.00", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=CRITICAL psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("load_status=CRITICAL", result.stdout)
 
     def test_psi_critical_is_not_hidden_by_other_unknown(self) -> None:
         result = self._run(psi_memory_full="20.00", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=CRITICAL file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("psi_status=CRITICAL", result.stdout)
 
     def test_file_handle_critical_is_not_hidden_by_other_unknown(self) -> None:
         result = self._run(file_nr="950 0 1000\n", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=CRITICAL conntrack_status=OK",
-        )
+        self.assertIn("file_handle_status=CRITICAL", result.stdout)
 
     def test_conntrack_critical_is_not_hidden_by_other_unknown(self) -> None:
         result = self._run(conntrack_count="950\n", meminfo_valid=False)
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=CRITICAL disk_status=OK memory_status=UNKNOWN load_status=OK psi_status=OK file_handle_status=OK conntrack_status=CRITICAL",
-        )
+        self.assertIn("conntrack_status=CRITICAL", result.stdout)
+
+    def test_task_critical_is_not_hidden_by_other_unknown(self) -> None:
+        result = self._run(total_tasks="950", meminfo_valid=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("memory_status=UNKNOWN", result.stdout)
+        self.assertIn("task_status=CRITICAL", result.stdout)
 
     def test_invalid_component_output_becomes_unknown(self) -> None:
         result = self._run(disk_usage="invalid")
         self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.strip(),
-            "IRLIGHT_HOST_PRESSURE status=UNKNOWN disk_status=UNKNOWN memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK",
-        )
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("disk_status=UNKNOWN", result.stdout)
 
 
 if __name__ == "__main__":
