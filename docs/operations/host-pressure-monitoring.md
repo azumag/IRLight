@@ -78,11 +78,11 @@ bash scripts/check-cgroup-pid-pressure.sh \
 
 環境変数 `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` / `IRLIGHT_CGROUP_PIDS_MAX_PATH` でも path を指定できる。既定閾値は80%でwarning、90%でcriticalで、`IRLIGHT_CGROUP_PIDS_WARNING_PERCENT` / `IRLIGHT_CGROUP_PIDS_CRITICAL_PERCENT` で変更できる。
 
-`pids.max` が有限値なら `pids.current / pids.max` を評価する。cgroup policy では task の移動や上限引き下げなどの organisational operation によって `pids.current > pids.max` が正規に発生し得るため、この状態は telemetry corruption ではなく `CRITICAL` として扱う。`pids.max` が正規の `max` なら、その cgroup 自身には有限の local limit がないため `OK`（`usage_percent=NA`）とする。
+`pids.max` が有限値なら `pids.current / pids.max` を評価する。cgroup policy では task の移動や上限引き下げなどの organisational operation によって `pids.current > pids.max` が正規に発生し得るため、この状態は telemetry corruption ではなく `CRITICAL` として扱う。有限上限 `0` も正規の設定であり、新規 task を許容しないため `CRITICAL`（`usage_percent=NO_HEADROOM`）とする。`pids.max` が正規の `max` なら、その cgroup 自身には有限の local limit がないため `OK`（`usage_percent=NA`）とする。
 
 PID limit は階層的であり、child の `pids.max=max` でも parent cgroup の有限上限に制約される場合がある。この check は指定した2ファイルの local 状態だけを評価し、parent cgroup の effective limit、system-wide `threads-max`、PID namespace 枯渇を推測しない。そのため既定の host aggregate へ自動追加せず、監視対象 cgroup を明示できる service/container で opt-in する。
 
-欠落・複数行・非数値・0以下の有限上限・signed 64-bit範囲外は `UNKNOWN` にする。check は cgroup control file へ書き込まない。
+欠落・複数行・非数値・signed 64-bit範囲外は `UNKNOWN` にする。check は cgroup control file へ書き込まない。
 
 ## Diagnosis
 
