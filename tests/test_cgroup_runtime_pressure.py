@@ -24,6 +24,9 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         baseline_events: dict[str, int] | None = None,
         process_fd_count: int | None = None,
         process_limits: str | None = None,
+        swap_current: str = "0",
+        swap_max: str = "max",
+        include_swap: bool = False,
         env_overrides: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-cgroup-runtime-pressure-") as temporary:
@@ -45,6 +48,14 @@ class CgroupRuntimePressureTest(unittest.TestCase):
                     "some avg10=1.00 avg60=0.50 avg300=0.25 total=12345\n"
                     "full avg10=0.00 avg60=0.10 avg300=0.05 total=1234\n",
                     encoding="utf-8",
+                )
+
+            if include_swap:
+                (cgroup_dir / "memory.swap.current").write_text(
+                    f"{swap_current}\n", encoding="utf-8"
+                )
+                (cgroup_dir / "memory.swap.max").write_text(
+                    f"{swap_max}\n", encoding="utf-8"
                 )
 
             baseline_path: Path | None = None
@@ -88,10 +99,12 @@ class CgroupRuntimePressureTest(unittest.TestCase):
                 env.update(env_overrides)
 
             command = ["bash", str(SCRIPT), str(cgroup_dir)]
-            if baseline_path is not None or process_dir is not None:
+            if baseline_path is not None or process_dir is not None or include_swap:
                 command.append(str(baseline_path) if baseline_path is not None else "")
-            if process_dir is not None:
-                command.append(str(process_dir))
+            if process_dir is not None or include_swap:
+                command.append(str(process_dir) if process_dir is not None else "")
+            if include_swap:
+                command.append(str(cgroup_dir))
             return subprocess.run(
                 command,
                 env=env,
@@ -120,7 +133,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED swap_status=NOT_CONFIGURED",
         )
 
     def test_warning_component_sets_warning(self) -> None:
@@ -175,6 +188,30 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertIn("status=UNKNOWN", result.stdout)
         self.assertIn("process_fd_status=UNKNOWN", result.stdout)
 
+    def test_swap_warning_is_included_only_when_explicit(self) -> None:
+        result = self._run(include_swap=True, swap_current="85", swap_max="100")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("swap_status=WARNING", result.stdout)
+
+    def test_swap_critical_contributes_to_aggregate_precedence(self) -> None:
+        result = self._run(
+            include_swap=True,
+            swap_current="95",
+            swap_max="100",
+            memory_max="invalid",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("memory_max_status=UNKNOWN", result.stdout)
+        self.assertIn("swap_status=CRITICAL", result.stdout)
+
+    def test_missing_swap_control_file_fails_closed_when_explicit(self) -> None:
+        result = self._run(include_swap=True, swap_current="10", swap_max="invalid")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("swap_status=UNKNOWN", result.stdout)
+
     def test_invalid_timeout_fails_closed_without_unbounded_fallback(self) -> None:
         result = self._run(
             env_overrides={"IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS": "0"}
@@ -182,7 +219,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED swap_status=NOT_CONFIGURED",
         )
 
 
