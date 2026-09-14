@@ -7,6 +7,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cgroup_dir="${1:-${IRLIGHT_CGROUP_RUNTIME_DIR:-}}"
 events_baseline_path="${2:-${IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH:-}}"
 process_dir="${3:-${IRLIGHT_CGROUP_RUNTIME_PROCESS_DIR:-}}"
+swap_cgroup_dir="${4:-${IRLIGHT_CGROUP_RUNTIME_SWAP_DIR:-}}"
 component_timeout_seconds="${IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 unknown() {
@@ -122,6 +123,16 @@ if [[ -n "$process_dir" ]]; then
   process_fd_status="$(status_for_code "$process_fd_code")"
 fi
 
+swap_status="NOT_CONFIGURED"
+swap_code=""
+if [[ -n "$swap_cgroup_dir" ]]; then
+  swap_code="$(run_component \
+    "$script_dir/check-cgroup-swap-pressure.sh" \
+    "$swap_cgroup_dir/memory.swap.current" \
+    "$swap_cgroup_dir/memory.swap.max")"
+  swap_status="$(status_for_code "$swap_code")"
+fi
+
 overall_code=0
 merge_code "$memory_max_code"
 merge_code "$memory_high_code"
@@ -133,14 +144,18 @@ fi
 if [[ -n "$process_fd_code" ]]; then
   merge_code "$process_fd_code"
 fi
+if [[ -n "$swap_code" ]]; then
+  merge_code "$swap_code"
+fi
 
 overall_status="$(status_for_code "$overall_code")"
-printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s\n' \
+printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s swap_status=%s\n' \
   "$overall_status" \
   "$(status_for_code "$memory_max_code")" \
   "$(status_for_code "$memory_high_code")" \
   "$(status_for_code "$pids_code")" \
   "$(status_for_code "$psi_code")" \
   "$memory_events_status" \
-  "$process_fd_status"
+  "$process_fd_status" \
+  "$swap_status"
 exit "$overall_code"
