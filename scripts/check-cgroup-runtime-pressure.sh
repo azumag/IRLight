@@ -7,7 +7,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cgroup_dir="${1:-${IRLIGHT_CGROUP_RUNTIME_DIR:-}}"
 events_baseline_path="${2:-${IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH:-}}"
 process_dir="${3:-${IRLIGHT_CGROUP_RUNTIME_PROCESS_DIR:-}}"
-swap_cgroup_dir="${4:-${IRLIGHT_CGROUP_RUNTIME_SWAP_DIR:-}}"
+swap_mode="${4:-${IRLIGHT_CGROUP_RUNTIME_SWAP_MODE:-disabled}}"
 component_timeout_seconds="${IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 unknown() {
@@ -19,6 +19,14 @@ unknown() {
 if [[ -z "$cgroup_dir" ]]; then
   unknown target_required
 fi
+
+case "$swap_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    unknown invalid_swap_mode
+    ;;
+esac
 
 component_timeout_valid=true
 if [[ ! "$component_timeout_seconds" =~ ^[0-9]+$ ]] || (( ${#component_timeout_seconds} > 3 )); then
@@ -125,11 +133,11 @@ fi
 
 swap_status="NOT_CONFIGURED"
 swap_code=""
-if [[ -n "$swap_cgroup_dir" ]]; then
+if [[ "$swap_mode" == "enabled" ]]; then
   swap_code="$(run_component \
     "$script_dir/check-cgroup-swap-pressure.sh" \
-    "$swap_cgroup_dir/memory.swap.current" \
-    "$swap_cgroup_dir/memory.swap.max")"
+    "$cgroup_dir/memory.swap.current" \
+    "$cgroup_dir/memory.swap.max")"
   swap_status="$(status_for_code "$swap_code")"
 fi
 
