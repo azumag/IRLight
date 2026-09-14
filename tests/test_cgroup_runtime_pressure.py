@@ -133,7 +133,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED swap_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
         )
 
     def test_warning_component_sets_warning(self) -> None:
@@ -229,7 +229,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED swap_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
         )
 
 
