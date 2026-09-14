@@ -131,7 +131,7 @@ if [[ -n "$process_dir" ]]; then
   process_fd_status="$(status_for_code "$process_fd_code")"
 fi
 
-swap_status="NOT_CONFIGURED"
+swap_status=""
 swap_code=""
 if [[ "$swap_mode" == "enabled" ]]; then
   swap_code="$(run_component \
@@ -157,13 +157,25 @@ if [[ -n "$swap_code" ]]; then
 fi
 
 overall_status="$(status_for_code "$overall_code")"
-printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s swap_status=%s\n' \
-  "$overall_status" \
-  "$(status_for_code "$memory_max_code")" \
-  "$(status_for_code "$memory_high_code")" \
-  "$(status_for_code "$pids_code")" \
-  "$(status_for_code "$psi_code")" \
-  "$memory_events_status" \
-  "$process_fd_status" \
-  "$swap_status"
+if [[ "$swap_mode" == "enabled" ]]; then
+  printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s swap_status=%s\n' \
+    "$overall_status" \
+    "$(status_for_code "$memory_max_code")" \
+    "$(status_for_code "$memory_high_code")" \
+    "$(status_for_code "$pids_code")" \
+    "$(status_for_code "$psi_code")" \
+    "$memory_events_status" \
+    "$process_fd_status" \
+    "$swap_status"
+else
+  # Preserve the pre-swap output contract for existing monitoring parsers.
+  printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s\n' \
+    "$overall_status" \
+    "$(status_for_code "$memory_max_code")" \
+    "$(status_for_code "$memory_high_code")" \
+    "$(status_for_code "$pids_code")" \
+    "$(status_for_code "$psi_code")" \
+    "$memory_events_status" \
+    "$process_fd_status"
+fi
 exit "$overall_code"
