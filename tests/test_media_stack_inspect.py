@@ -24,7 +24,9 @@ from media_stack_inspect_cli import (  # noqa: E402
 )
 
 
-def completed(command: list[str], stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+def completed(
+    command: list[str], stdout: str = "", returncode: int = 0
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(command, returncode, stdout, "")
 
 
@@ -42,9 +44,14 @@ def ps_row(service: str, name: str, *, health: str = "healthy") -> dict[str, obj
 
 class ComposePsParsingTest(unittest.TestCase):
     def test_accepts_array_and_line_delimited_json(self) -> None:
-        rows = [ps_row("mediamtx", "node-mediamtx-1"), ps_row("continuity", "node-continuity-1")]
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+        ]
         self.assertEqual(parse_compose_ps(json.dumps(rows)), rows)
-        self.assertEqual(parse_compose_ps("\n".join(json.dumps(row) for row in rows)), rows)
+        self.assertEqual(
+            parse_compose_ps("\n".join(json.dumps(row) for row in rows)), rows
+        )
 
     def test_rejects_invalid_json_shape(self) -> None:
         with self.assertRaises(MediaStackInspectError):
@@ -62,6 +69,31 @@ class MediaStackInspectionTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def _write_baseline(
+        self,
+        counts: dict[str, int],
+        *,
+        egress_mode: str = "DIRECT_PUSH",
+        extra: dict[str, object] | None = None,
+    ) -> Path:
+        baseline = {
+            "status": "OK",
+            "egress_mode": egress_mode,
+            "services": [
+                {
+                    "service": service,
+                    "restart_count": restart_count,
+                    "state": "running",
+                    "warnings": [],
+                    **(extra or {}),
+                }
+                for service, restart_count in counts.items()
+            ],
+        }
+        path = Path(self.tmp.name) / "restart-baseline.json"
+        path.write_text(json.dumps(baseline), encoding="utf-8")
+        return path
+
     def _inspect(
         self,
         rows: list[dict[str, object]],
@@ -69,12 +101,17 @@ class MediaStackInspectionTest(unittest.TestCase):
         *,
         egress_mode: str = "DIRECT_PUSH",
         restart_warning_count: int = 3,
+        restart_baseline: Path | None = None,
     ) -> tuple[dict[str, object], list[list[str]]]:
         calls: list[list[str]] = []
         responses = [completed(["docker", "compose"], json.dumps(rows))]
-        responses.extend(completed(["docker", "inspect"], state) for state in states)
+        responses.extend(
+            completed(["docker", "inspect"], state) for state in states
+        )
 
-        def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             calls.append(command)
             return responses.pop(0)
 
@@ -85,6 +122,7 @@ class MediaStackInspectionTest(unittest.TestCase):
                 egress_mode=egress_mode,
                 timeout_seconds=5.0,
                 restart_warning_count=restart_warning_count,
+                restart_baseline=restart_baseline,
             )
         self.assertFalse(responses)
         return payload, calls
@@ -98,7 +136,11 @@ class MediaStackInspectionTest(unittest.TestCase):
         ]
         payload, calls = self._inspect(
             rows,
-            ["running\t0\tfalse\t0\n", "running\t0\tfalse\t0\n", "running\t0\tfalse\t0\n"],
+            [
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+            ],
         )
 
         self.assertEqual(payload["status"], "OK")
@@ -109,6 +151,8 @@ class MediaStackInspectionTest(unittest.TestCase):
         self.assertNotIn("super-secret-value", rendered)
         self.assertNotIn("secret-key", rendered)
         self.assertNotIn("node-mediamtx-1", rendered)
+        self.assertNotIn("restart_baseline_mode", payload)
+        self.assertNotIn("restart_delta", payload["services"][0])
 
         self.assertIn("ps", calls[0])
         self.assertNotIn("up", calls[0])
@@ -128,32 +172,49 @@ class MediaStackInspectionTest(unittest.TestCase):
         ]
         payload, _calls = self._inspect(
             rows,
-            ["restarting\t137\ttrue\t7\n", "running\t0\tfalse\t0\n", "exited\t2\tfalse\t0\n"],
+            [
+                "restarting\t137\ttrue\t7\n",
+                "running\t0\tfalse\t0\n",
+                "exited\t2\tfalse\t0\n",
+            ],
         )
 
         self.assertEqual(payload["status"], "PROBLEM")
         by_service = {item["service"]: item for item in payload["services"]}
         self.assertIn("state_restarting", by_service["mediamtx"]["problems"])
         self.assertIn("oom_killed", by_service["mediamtx"]["problems"])
-        self.assertIn("restart_history_high", by_service["mediamtx"]["warnings"])
+        self.assertIn(
+            "restart_history_high", by_service["mediamtx"]["warnings"]
+        )
         self.assertIn("unhealthy", by_service["continuity"]["problems"])
-        self.assertIn("not_running", by_service["egress-gateway"]["problems"])
+        self.assertIn(
+            "not_running", by_service["egress-gateway"]["problems"]
+        )
 
     @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
     def test_missing_expected_service_is_problem_without_inspect_call(self) -> None:
-        rows = [ps_row("mediamtx", "node-mediamtx-1"), ps_row("continuity", "node-continuity-1")]
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+        ]
         payload, calls = self._inspect(
             rows,
             ["running\t0\tfalse\t0\n", "running\t0\tfalse\t0\n"],
         )
 
         self.assertEqual(payload["status"], "PROBLEM")
-        egress = next(item for item in payload["services"] if item["service"] == "egress-gateway")
+        egress = next(
+            item
+            for item in payload["services"]
+            if item["service"] == "egress-gateway"
+        )
         self.assertEqual(egress["problems"], ["missing"])
         self.assertEqual(len(calls), 3)
 
     @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
-    def test_elevated_lifetime_restart_count_is_warning_not_crash_loop_proof(self) -> None:
+    def test_elevated_lifetime_restart_count_is_warning_not_crash_loop_proof(
+        self,
+    ) -> None:
         rows = [
             ps_row("mediamtx", "node-mediamtx-1"),
             ps_row("continuity", "node-continuity-1"),
@@ -161,7 +222,11 @@ class MediaStackInspectionTest(unittest.TestCase):
         ]
         payload, _calls = self._inspect(
             rows,
-            ["running\t0\tfalse\t8\n", "running\t0\tfalse\t0\n", "running\t0\tfalse\t0\n"],
+            [
+                "running\t0\tfalse\t8\n",
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+            ],
         )
 
         self.assertEqual(payload["status"], "WARNING")
@@ -169,9 +234,175 @@ class MediaStackInspectionTest(unittest.TestCase):
         self.assertEqual(payload["warning_count"], 1)
 
     @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_same_counts_suppresses_stale_lifetime_warning(
+        self,
+    ) -> None:
+        baseline = self._write_baseline(
+            {"mediamtx": 8, "continuity": 0, "egress-gateway": 0}
+        )
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+            ps_row("egress-gateway", "node-egress-1", health=""),
+        ]
+
+        payload, _calls = self._inspect(
+            rows,
+            [
+                "running\t0\tfalse\t8\n",
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+            ],
+            restart_baseline=baseline,
+        )
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertTrue(payload["restart_baseline_mode"])
+        mediamtx = next(
+            item
+            for item in payload["services"]
+            if item["service"] == "mediamtx"
+        )
+        self.assertEqual(mediamtx["restart_delta"], 0)
+        self.assertNotIn("restart_history_high", mediamtx["warnings"])
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_detects_restart_delta(self) -> None:
+        baseline = self._write_baseline(
+            {"mediamtx": 8, "continuity": 1, "egress-gateway": 0}
+        )
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+            ps_row("egress-gateway", "node-egress-1", health=""),
+        ]
+
+        payload, _calls = self._inspect(
+            rows,
+            [
+                "running\t0\tfalse\t10\n",
+                "running\t0\tfalse\t1\n",
+                "running\t0\tfalse\t0\n",
+            ],
+            restart_baseline=baseline,
+        )
+
+        self.assertEqual(payload["status"], "WARNING")
+        mediamtx = next(
+            item
+            for item in payload["services"]
+            if item["service"] == "mediamtx"
+        )
+        self.assertEqual(mediamtx["restart_delta"], 2)
+        self.assertIn("restart_delta_detected", mediamtx["warnings"])
+        self.assertNotIn("restart_history_high", mediamtx["warnings"])
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_counter_reset_is_generation_mismatch(self) -> None:
+        baseline = self._write_baseline(
+            {"mediamtx": 8, "continuity": 1, "egress-gateway": 0}
+        )
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+            ps_row("egress-gateway", "node-egress-1", health=""),
+        ]
+
+        payload, _calls = self._inspect(
+            rows,
+            [
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t1\n",
+                "running\t0\tfalse\t0\n",
+            ],
+            restart_baseline=baseline,
+        )
+
+        self.assertEqual(payload["status"], "WARNING")
+        mediamtx = next(
+            item
+            for item in payload["services"]
+            if item["service"] == "mediamtx"
+        )
+        self.assertIsNone(mediamtx["restart_delta"])
+        self.assertIn(
+            "restart_baseline_generation_mismatch",
+            mediamtx["warnings"],
+        )
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_rejects_incompatible_service_set(self) -> None:
+        baseline = self._write_baseline({"mediamtx": 0, "continuity": 0})
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+            ps_row("egress-gateway", "node-egress-1"),
+        ]
+
+        with self.assertRaises(MediaStackInspectError):
+            self._inspect(
+                rows,
+                [
+                    "running\t0\tfalse\t0\n",
+                    "running\t0\tfalse\t0\n",
+                    "running\t0\tfalse\t0\n",
+                ],
+                restart_baseline=baseline,
+            )
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_rejects_wrong_mode_and_invalid_count(self) -> None:
+        wrong_mode = self._write_baseline(
+            {"mediamtx": 0, "continuity": 0},
+            egress_mode="RELAY_ONLY",
+        )
+        with self.assertRaises(MediaStackInspectError):
+            self._inspect([], [], restart_baseline=wrong_mode)
+
+        invalid = {
+            "egress_mode": "DIRECT_PUSH",
+            "services": [
+                {"service": "mediamtx", "restart_count": True},
+                {"service": "continuity", "restart_count": 0},
+                {"service": "egress-gateway", "restart_count": 0},
+            ],
+        }
+        invalid_path = Path(self.tmp.name) / "invalid-baseline.json"
+        invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with self.assertRaises(MediaStackInspectError):
+            self._inspect([], [], restart_baseline=invalid_path)
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
+    def test_restart_baseline_does_not_forward_extra_fields(self) -> None:
+        baseline = self._write_baseline(
+            {"mediamtx": 0, "continuity": 0, "egress-gateway": 0},
+            extra={"token": "baseline-super-secret"},
+        )
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+            ps_row("egress-gateway", "node-egress-1"),
+        ]
+        payload, _calls = self._inspect(
+            rows,
+            [
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+                "running\t0\tfalse\t0\n",
+            ],
+            restart_baseline=baseline,
+        )
+        self.assertNotIn("baseline-super-secret", json.dumps(payload))
+
+    @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
     def test_relay_only_does_not_expect_egress_gateway(self) -> None:
-        self.assertEqual(expected_services("RELAY_ONLY"), ("mediamtx", "continuity"))
-        rows = [ps_row("mediamtx", "node-mediamtx-1"), ps_row("continuity", "node-continuity-1")]
+        self.assertEqual(
+            expected_services("RELAY_ONLY"), ("mediamtx", "continuity")
+        )
+        rows = [
+            ps_row("mediamtx", "node-mediamtx-1"),
+            ps_row("continuity", "node-continuity-1"),
+        ]
         payload, _calls = self._inspect(
             rows,
             ["running\t0\tfalse\t0\n", "running\t0\tfalse\t0\n"],
@@ -179,11 +410,16 @@ class MediaStackInspectionTest(unittest.TestCase):
         )
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["egress_mode"], "RELAY_ONLY")
-        self.assertEqual([item["service"] for item in payload["services"]], ["mediamtx", "continuity"])
+        self.assertEqual(
+            [item["service"] for item in payload["services"]],
+            ["mediamtx", "continuity"],
+        )
 
     @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "0"})
     def test_disabled_gateway_is_not_expected(self) -> None:
-        self.assertEqual(expected_services("DIRECT_PUSH"), ("mediamtx", "continuity"))
+        self.assertEqual(
+            expected_services("DIRECT_PUSH"), ("mediamtx", "continuity")
+        )
 
     @patch.dict(os.environ, {"EGRESS_GATEWAY_ENABLED": "1"})
     def test_inspect_failure_fails_closed_without_echoing_stderr(self) -> None:
@@ -194,9 +430,13 @@ class MediaStackInspectionTest(unittest.TestCase):
         ]
         responses = [
             completed(["docker", "compose"], json.dumps(rows)),
-            subprocess.CompletedProcess(["docker", "inspect"], 1, "", "secret-from-docker"),
+            subprocess.CompletedProcess(
+                ["docker", "inspect"], 1, "", "secret-from-docker"
+            ),
         ]
-        with patch("media_stack_inspect_cli._run_readonly", side_effect=responses):
+        with patch(
+            "media_stack_inspect_cli._run_readonly", side_effect=responses
+        ):
             with self.assertRaises(MediaStackInspectError) as raised:
                 inspect_media_stack(
                     compose_file=self.compose_file,
@@ -209,12 +449,16 @@ class MediaStackInspectionTest(unittest.TestCase):
 
 
 class MediaStackInspectCliTest(unittest.TestCase):
-    def test_session_egress_mode_is_required_when_environment_does_not_provide_it(self) -> None:
+    def test_session_egress_mode_is_required_when_environment_does_not_provide_it(
+        self,
+    ) -> None:
         stderr = io.StringIO()
         with patch.dict(os.environ, {}, clear=True):
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaises(SystemExit) as raised:
-                    media_stack_inspect_main(["--compose-file", "/tmp/missing.yml"])
+                    media_stack_inspect_main(
+                        ["--compose-file", "/tmp/missing.yml"]
+                    )
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--egress-mode is required", stderr.getvalue())
 
@@ -222,13 +466,21 @@ class MediaStackInspectCliTest(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             result = media_stack_inspect_main(
-                ["--compose-file", "/definitely/missing.yml", "--egress-mode", "DIRECT_PUSH"]
+                [
+                    "--compose-file",
+                    "/definitely/missing.yml",
+                    "--egress-mode",
+                    "DIRECT_PUSH",
+                ]
             )
 
         self.assertEqual(result, 3)
         self.assertEqual(
             json.loads(output.getvalue()),
-            {"reason": "media stack inspection unavailable", "status": "UNAVAILABLE"},
+            {
+                "reason": "media stack inspection unavailable",
+                "status": "UNAVAILABLE",
+            },
         )
 
     def test_invalid_env_threshold_is_argument_error(self) -> None:
@@ -237,10 +489,48 @@ class MediaStackInspectCliTest(unittest.TestCase):
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaises(SystemExit) as raised:
                     media_stack_inspect_main(
-                        ["--compose-file", "/tmp/missing.yml", "--egress-mode", "DIRECT_PUSH"]
+                        [
+                            "--compose-file",
+                            "/tmp/missing.yml",
+                            "--egress-mode",
+                            "DIRECT_PUSH",
+                        ]
                     )
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("positive integer", stderr.getvalue())
+
+    def test_invalid_restart_baseline_is_generic_and_non_secret(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-baseline-cli-") as tmp:
+            compose = Path(tmp) / "docker-compose.control.yml"
+            compose.write_text("services: {}\n", encoding="utf-8")
+            baseline = Path(tmp) / "baseline.json"
+            baseline.write_text(
+                '{"token":"baseline-super-secret","services":[]}',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = media_stack_inspect_main(
+                    [
+                        "--compose-file",
+                        str(compose),
+                        "--egress-mode",
+                        "DIRECT_PUSH",
+                        "--restart-baseline",
+                        str(baseline),
+                    ]
+                )
+
+        self.assertEqual(result, 3)
+        rendered = output.getvalue()
+        self.assertNotIn("baseline-super-secret", rendered)
+        self.assertEqual(
+            json.loads(rendered),
+            {
+                "reason": "media stack inspection unavailable",
+                "status": "UNAVAILABLE",
+            },
+        )
 
 
 if __name__ == "__main__":
