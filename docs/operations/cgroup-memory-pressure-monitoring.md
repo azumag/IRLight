@@ -2,7 +2,7 @@
 
 Issue #11 の host-level pressure 監視を補完するため、service/container 単位の cgroup v2 memory control files を read-only で確認する。
 
-Host の `/proc/meminfo` が正常でも、個別 cgroup の `memory.max` に近づくと対象 workload だけが reclaim/OOM の影響を受ける。また `memory.high` を設定している環境では、hard limit 到達前から throttle と強い reclaim pressure が発生するため、対象 cgroup が明確な環境では companion check として利用する。
+Host の `/proc/meminfo` が正常でも、個別 cgroup の `memory.max` に近づくと対象 workload だけが reclaim/OOM の影響を受ける。また `memory.high` を設定している環境では、hard limit 到達前から throttle と強い reclaim pressure が発生するため、対象 cgroup が明確な環境では companion check として利用する。現在値だけでは過去の OOM / reclaim 発生を確認できないため、`memory.events` の累積 counter も別 check で前回 snapshot と比較できる。
 
 ## Hard-limit check (`memory.max`)
 
@@ -34,7 +34,37 @@ Linux cgroup v2 の `memory.high` は hard cap ではなく memory usage throttl
 
 有限の `memory.high=0` は unthrottled allocation headroom がないため `CRITICAL` (`usage_percent=NO_HEADROOM`) とする。`memory.high=max` は指定した cgroup 自身に local high boundary がないため `OK` (`usage_percent=NA`) とするが、`memory.max`、parent cgroup、swap、host memory が安全という意味ではない。
 
-両 check とも欠落、複数行、非数値、signed 64-bit 範囲外は `UNKNOWN` に fail-closed する。control file は変更せず、reclaim、OOM kill、process/container restart、cache drop、`memory.high` / `memory.max` の書換えを行わない。
+これら2つの boundary check は欠落、複数行、非数値、signed 64-bit 範囲外を `UNKNOWN` に fail-closed する。control file は変更せず、reclaim、OOM kill、process/container restart、cache drop、`memory.high` / `memory.max` の書換えを行わない。
+
+## Event-delta check (`memory.events`)
+
+`memory.events` の counter は累積値なので、生の `oom_kill > 0` 等をそのまま alert 条件にすると一度の過去障害で永続的に alert し続ける。`check-cgroup-memory-events.sh` は同一 cgroup generation の過去 snapshot を baseline として明示的に渡し、その後に増えた event だけを評価する。
+
+```bash
+bash scripts/check-cgroup-memory-events.sh \
+  /sys/fs/cgroup/<target>/memory.events \
+  /run/irlight-monitor/<target>.memory.events.baseline
+```
+
+第1引数は `IRLIGHT_CGROUP_MEMORY_EVENTS_PATH`、第2引数は `IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH` でも指定できる。baseline は監視側が事前に read-only snapshot として保存・更新するもので、この script 自身は cgroup control file も baseline file も作成・更新しない。
+
+判定は baseline から current への増分に限定する。
+
+- `oom` / `oom_kill` / `oom_group_kill` が1以上増加: `CRITICAL` (`oom_activity`)
+- `low` / `high` / `max` が1以上増加し、OOM系増分なし: `WARNING` (`memory_pressure_activity`)
+- 監視対象 counter の増分がすべて0: `OK`
+- current が baseline より小さい counter がある: `UNKNOWN` (`counter_reset`)。cgroup の再作成や baseline の世代不一致を正常扱いしない
+- snapshot 欠落、必須 counter 欠落、重複・非数値・signed 64-bit 範囲外など: `UNKNOWN`
+
+`low` / `high` / `max` は reclaim / throttle / hard-boundary activity の発生証跡として warning にし、実 OOM / kill が観測されたときだけ critical に格上げする。kernel version 差を考慮して `oom_group_kill` は任意 counter とし、存在しない場合は0として扱う。一方、将来 kernel が未知の counter を追加しても、その record が単一の非負整数であることを検証した上で、この check が意味を定義していない counter は判定から除外する。
+
+出力例:
+
+```text
+IRLIGHT_CGROUP_MEMORY_EVENTS status=CRITICAL reason=oom_activity low_delta=0 high_delta=2 max_delta=1 oom_delta=1 oom_kill_delta=1 oom_group_kill_delta=0
+```
+
+この check は「baseline 取得後に event が発生したか」を示すだけで、現在の memory headroom や pressure が継続中かは証明しない。`memory.current` / `memory.max` / `memory.high` と cgroup PSI を併用し、baseline は必ず同じ監視対象 cgroup generation に対応させる。監視側が新しい baseline を採用するタイミングは alert の確認・記録方針と合わせて定義し、script が自動で履歴を消費したり reset したりしないようにする。
 
 ## Output / exit code
 
@@ -52,20 +82,20 @@ IRLIGHT_CGROUP_MEMORY_HIGH_PRESSURE status=OK usage_percent=42 current_bytes=440
 
 | exit | status | meaning |
 | ---: | --- | --- |
-| 0 | `OK` | finite boundary に対する usage が warning 未満、または local boundary が `max` |
-| 1 | `WARNING` | usage が warning 以上 critical 未満 |
-| 2 | `CRITICAL` | usage が critical 以上、finite boundary 0、または current が finite boundary を超過 |
-| 3 | `UNKNOWN` | 対象を安全に読み取り・評価できない |
+| 0 | `OK` | finite boundary に対する usage が warning 未満、local boundary が `max`、または監視対象 event の新規増分がない |
+| 1 | `WARNING` | usage が warning 以上 critical 未満、または OOM を伴わない `low` / `high` / `max` event が増加 |
+| 2 | `CRITICAL` | usage が critical 以上、finite boundary 0、current が finite boundary を超過、または OOM 系 event が増加 |
+| 3 | `UNKNOWN` | 対象を安全に読み取り・評価できない、または baseline と current の counter 世代が整合しない |
 
 ## Scope
 
-これらの check は指定した cgroup の local `memory.current` と、明示した `memory.max` または `memory.high` だけを評価する。次の signal は別途確認する。
+これらの check は指定した cgroup の local `memory.current`、明示した `memory.max` / `memory.high`、および明示した2時点の `memory.events` だけを評価する。次の signal は別途確認する。
 
 - host 全体の `MemAvailable`: `scripts/check-memory-pressure.sh`
 - host の memory/IO stall: `scripts/check-psi-pressure.sh`
 - service/container の PID limit: `scripts/check-cgroup-pid-pressure.sh`
+- service/container の stall: `scripts/check-cgroup-psi-pressure.sh`
 - parent cgroup の effective memory constraints
-- `memory.events` の OOM / OOM kill / high counter の時間差分
 - swap limit / usage
 
 root/current cgroup を機械的に選ぶと、監視対象 workload と異なる階層を見たり local boundary が `max` だけなのを見て安全と誤認する可能性がある。このため既定の `check-host-pressure.sh` へ自動追加せず、監視対象 service/container の cgroup を運用側で明示して opt-in する。
@@ -75,8 +105,10 @@ root/current cgroup を機械的に選ぶと、監視対象 workload と異な�
 ```bash
 python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_memory_events_check.py' -v
 bash -n scripts/check-cgroup-memory-pressure.sh
 bash -n scripts/check-cgroup-memory-high-pressure.sh
+bash -n scripts/check-cgroup-memory-events.sh
 ```
 
 監視結果を破壊的な自動復旧へ直結させず、まず alert と診断へ接続する。復旧操作は対象 Session / process / state ownership を確認した runbook に従う。
