@@ -48,11 +48,33 @@ exit code は次の意味を持つ。
 | code | 意味 |
 | --- | --- |
 | `0` | 現時点で問題・警告なし |
-| `1` | 警告のみ。典型例は lifetime restart count が閾値以上 |
+| `1` | 警告のみ。baseline 未指定時は lifetime restart count 高止まり、baseline 指定時は観測区間の restart 増加や generation mismatch 等 |
 | `2` | `restarting`、非 running、OOMKilled、unhealthy、期待 service 欠落などを検出 |
-| `3` | Docker / Compose 状態を安全に取得できず判定不能 |
+| `3` | Docker / Compose 状態または明示 baseline を安全に取得・解釈できず判定不能 |
 
-`NODE_RESTART_WARNING_COUNT` の既定値は `3`。これは **lifetime restart count** なので、値が大きいだけで「現在 crash loop 中」と断定してはいけない。現在の `state=restarting`、heartbeat / Session event の時刻、直近の運用変更と突き合わせる。
+`NODE_RESTART_WARNING_COUNT` の既定値は `3`。baseline を指定しない従来モードではこれは **lifetime restart count** なので、値が大きいだけで「現在 crash loop 中」と断定してはいけない。現在の `state=restarting`、heartbeat / Session event の時刻、直近の運用変更と突き合わせる。
+
+### restart count の観測区間 delta
+
+短い観測区間で restart が新たに増えたかを機械的に判定したい場合だけ、**直前に保存した同 inspector の redacted JSON** を `--restart-baseline`（または `NODE_RESTART_BASELINE_PATH`）へ明示する。
+
+```sh
+docker compose \
+  -f docker-compose.node.yml \
+  -f docker-compose.node.public.yml \
+  exec -T node-agent \
+  python3 /opt/irlight/media_stack_inspect_cli.py \
+    --egress-mode DIRECT_PUSH \
+    --restart-baseline /run/irlight-monitor/media-stack.previous.json
+```
+
+baseline は operator / monitoring 側が保存・ローテーションする。inspector 自身は baseline を作成・更新・削除しない。baseline は同じ `egress_mode` と expected service 集合の inspector 出力でなければならず、欠損・不正 JSON・service 不一致・不正な `restart_count` は `UNAVAILABLE` として fail-closed にする。baseline の余分なフィールドは出力へ転送しないが、baseline 自体には redacted inspector JSON 以外を混ぜない。
+
+baseline mode では service ごとに `restart_delta` を追加する。current と baseline が同じなら `restart_delta=0` であり、lifetime count が既定閾値以上でも過去の restart だけを理由に `restart_history_high` を出し続けない。current が増えていれば `restart_delta_detected` を WARNING とする。
+
+current の restart count が baseline より小さい場合、container recreate 等で世代が変わった可能性があり、差分を負数として扱わず `restart_delta=null` と `restart_baseline_generation_mismatch` を WARNING にする。deploy / container generation を確認してから新しい baseline を採取する。restart count だけでは、再作成後に同じ count へ偶然一致した世代変更までは証明できないため、baseline の世代管理は monitoring/operator 側の責務として残す。
+
+baseline file の path や内容は inspector 出力へ含めない。Issue / incident note に baseline JSON 全体を貼るのではなく、必要な status、service、restart count / delta、観測時刻だけを記録する。
 
 ## 3. 判定の読み方
 
@@ -64,7 +86,7 @@ exit code は次の意味を持つ。
 - `unhealthy`: process は生存していても healthcheck が成立していない。依存先・media path の状態と分けて確認する。
 - `not_running`: exit code と直前の deploy/config 変更を確認する。
 
-restart count を比較するために同 inspector を時間を空けて再実行してよい。ただし本 runbook は自動ポーリングや自動復旧を要求しない。
+restart count を比較するために同 inspector を時間を空けて再実行してよい。自動比較する場合は前節の baseline mode を使う。ただし本 runbook は自動ポーリングや自動復旧を要求しない。
 
 ### `egress-gateway`
 
@@ -72,7 +94,7 @@ restart count を比較するために同 inspector を時間を空けて再実�
 
 まず `/state/egress.json` の既存 redacted status と Session event を照合し、terminal failure なら配信先 credential / concurrent publisher / destination policy を直す。terminal failure を Docker restart loop に変換しない。
 
-`--egress-mode RELAY_ONLY` または `EGRESS_GATEWAY_ENABLED=0` では inspector は `egress-gateway` を expected service に含めない。
+`--egress-mode RELAY_ONLY` または `EGRESS_GATEWAY_ENABLED=0` では inspector は `egress-gateway` を expected service に含めない。そのため別 mode / service 集合で採取した restart baseline を再利用しない。
 
 ### `node-agent`
 
@@ -98,7 +120,7 @@ docker volume prune ...
 - **直近 image / config 変更後から発生**: [production deploy preflight](../production-deploy-preflight.md) の記録と既知正常 image を確認し、rollback の判断材料を揃える。実 rollback は別の明示的な運用判断として行う。
 - **OOM**: host memory、container limit、同時 Session / process 数を確認する。勝手に instance size を上げたり外部課金を増やさない。
 - **egress terminal failure**: destination credential / conflict / policy を解消し、terminal 状態を通常の reconnect と混同しない。
-- **原因不明 / inspector `UNAVAILABLE`**: Docker daemon / socket / Compose control file の可用性を確認し、read-only で判定できない間は restart に進まない。
+- **原因不明 / inspector `UNAVAILABLE`**: Docker daemon / socket / Compose control file / restart baseline の可用性を確認し、read-only で判定できない間は restart に進まない。
 
 復旧後は heartbeat、Session lifecycle、media health を別々に確認する。プロセスが `running` に戻ったことだけで Session 復旧完了とは扱わない。
 
@@ -109,7 +131,8 @@ Issue / incident note には secret を含めず、最低限次を残す。
 - 対象 Session / Node の ID
 - inspector の `status` と各 service の redacted state
 - inspector に指定した `egress_mode`
-- restart count を比較した場合は観測時刻と差分
+- restart count を比較した場合は baseline / current の観測時刻と `restart_delta`
+- generation mismatch が出た場合は直近 deploy / recreate の有無
 - OOM / unhealthy / terminal egress failure の有無
 - 直近 deploy / config 変更の有無
 - 実施した復旧操作と、その後の heartbeat / Session / media health の確認結果
