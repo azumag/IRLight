@@ -86,15 +86,27 @@ bash scripts/check-cgroup-runtime-pressure.sh \
 
 baseline 未指定時は `memory_events_status=NOT_CONFIGURED` と表示し、それ自体では aggregate を悪化させない。baseline を指定した場合は `memory.events` delta を同じ優先順位へ含める。aggregate 自身は baseline を作成・更新しない。
 
+単一 process の file descriptor soft limit も同じ runtime 診断へ含めたい場合は、監視対象 PID の `/proc/<pid>` directory を第3引数（または `IRLIGHT_CGROUP_RUNTIME_PROCESS_DIR`）で明示する。cgroup には複数 process が存在し得るため aggregate は代表 PID を自動選択しない。
+
+```bash
+PID=<target-pid>
+bash scripts/check-cgroup-runtime-pressure.sh \
+  /sys/fs/cgroup/<target> \
+  "" \
+  "/proc/${PID}"
+```
+
+`memory.events` baseline と process の両方を利用する場合は第2・第3引数をともに指定する。process 未指定時は `process_fd_status=NOT_CONFIGURED` と表示し、それ自体では aggregate を悪化させない。process を指定した場合は既存 `check-process-fd-pressure.sh` で `/proc/<pid>/fd` と `/proc/<pid>/limits` を read-only 評価し、その結果を同じ優先順位へ含める。対象 process が消失した場合や limits を安全に解釈できない場合は `UNKNOWN` に fail-closed する。
+
 各 component は既定10秒で bounded execution とし、`IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS` で 1〜300 秒へ変更できる。timeout、不正な timeout 設定、`timeout` utility 不在、契約外 exit code は `UNKNOWN` に fail-closed し、無期限実行へフォールバックしない。ある component が `UNKNOWN` でも別 component の確定した `CRITICAL` は隠さない。
 
 出力例:
 
 ```text
-IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED
+IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED
 ```
 
-この aggregate は診断のみであり、cgroup control file、baseline、process/container、resource limit を変更しない。対象 workload の cgroup path と baseline generation の選択は deployment/operator 側の責任範囲に残す。
+この aggregate は診断のみであり、cgroup control file、baseline、process/container、file descriptor、resource limit を変更しない。対象 workload の cgroup path、baseline generation、必要なら監視対象 process の選択は deployment/operator 側の責任範囲に残す。
 
 ## Output / exit code
 
@@ -119,7 +131,7 @@ IRLIGHT_CGROUP_MEMORY_HIGH_PRESSURE status=OK usage_percent=42 current_bytes=440
 
 ## Scope
 
-これらの check は指定した cgroup の local `memory.current`、明示した `memory.max` / `memory.high`、および明示した2時点の `memory.events` だけを評価する。次の signal は別途確認する。
+これらの check は指定した cgroup の local `memory.current`、明示した `memory.max` / `memory.high`、明示した2時点の `memory.events`、および opt-in 時に明示した単一 process の file descriptor pressure だけを評価する。次の signal は別途確認する。
 
 - host 全体の `MemAvailable`: `scripts/check-memory-pressure.sh`
 - host の memory/IO stall: `scripts/check-psi-pressure.sh`
@@ -127,8 +139,9 @@ IRLIGHT_CGROUP_MEMORY_HIGH_PRESSURE status=OK usage_percent=42 current_bytes=440
 - service/container の stall: `scripts/check-cgroup-psi-pressure.sh`
 - parent cgroup の effective memory constraints
 - swap limit / usage
+- cgroup 内の他 process の個別 RLIMIT / descriptor pressure
 
-root/current cgroup を機械的に選ぶと、監視対象 workload と異なる階層を見たり local boundary が `max` だけなのを見て安全と誤認する可能性がある。このため既定の `check-host-pressure.sh` へ自動追加せず、監視対象 service/container の cgroup を運用側で明示して opt-in する。
+root/current cgroup や代表 PID を機械的に選ぶと、監視対象 workload と異なる階層・process を見たり local boundary が `max` だけなのを見て安全と誤認する可能性がある。このため既定の `check-host-pressure.sh` へ自動追加せず、監視対象 service/container の cgroup と必要な process を運用側で明示して opt-in する。
 
 ## Verification
 
@@ -137,10 +150,12 @@ python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -
 python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_events_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_runtime_pressure.py' -v
+python -m unittest discover -s tests -p 'test_process_fd_pressure_check.py' -v
 bash -n scripts/check-cgroup-memory-pressure.sh
 bash -n scripts/check-cgroup-memory-high-pressure.sh
 bash -n scripts/check-cgroup-memory-events.sh
 bash -n scripts/check-cgroup-runtime-pressure.sh
+bash -n scripts/check-process-fd-pressure.sh
 ```
 
 監視結果を破壊的な自動復旧へ直結させず、まず alert と診断へ接続する。復旧操作は対象 Session / process / state ownership を確認した runbook に従う。
