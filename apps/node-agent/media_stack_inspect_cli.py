@@ -110,6 +110,44 @@ def _parse_inspect_line(output: str) -> tuple[str, int, bool, int]:
     return state, exit_code, oom_value == "true", restart_count
 
 
+def _load_restart_baseline(
+    path: Path, *, egress_mode: str, services: tuple[str, ...]
+) -> dict[str, int]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MediaStackInspectError("restart baseline is unavailable") from exc
+
+    if not isinstance(payload, dict) or payload.get("egress_mode") != egress_mode:
+        raise MediaStackInspectError("restart baseline is incompatible")
+
+    rows = payload.get("services")
+    if not isinstance(rows, list):
+        raise MediaStackInspectError("restart baseline is incompatible")
+
+    expected = set(services)
+    baseline: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise MediaStackInspectError("restart baseline is incompatible")
+        service = row.get("service")
+        restart_count = row.get("restart_count")
+        if (
+            not isinstance(service, str)
+            or service not in expected
+            or service in baseline
+            or isinstance(restart_count, bool)
+            or not isinstance(restart_count, int)
+            or restart_count < 0
+        ):
+            raise MediaStackInspectError("restart baseline is incompatible")
+        baseline[service] = restart_count
+
+    if set(baseline) != expected:
+        raise MediaStackInspectError("restart baseline is incompatible")
+    return baseline
+
+
 def inspect_media_stack(
     *,
     compose_file: Path,
@@ -117,11 +155,19 @@ def inspect_media_stack(
     egress_mode: str,
     timeout_seconds: float,
     restart_warning_count: int,
+    restart_baseline: Path | None = None,
 ) -> dict[str, Any]:
     if not compose_file.is_file():
         raise MediaStackInspectError("compose control file is unavailable")
 
     services = expected_services(egress_mode)
+    baseline = (
+        _load_restart_baseline(
+            restart_baseline, egress_mode=egress_mode, services=services
+        )
+        if restart_baseline is not None
+        else None
+    )
     env = dict(os.environ)
     env["COMPOSE_PROJECT_NAME"] = project_name
     ps = _run_readonly(
@@ -157,18 +203,19 @@ def inspect_media_stack(
         row = by_service.get(service)
         if row is None:
             problem_count += 1
-            summaries.append(
-                {
-                    "service": service,
-                    "state": "missing",
-                    "health": None,
-                    "exit_code": None,
-                    "oom_killed": None,
-                    "restart_count": None,
-                    "problems": ["missing"],
-                    "warnings": [],
-                }
-            )
+            summary: dict[str, Any] = {
+                "service": service,
+                "state": "missing",
+                "health": None,
+                "exit_code": None,
+                "oom_killed": None,
+                "restart_count": None,
+                "problems": ["missing"],
+                "warnings": [],
+            }
+            if baseline is not None:
+                summary["restart_delta"] = None
+            summaries.append(summary)
             continue
 
         container_name = row.get("Name")
@@ -208,26 +255,38 @@ def inspect_media_stack(
             problems.append("unhealthy")
         elif health == "starting":
             warnings.append("health_starting")
-        if restart_count >= restart_warning_count:
-            warnings.append("restart_history_high")
+
+        restart_delta: int | None = None
+        if baseline is None:
+            if restart_count >= restart_warning_count:
+                warnings.append("restart_history_high")
+        else:
+            previous_restart_count = baseline[service]
+            if restart_count < previous_restart_count:
+                warnings.append("restart_baseline_generation_mismatch")
+            else:
+                restart_delta = restart_count - previous_restart_count
+                if restart_delta > 0:
+                    warnings.append("restart_delta_detected")
 
         problem_count += len(problems)
         warning_count += len(warnings)
-        summaries.append(
-            {
-                "service": service,
-                "state": state,
-                "health": health or None,
-                "exit_code": exit_code,
-                "oom_killed": oom_killed,
-                "restart_count": restart_count,
-                "problems": problems,
-                "warnings": warnings,
-            }
-        )
+        summary = {
+            "service": service,
+            "state": state,
+            "health": health or None,
+            "exit_code": exit_code,
+            "oom_killed": oom_killed,
+            "restart_count": restart_count,
+            "problems": problems,
+            "warnings": warnings,
+        }
+        if baseline is not None:
+            summary["restart_delta"] = restart_delta
+        summaries.append(summary)
 
     status = "PROBLEM" if problem_count else "WARNING" if warning_count else "OK"
-    return {
+    result: dict[str, Any] = {
         "status": status,
         "egress_mode": egress_mode,
         "problem_count": problem_count,
@@ -235,6 +294,9 @@ def inspect_media_stack(
         "restart_warning_count": restart_warning_count,
         "services": summaries,
     }
+    if baseline is not None:
+        result["restart_baseline_mode"] = True
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -267,6 +329,14 @@ def main(argv: list[str] | None = None) -> int:
         default=os.getenv("NODE_RESTART_WARNING_COUNT", "3"),
         help="Lifetime restart count that warrants operator correlation (default: env or 3)",
     )
+    parser.add_argument(
+        "--restart-baseline",
+        default=os.getenv("NODE_RESTART_BASELINE_PATH"),
+        help=(
+            "Previous redacted inspector JSON for opt-in restart-count delta "
+            "(default: NODE_RESTART_BASELINE_PATH)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.egress_mode is None:
         parser.error("--egress-mode is required unless NODE_EGRESS_MODE is set")
@@ -278,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
             egress_mode=args.egress_mode,
             timeout_seconds=args.command_timeout_seconds,
             restart_warning_count=args.restart_warning_count,
+            restart_baseline=Path(args.restart_baseline)
+            if args.restart_baseline
+            else None,
         )
     except MediaStackInspectError:
         print(
