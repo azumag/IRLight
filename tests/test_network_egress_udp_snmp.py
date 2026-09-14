@@ -57,6 +57,8 @@ class NetworkEgressUdpSnmpTest(unittest.TestCase):
         baseline: str | None = None,
         ipv6_content: str | None = None,
         udp_checker_body: str | None = None,
+        interface_mode: str | None = None,
+        interface_checker_body: str | None = None,
         timeout_seconds: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
         with tempfile.TemporaryDirectory(prefix="irlight-network-egress-udp-") as tmp:
@@ -68,11 +70,14 @@ class NetworkEgressUdpSnmpTest(unittest.TestCase):
                 "check-network-link-health.sh",
                 "check-ipv4-default-route.sh",
                 "check-ipv6-default-route.sh",
+                "check-network-interface-errors.sh",
                 "check-udp-snmp-errors.sh",
             ):
                 target = scripts / name
                 if name == "check-udp-snmp-errors.sh" and udp_checker_body is not None:
                     target.write_text(udp_checker_body, encoding="utf-8")
+                elif name == "check-network-interface-errors.sh" and interface_checker_body is not None:
+                    target.write_text(interface_checker_body, encoding="utf-8")
                 else:
                     target.write_text((SCRIPTS / name).read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -96,6 +101,8 @@ class NetworkEgressUdpSnmpTest(unittest.TestCase):
                 baseline_path = root / "snmp.baseline"
                 baseline_path.write_text(baseline, encoding="utf-8")
                 env["IRLIGHT_UDP_SNMP_BASELINE_PATH"] = str(baseline_path)
+            if interface_mode is not None:
+                env["IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE"] = interface_mode
             if timeout_seconds is not None:
                 env["IRLIGHT_NETWORK_COMPONENT_TIMEOUT_SECONDS"] = timeout_seconds
 
@@ -178,6 +185,22 @@ class NetworkEgressUdpSnmpTest(unittest.TestCase):
         self.assertEqual(critical.returncode, 2)
         self.assertIn("status=CRITICAL", critical.stdout)
         self.assertIn("udp_snmp_errors_status=UNKNOWN", critical.stdout)
+
+    def test_interface_and_udp_opt_ins_report_both_statuses(self) -> None:
+        result, _ = self.run_check(
+            mode="enabled",
+            current=snmp_record(InErrors=1),
+            baseline=snmp_record(),
+            interface_mode="enabled",
+            interface_checker_body="#!/usr/bin/env bash\nexit 2\n",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_NETWORK_EGRESS_HEALTH status=CRITICAL link_status=OK "
+            "ipv4_route_status=OK ipv6_route_status=OK interface_errors_status=CRITICAL "
+            "udp_snmp_errors_status=WARNING family=dual",
+        )
 
     def test_udp_component_timeout_becomes_unknown(self) -> None:
         result, elapsed = self.run_check(
