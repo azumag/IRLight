@@ -6,6 +6,7 @@ export LC_ALL=C
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cgroup_dir="${1:-${IRLIGHT_CGROUP_RUNTIME_DIR:-}}"
 events_baseline_path="${2:-${IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH:-}}"
+process_dir="${3:-${IRLIGHT_CGROUP_RUNTIME_PROCESS_DIR:-}}"
 component_timeout_seconds="${IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 unknown() {
@@ -111,6 +112,16 @@ if [[ -n "$events_baseline_path" ]]; then
   memory_events_status="$(status_for_code "$memory_events_code")"
 fi
 
+process_fd_status="NOT_CONFIGURED"
+process_fd_code=""
+if [[ -n "$process_dir" ]]; then
+  process_fd_code="$(run_component \
+    "$script_dir/check-process-fd-pressure.sh" \
+    "$process_dir/fd" \
+    "$process_dir/limits")"
+  process_fd_status="$(status_for_code "$process_fd_code")"
+fi
+
 overall_code=0
 merge_code "$memory_max_code"
 merge_code "$memory_high_code"
@@ -119,13 +130,17 @@ merge_code "$psi_code"
 if [[ -n "$memory_events_code" ]]; then
   merge_code "$memory_events_code"
 fi
+if [[ -n "$process_fd_code" ]]; then
+  merge_code "$process_fd_code"
+fi
 
 overall_status="$(status_for_code "$overall_code")"
-printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s\n' \
+printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s\n' \
   "$overall_status" \
   "$(status_for_code "$memory_max_code")" \
   "$(status_for_code "$memory_high_code")" \
   "$(status_for_code "$pids_code")" \
   "$(status_for_code "$psi_code")" \
-  "$memory_events_status"
+  "$memory_events_status" \
+  "$process_fd_status"
 exit "$overall_code"

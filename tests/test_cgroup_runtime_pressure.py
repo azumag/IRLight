@@ -22,6 +22,8 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         pids_max: str = "100",
         current_events: dict[str, int] | None = None,
         baseline_events: dict[str, int] | None = None,
+        process_fd_count: int | None = None,
+        process_limits: str | None = None,
         env_overrides: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-cgroup-runtime-pressure-") as temporary:
@@ -67,13 +69,29 @@ class CgroupRuntimePressureTest(unittest.TestCase):
                     encoding="utf-8",
                 )
 
+            process_dir: Path | None = None
+            if process_fd_count is not None or process_limits is not None:
+                process_dir = root / "process"
+                fd_dir = process_dir / "fd"
+                fd_dir.mkdir(parents=True)
+                for fd_number in range(process_fd_count or 0):
+                    (fd_dir / str(fd_number)).write_text("", encoding="utf-8")
+                (process_dir / "limits").write_text(
+                    process_limits
+                    if process_limits is not None
+                    else "Max open files            100                  200                  files\n",
+                    encoding="utf-8",
+                )
+
             env = os.environ.copy()
             if env_overrides:
                 env.update(env_overrides)
 
             command = ["bash", str(SCRIPT), str(cgroup_dir)]
-            if baseline_path is not None:
-                command.append(str(baseline_path))
+            if baseline_path is not None or process_dir is not None:
+                command.append(str(baseline_path) if baseline_path is not None else "")
+            if process_dir is not None:
+                command.append(str(process_dir))
             return subprocess.run(
                 command,
                 env=env,
@@ -97,12 +115,12 @@ class CgroupRuntimePressureTest(unittest.TestCase):
             "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN reason=target_required",
         )
 
-    def test_all_stateless_components_ok_without_events_baseline(self) -> None:
+    def test_all_stateless_components_ok_without_optional_targets(self) -> None:
         result = self._run()
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
         )
 
     def test_warning_component_sets_warning(self) -> None:
@@ -137,6 +155,26 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertIn("status=UNKNOWN", result.stdout)
         self.assertIn("memory_events_status=UNKNOWN", result.stdout)
 
+    def test_process_fd_warning_is_included_when_process_is_explicit(self) -> None:
+        result = self._run(process_fd_count=85)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("process_fd_status=WARNING", result.stdout)
+        self.assertIn("memory_events_status=NOT_CONFIGURED", result.stdout)
+
+    def test_process_fd_critical_contributes_to_aggregate_precedence(self) -> None:
+        result = self._run(process_fd_count=95, memory_max="invalid")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("memory_max_status=UNKNOWN", result.stdout)
+        self.assertIn("process_fd_status=CRITICAL", result.stdout)
+
+    def test_invalid_process_limits_fail_closed(self) -> None:
+        result = self._run(process_fd_count=10, process_limits="invalid\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("process_fd_status=UNKNOWN", result.stdout)
+
     def test_invalid_timeout_fails_closed_without_unbounded_fallback(self) -> None:
         result = self._run(
             env_overrides={"IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS": "0"}
@@ -144,7 +182,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED",
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN memory_max_status=UNKNOWN memory_high_status=UNKNOWN pids_status=UNKNOWN psi_status=UNKNOWN memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED",
         )
 
 
