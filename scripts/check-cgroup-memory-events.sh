@@ -27,13 +27,19 @@ parse_events() {
   local array_name="$2"
   local path_reason="$3"
   local -n target="$array_name"
-  local key value extra canonical
+  local -a lines=()
+  local line key value extra canonical
 
   [[ -n "$path" && -f "$path" && -r "$path" ]] || unknown "$path_reason"
+  mapfile -t lines < "$path" || unknown "$path_reason"
 
-  while IFS=$' \t' read -r key value extra; do
-    [[ -n "${key:-}" ]] || continue
-    if [[ -z "${value:-}" || -n "${extra:-}" ]] || ! is_uint64_bounded "$value"; then
+  for line in "${lines[@]}"; do
+    [[ -n "$line" ]] || continue
+    key=""
+    value=""
+    extra=""
+    read -r key value extra <<<"$line" || unknown invalid_events_record
+    if [[ -z "${key:-}" || -z "${value:-}" || -n "${extra:-}" ]] || ! is_uint64_bounded "$value"; then
       unknown invalid_events_record
     fi
     canonical=$((10#$value))
@@ -48,7 +54,7 @@ parse_events() {
         # future counter that this check does not interpret.
         ;;
     esac
-  done < "$path"
+  done
 
   for key in low high max oom oom_kill; do
     [[ -n "${target[$key]+x}" ]] || unknown missing_required_counter
