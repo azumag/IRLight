@@ -89,10 +89,12 @@ class ResolverConfigCheckTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 3)
                 self.assertIn("reason=invalid_nameserver_address", result.stdout)
 
-    def test_out_of_range_ipv4_is_unknown(self):
-        result = self.run_check("nameserver 999.1.1.1\n")
-        self.assertEqual(result.returncode, 3)
-        self.assertIn("reason=invalid_nameserver_address", result.stdout)
+    def test_malformed_ipv4_is_unknown(self):
+        for address in ("999.1.1.1", "1.2.3.4.", "1..2.3"):
+            with self.subTest(address=address):
+                result = self.run_check(f"nameserver {address}\n")
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("reason=invalid_nameserver_address", result.stdout)
 
     def test_environment_path_override_is_supported(self):
         with tempfile.TemporaryDirectory() as tmp:
