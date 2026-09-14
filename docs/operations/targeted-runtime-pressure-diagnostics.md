@@ -1,8 +1,8 @@
 # Targeted runtime pressure diagnostics
 
-Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link / route を明示できる場合だけ使う read-only companion checks を提供する。
+Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link / route / resolver 設定を明示できる場合だけ使う read-only companion checks を提供する。
 
-`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface・その IPv4 egress route が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state、同 interface の IPv4 default route を別々に確認する。
+`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface・その IPv4 egress route・ローカル resolver 設定が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state、同 interface の IPv4 default route、ローカル resolver 設定の存在と構文を別々に確認する。
 
 ## cgroup v2 PSI
 
@@ -98,20 +98,44 @@ IRLIGHT_IPV4_DEFAULT_ROUTE status=OK route=default
 
 この check は IPv4 default route の存在だけを確認する。route が実際に packet を通すこと、policy routing / network namespace / firewall / NAT / DNS / IPv6 route / remote RTMP endpoint の到達性は証明しない。IPv6-only または policy-routing-only の deployment に機械的に適用せず、その topology 用の別 signal を定義する。gateway、interface 名、route table path は output に反射しない。
 
+## Resolver configuration presence
+
+link と route が正常でも、hostname を使う RTMP/RTMPS destination ではローカル resolver 設定が欠落・破損していると名前解決へ進めない。`check-resolver-config.sh` は既定で `/etc/resolv.conf` を read-only で検査し、少なくとも1件の構文上妥当な IPv4 / IPv6 `nameserver` literal が存在するかだけを確認する。
+
+```bash
+bash scripts/check-resolver-config.sh /etc/resolv.conf
+```
+
+fixture / container namespace などで対象を明示する場合は第1引数または `IRLIGHT_RESOLVER_CONFIG_PATH` を利用できる。判定 contract は次の通り。
+
+- 1件以上の妥当な `nameserver` literal: `OK`。出力は件数だけを返し、address や path は反射しない
+- `nameserver` が1件もない: `CRITICAL` (`nameserver_missing`)
+- 読取不能 / 欠落: `UNKNOWN` (`resolver_config_unavailable`)
+- `nameserver` の値欠落・余分な field・不正な IPv4 / IPv6 literal: `UNKNOWN` (`invalid_nameserver_record` / `invalid_nameserver_address`)
+- comment、`search`、`domain`、`options` など `nameserver` 以外の directive はこの check の判定対象外
+
+出力例:
+
+```text
+IRLIGHT_RESOLVER_CONFIG_HEALTH status=OK nameserver_count=2
+```
+
+この check は **設定ファイルの存在と nameserver 構文だけ**を検査する。stub resolver（例: loopback address）が実際に応答すること、upstream DNS の到達性、split DNS / systemd-resolved の runtime state、DNSSEC、対象 hostname の解決成功は証明しない。active DNS query を発生させないため、remote destination の実到達性は既存の bounded destination probe と別契約のまま扱う。また IP literal destination は DNS を必要としないため、この check を `check-network-egress-health.sh` の必須 component へ自動追加しない。
+
 ## Exit code
 
-4つの check とも同じ status / exit contract を使う。
+5つの check とも同じ status / exit contract を使う。
 
 | exit | status | meaning |
 | ---: | --- | --- |
-| 0 | `OK` | 対象 signal は正常範囲、明示された local limit が unlimited、または必要な route が確認できた |
+| 0 | `OK` | 対象 signal は正常範囲、明示された local limit が unlimited、必要な route、または resolver nameserver 設定が確認できた |
 | 1 | `WARNING` | warning 閾値以上 critical 未満、または link が transitional state |
-| 2 | `CRITICAL` | critical 閾値以上、headroom がない / over-limit、明示した link が利用不能、または必要な IPv4 default route がない / unusable |
+| 2 | `CRITICAL` | critical 閾値以上、headroom がない / over-limit、明示した link が利用不能、必要な IPv4 default route がない / unusable、または resolver nameserver がない |
 | 3 | `UNKNOWN` | 対象を安全に読み取り・評価できない |
 
 ## Safety
 
-すべて診断専用で、cgroup control file、rlimit、process、socket、network interface、route、authority stateを変更しない。kill/restart、fd close、`prlimit`、`ip link set`、`ip route`、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / interface / route / state ownership を確認した runbook の明示操作として行う。
+すべて診断専用で、cgroup control file、rlimit、process、socket、network interface、route、resolver 設定、authority stateを変更しない。kill/restart、fd close、`prlimit`、`ip link set`、`ip route`、resolver 書換え、active DNS query、sysctl、cache drop、cleanupを自動実行しない。結果はまず alert / 診断へ接続し、復旧は対象 Session / process / interface / route / resolver / state ownership を確認した runbook の明示操作として行う。
 
 ## Verification
 
@@ -120,9 +144,11 @@ python -m unittest discover -s tests -p 'test_cgroup_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_process_fd_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_network_link_health.py' -v
 python -m unittest discover -s tests -p 'test_ipv4_default_route.py' -v
+python -m unittest discover -s tests -p 'test_resolver_config_check.py' -v
 bash -n \
   scripts/check-cgroup-psi-pressure.sh \
   scripts/check-process-fd-pressure.sh \
   scripts/check-network-link-health.sh \
-  scripts/check-ipv4-default-route.sh
+  scripts/check-ipv4-default-route.sh \
+  scripts/check-resolver-config.sh
 ```
