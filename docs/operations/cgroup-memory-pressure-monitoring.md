@@ -66,6 +66,36 @@ IRLIGHT_CGROUP_MEMORY_EVENTS status=CRITICAL reason=oom_activity low_delta=0 hig
 
 この check は「baseline 取得後に event が発生したか」を示すだけで、現在の memory headroom や pressure が継続中かは証明しない。`memory.current` / `memory.max` / `memory.high` と cgroup PSI を併用し、baseline は必ず同じ監視対象 cgroup generation に対応させる。監視側が新しい baseline を採用するタイミングは alert の確認・記録方針と合わせて定義し、script が自動で履歴を消費したり reset したりしないようにする。
 
+## Targeted runtime aggregate
+
+同じ service/container cgroup について hard limit、throttle boundary、PID limit、PSI を個別に配線する代わりに、read-only aggregate で一度に評価できる。
+
+```bash
+bash scripts/check-cgroup-runtime-pressure.sh /sys/fs/cgroup/<target>
+```
+
+第1引数は `IRLIGHT_CGROUP_RUNTIME_DIR` でも指定できる。対象 cgroup は必須であり、root/current cgroup を自動選択しない。aggregate は `memory.current` / `memory.max`、`memory.current` / `memory.high`、`pids.current` / `pids.max`、`cpu.pressure` / `memory.pressure` / `io.pressure` を既存 checker へ渡し、`CRITICAL > UNKNOWN > WARNING > OK` の優先順位で集約する。
+
+`memory.events` は世代が一致する baseline が必要な stateful delta なので既定では実行しない。同じ cgroup generation の baseline を明示できる場合だけ第2引数（または `IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH`）で opt-in する。
+
+```bash
+bash scripts/check-cgroup-runtime-pressure.sh \
+  /sys/fs/cgroup/<target> \
+  /run/irlight-monitor/<target>.memory.events.baseline
+```
+
+baseline 未指定時は `memory_events_status=NOT_CONFIGURED` と表示し、それ自体では aggregate を悪化させない。baseline を指定した場合は `memory.events` delta を同じ優先順位へ含める。aggregate 自身は baseline を作成・更新しない。
+
+各 component は既定10秒で bounded execution とし、`IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS` で 1〜300 秒へ変更できる。timeout、不正な timeout 設定、`timeout` utility 不在、契約外 exit code は `UNKNOWN` に fail-closed し、無期限実行へフォールバックしない。ある component が `UNKNOWN` でも別 component の確定した `CRITICAL` は隠さない。
+
+出力例:
+
+```text
+IRLIGHT_CGROUP_RUNTIME_PRESSURE status=OK memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED
+```
+
+この aggregate は診断のみであり、cgroup control file、baseline、process/container、resource limit を変更しない。対象 workload の cgroup path と baseline generation の選択は deployment/operator 側の責任範囲に残す。
+
 ## Output / exit code
 
 hard-limit check の正常時の例:
@@ -106,9 +136,11 @@ root/current cgroup を機械的に選ぶと、監視対象 workload と異な�
 python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_events_check.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_runtime_pressure.py' -v
 bash -n scripts/check-cgroup-memory-pressure.sh
 bash -n scripts/check-cgroup-memory-high-pressure.sh
 bash -n scripts/check-cgroup-memory-events.sh
+bash -n scripts/check-cgroup-runtime-pressure.sh
 ```
 
 監視結果を破壊的な自動復旧へ直結させず、まず alert と診断へ接続する。復旧操作は対象 Session / process / state ownership を確認した runbook に従う。
