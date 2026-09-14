@@ -19,6 +19,7 @@ critical() {
 
 is_ipv4_literal() {
   local value="$1"
+  [[ "$value" != .* && "$value" != *. && "$value" != *..* ]] || return 1
   local IFS=.
   local -a octets
   read -r -a octets <<<"$value"
