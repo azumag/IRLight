@@ -12,6 +12,9 @@ ipv6_route_table="${5:-${IRLIGHT_IPV6_ROUTE_TABLE:-/proc/net/ipv6_route}}"
 component_timeout_seconds="${IRLIGHT_NETWORK_COMPONENT_TIMEOUT_SECONDS:-10}"
 interface_errors_mode="${IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE:-disabled}"
 interface_errors_baseline_dir="${IRLIGHT_NETWORK_STATS_BASELINE_DIR:-}"
+udp_snmp_errors_mode="${IRLIGHT_UDP_SNMP_ERRORS_MODE:-disabled}"
+udp_snmp_path="${IRLIGHT_UDP_SNMP_PATH:-/proc/net/snmp}"
+udp_snmp_baseline_path="${IRLIGHT_UDP_SNMP_BASELINE_PATH:-}"
 
 unknown() {
   local reason="$1"
@@ -153,20 +156,56 @@ case "$interface_errors_mode" in
     ;;
 esac
 
-if [[ "$interface_errors_mode" == "disabled" ]]; then
+udp_snmp_errors_status=""
+case "$udp_snmp_errors_mode" in
+  disabled)
+    ;;
+  enabled)
+    udp_snmp_errors_code="$(run_component \
+      "$script_dir/check-udp-snmp-errors.sh" \
+      "$udp_snmp_path" \
+      "$udp_snmp_baseline_path")"
+    udp_snmp_errors_status="$(status_for_code "$udp_snmp_errors_code")"
+    overall_code="$(merge_code "$overall_code" "$udp_snmp_errors_code")"
+    ;;
+  *)
+    udp_snmp_errors_code=3
+    udp_snmp_errors_status="UNKNOWN"
+    overall_code="$(merge_code "$overall_code" "$udp_snmp_errors_code")"
+    ;;
+esac
+
+if [[ "$interface_errors_mode" == "disabled" && "$udp_snmp_errors_mode" == "disabled" ]]; then
   printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s family=%s\n' \
     "$(status_for_code "$overall_code")" \
     "$(status_for_code "$link_code")" \
     "$ipv4_status" \
     "$ipv6_status" \
     "$address_family"
-else
+elif [[ "$udp_snmp_errors_mode" == "disabled" ]]; then
   printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s interface_errors_status=%s family=%s\n' \
     "$(status_for_code "$overall_code")" \
     "$(status_for_code "$link_code")" \
     "$ipv4_status" \
     "$ipv6_status" \
     "$interface_errors_status" \
+    "$address_family"
+elif [[ "$interface_errors_mode" == "disabled" ]]; then
+  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s udp_snmp_errors_status=%s family=%s\n' \
+    "$(status_for_code "$overall_code")" \
+    "$(status_for_code "$link_code")" \
+    "$ipv4_status" \
+    "$ipv6_status" \
+    "$udp_snmp_errors_status" \
+    "$address_family"
+else
+  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s interface_errors_status=%s udp_snmp_errors_status=%s family=%s\n' \
+    "$(status_for_code "$overall_code")" \
+    "$(status_for_code "$link_code")" \
+    "$ipv4_status" \
+    "$ipv6_status" \
+    "$interface_errors_status" \
+    "$udp_snmp_errors_status" \
     "$address_family"
 fi
 exit "$overall_code"
