@@ -65,7 +65,7 @@ docker compose \
   exec -T node-agent \
   python3 /opt/irlight/media_stack_inspect_cli.py \
     --egress-mode DIRECT_PUSH \
-    --restart-baseline /run/irlight-monitor/media-stack.previous.json
+    --restart-baseline /state/monitoring/media-stack.previous.json
 ```
 
 baseline は operator / monitoring 側が保存・ローテーションする。inspector 自身は baseline を作成・更新・削除しない。baseline は同じ `egress_mode` と expected service 集合の inspector 出力でなければならず、欠損・不正 JSON・service 不一致・不正な `restart_count` は `UNAVAILABLE` として fail-closed にする。baseline の余分なフィールドは出力へ転送しないが、baseline 自体には redacted inspector JSON 以外を混ぜない。
