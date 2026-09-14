@@ -47,6 +47,30 @@ bash scripts/check-network-egress-health.sh eth0 ipv4
 
 この制限は、proc/sysfs 読み取りや下位 check が異常に停止した場合に aggregate 自体が無期限に停止することを防ぐためです。Linux の GNU `timeout` を利用し、timeout 設定が不正、`timeout` utility が利用不能、または component が制限時間を超過した場合、その component は fail-closed で `UNKNOWN` になります。制限を外して無期限実行へフォールバックはしません。
 
+## NIC error/drop delta の opt-in
+
+既定では NIC の累積 error/drop counter は aggregate に含めません。既存利用者の stdout / exit code 契約を維持し、baseline を持たない環境で誤って `UNKNOWN` にしないためです。
+
+PR #309 で追加した `check-network-interface-errors.sh` を同じ interface に対して使う場合だけ、`IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE=enabled` と baseline directory を明示します。
+
+```bash
+IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE=enabled \
+IRLIGHT_NETWORK_STATS_BASELINE_DIR=/run/irlight-monitor/eth0.statistics.baseline \
+bash scripts/check-network-egress-health.sh eth0 dual
+```
+
+current counter は aggregate に渡した `IRLIGHT_NETWORK_INTERFACE_DIR`、または通常の `/sys/class/net/<interface>` の直下にある `statistics` directory を使います。別 interface の current path は指定できません。baseline は [network-interface-error-monitoring.md](network-interface-error-monitoring.md) の契約どおり、同じ interface generation から operator / monitoring 側が用意し、aggregate 自身は作成・更新・削除しません。
+
+mode は `disabled`（既定）または `enabled` のみです。不正 mode、baseline 欠損・不正、counter reset、component timeout は `interface_errors_status=UNKNOWN` として fail-closed します。drop-only は `WARNING`、error 増加は `CRITICAL` です。集約優先順位は他 component と同じ `CRITICAL > UNKNOWN > WARNING > OK` なので、例えば route parse が `UNKNOWN` でも NIC error が確認済みなら総合 `CRITICAL` を維持します。
+
+無効時の出力は従来形式のままです。有効時だけ `interface_errors_status` を追加します。
+
+```text
+IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK ipv6_route_status=OK interface_errors_status=WARNING family=dual
+```
+
+interface 名、current/baseline path、MAC/IP、gateway、counter の生値は aggregate 出力へ追加しません。
+
 ## Status 契約
 
 exit code と status は既存の resource / network diagnostics と合わせます。
@@ -73,12 +97,13 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK ipv4_route_status=OK ipv6
 - interface 名、route table path、gateway address は結果へ出しません。
 - secret、stream key、SRT passphrase、destination URL は扱いません。
 - `ip route add/del`、link up/down、sysctl、service restart、Docker 操作は行いません。
+- NIC error/drop opt-in でも sysfs / baseline を変更せず、baseline lifecycle は monitoring 側に残します。
 - `dual` を自動推測しません。address-family policy は deployment ごとに operator が明示します。
 - component timeout を無効化して unbounded execution に切り替える設定はありません。
 - `CRITICAL` を見ても自動修復せず、provider / OS / network の状態と進行中 Session への影響を確認してから復旧操作を判断します。
 
 ## 切り分け
 
-`link_status=CRITICAL` なら、まず interface / virtual NIC / provider network の状態を確認します。link が `OK` で route のみ `CRITICAL` なら、対象 family の default route と network configuration の変更履歴を read-only で確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout の発生や `timeout` utility の有無も確認し、「route がない」と推測して設定を書き換えないでください。
+`link_status=CRITICAL` なら、まず interface / virtual NIC / provider network の状態を確認します。link が `OK` で route のみ `CRITICAL` なら、対象 family の default route と network configuration の変更履歴を read-only で確認します。`interface_errors_status=WARNING|CRITICAL` の場合は [network-interface-error-monitoring.md](network-interface-error-monitoring.md) で delta の意味と baseline generation を確認し、host / hypervisor / provider network、driver、queue、MTU、帯域飽和などを read-only で追加確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout、baseline lifecycle、`timeout` utility の有無も確認し、「route がない」「NIC が壊れた」と推測して設定を書き換えないでください。
 
 DNS 名前解決、宛先固有の疎通、RTMPS/TLS、実 publish の成否はこの check の範囲外です。egress 障害時は [egress-widespread-failure.md](egress-widespread-failure.md) と、必要に応じて Destination verification の診断を併用します。
