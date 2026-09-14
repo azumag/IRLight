@@ -10,6 +10,8 @@ interface_dir="${3:-${IRLIGHT_NETWORK_INTERFACE_DIR:-}}"
 ipv4_route_table="${4:-${IRLIGHT_IPV4_ROUTE_TABLE:-/proc/net/route}}"
 ipv6_route_table="${5:-${IRLIGHT_IPV6_ROUTE_TABLE:-/proc/net/ipv6_route}}"
 component_timeout_seconds="${IRLIGHT_NETWORK_COMPONENT_TIMEOUT_SECONDS:-10}"
+interface_errors_mode="${IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE:-disabled}"
+interface_errors_baseline_dir="${IRLIGHT_NETWORK_STATS_BASELINE_DIR:-}"
 
 unknown() {
   local reason="$1"
@@ -132,10 +134,39 @@ if [[ "$address_family" == "ipv6" || "$address_family" == "dual" ]]; then
   overall_code="$(merge_code "$overall_code" "$ipv6_code")"
 fi
 
-printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s family=%s\n' \
-  "$(status_for_code "$overall_code")" \
-  "$(status_for_code "$link_code")" \
-  "$ipv4_status" \
-  "$ipv6_status" \
-  "$address_family"
+interface_errors_status=""
+case "$interface_errors_mode" in
+  disabled)
+    ;;
+  enabled)
+    interface_errors_code="$(run_component \
+      "$script_dir/check-network-interface-errors.sh" \
+      "$interface_dir/statistics" \
+      "$interface_errors_baseline_dir")"
+    interface_errors_status="$(status_for_code "$interface_errors_code")"
+    overall_code="$(merge_code "$overall_code" "$interface_errors_code")"
+    ;;
+  *)
+    interface_errors_code=3
+    interface_errors_status="UNKNOWN"
+    overall_code="$(merge_code "$overall_code" "$interface_errors_code")"
+    ;;
+esac
+
+if [[ "$interface_errors_mode" == "disabled" ]]; then
+  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s family=%s\n' \
+    "$(status_for_code "$overall_code")" \
+    "$(status_for_code "$link_code")" \
+    "$ipv4_status" \
+    "$ipv6_status" \
+    "$address_family"
+else
+  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s interface_errors_status=%s family=%s\n' \
+    "$(status_for_code "$overall_code")" \
+    "$(status_for_code "$link_code")" \
+    "$ipv4_status" \
+    "$ipv6_status" \
+    "$interface_errors_status" \
+    "$address_family"
+fi
 exit "$overall_code"

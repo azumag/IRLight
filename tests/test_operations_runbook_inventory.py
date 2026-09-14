@@ -108,6 +108,16 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
                     f"operations index must link exactly once to {relative_path}",
                 )
 
+    def test_network_egress_runbook_keeps_interface_error_opt_in_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["targeted network egress health"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE=enabled", text)
+        self.assertIn("IRLIGHT_NETWORK_STATS_BASELINE_DIR", text)
+        self.assertIn("既定では NIC の累積 error/drop counter は aggregate に含めません", text)
+        self.assertIn("interface_errors_status=UNKNOWN", text)
+        self.assertIn("aggregate 自身は作成・更新・削除しません", text)
+
     def test_deploy_rollback_runbook_keeps_safe_decision_boundaries(self) -> None:
         relative_path = RELATED_PROCEDURES["deploy rollback"]
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
