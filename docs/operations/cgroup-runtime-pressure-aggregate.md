@@ -67,9 +67,11 @@ IRLIGHT_CGROUP_RUNTIME_SWAP_MODE=enabled \
   bash scripts/check-cgroup-runtime-pressure.sh /sys/fs/cgroup/<target>
 ```
 
-既定値は `disabled` で、`swap_status=NOT_CONFIGURED` となり aggregate の status を悪化させない。`enabled` の場合は既存の `check-cgroup-swap-pressure.sh` を用い、有限 limit の warning/critical、`0/0` の意図的 swap-disabled、`max` の unlimited、over-limit、不正 telemetry を同じ契約で評価する。
+既定値は `disabled` であり、既存 monitoring parser との互換性を保つため、既定出力は従来どおり `process_fd_status` で終わる。swap を `enabled` にしたときだけ `swap_status=<status>` を末尾へ追加し、既存の `check-cgroup-swap-pressure.sh` による判定を aggregate へ含める。
 
 swap control file は kernel / container runtime / delegation policy によって存在しない場合があるため、既定で自動追加しない。明示 opt-in 後に control file が欠落・読取不能・不正であれば `UNKNOWN` に fail-closed する。mode は `enabled` / `disabled` だけを受理し、それ以外は `UNKNOWN` (`invalid_swap_mode`) として、曖昧な設定を黙って無効化しない。
+
+swap checker は有限 limit の warning/critical、`0/0` の意図的 swap-disabled、`max` の unlimited、over-limit、不正 telemetry を既存契約どおり評価する。
 
 ## Aggregate precedence
 
@@ -81,7 +83,7 @@ CRITICAL > UNKNOWN > WARNING > OK
 
 確定した `CRITICAL` を、別 component の `UNKNOWN` で隠さない。一方、critical がない場合に安全に評価できない component があれば aggregate は `UNKNOWN` とする。
 
-出力例:
+swap 有効時の出力例:
 
 ```text
 IRLIGHT_CGROUP_RUNTIME_PRESSURE status=WARNING memory_max_status=OK memory_high_status=OK pids_status=OK psi_status=OK memory_events_status=NOT_CONFIGURED process_fd_status=NOT_CONFIGURED swap_status=WARNING
