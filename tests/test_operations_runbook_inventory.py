@@ -50,6 +50,7 @@ RELATED_PROCEDURES = {
     "billing webhook alert dry-run": "docs/operations/billing-webhook-alert-dry-run.md",
     "targeted IPv6 default route diagnostics": "docs/operations/targeted-ipv6-default-route-diagnostics.md",
     "targeted network egress health": "docs/operations/targeted-network-egress-health.md",
+    "network interface error monitoring": "docs/operations/network-interface-error-monitoring.md",
 }
 
 NEW_RUNBOOKS = {
