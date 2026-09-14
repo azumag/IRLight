@@ -47,9 +47,9 @@ bash scripts/check-cgroup-runtime-pressure.sh \
 
 ### Swap pressure
 
-`memory.swap.current` / `memory.swap.max` がその deployment で利用可能であり、swap accounting を監視対象に含めると明示的に決めた場合だけ、第4引数または `IRLIGHT_CGROUP_RUNTIME_SWAP_DIR` に cgroup directory を指定する。
+`memory.swap.current` / `memory.swap.max` がその deployment で利用可能であり、swap accounting を監視対象に含めると明示的に決めた場合だけ、第4引数へ `enabled` を渡すか `IRLIGHT_CGROUP_RUNTIME_SWAP_MODE=enabled` を設定する。
 
-通常は第1引数と同じ directory を明示する。
+swap は第1引数で指定した **同じ cgroup** の control fileだけを読む。別 cgroup の path を個別指定できる形にはせず、memory / pids / PSI と swap の監視対象が意図せず混在することを防ぐ。
 
 ```bash
 CGROUP=/sys/fs/cgroup/<target>
@@ -57,12 +57,19 @@ bash scripts/check-cgroup-runtime-pressure.sh \
   "$CGROUP" \
   "" \
   "" \
-  "$CGROUP"
+  enabled
 ```
 
-未指定時は `swap_status=NOT_CONFIGURED` となり aggregate の status を悪化させない。指定した場合は既存の `check-cgroup-swap-pressure.sh` を用い、有限 limit の warning/critical、`0/0` の意図的 swap-disabled、`max` の unlimited、over-limit、不正 telemetry を同じ契約で評価する。
+または次のように環境変数で明示できる。
 
-swap control file は kernel / container runtime / delegation policy によって存在しない場合があるため、既定で自動追加しない。明示 opt-in 後に control file が欠落・読取不能・不正であれば `UNKNOWN` に fail-closed する。
+```bash
+IRLIGHT_CGROUP_RUNTIME_SWAP_MODE=enabled \
+  bash scripts/check-cgroup-runtime-pressure.sh /sys/fs/cgroup/<target>
+```
+
+既定値は `disabled` で、`swap_status=NOT_CONFIGURED` となり aggregate の status を悪化させない。`enabled` の場合は既存の `check-cgroup-swap-pressure.sh` を用い、有限 limit の warning/critical、`0/0` の意図的 swap-disabled、`max` の unlimited、over-limit、不正 telemetry を同じ契約で評価する。
+
+swap control file は kernel / container runtime / delegation policy によって存在しない場合があるため、既定で自動追加しない。明示 opt-in 後に control file が欠落・読取不能・不正であれば `UNKNOWN` に fail-closed する。mode は `enabled` / `disabled` だけを受理し、それ以外は `UNKNOWN` (`invalid_swap_mode`) として、曖昧な設定を黙って無効化しない。
 
 ## Aggregate precedence
 
