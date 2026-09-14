@@ -104,7 +104,7 @@ class CgroupRuntimePressureTest(unittest.TestCase):
             if process_dir is not None or include_swap:
                 command.append(str(process_dir) if process_dir is not None else "")
             if include_swap:
-                command.append(str(cgroup_dir))
+                command.append("enabled")
             return subprocess.run(
                 command,
                 env=env,
@@ -206,11 +206,21 @@ class CgroupRuntimePressureTest(unittest.TestCase):
         self.assertIn("memory_max_status=UNKNOWN", result.stdout)
         self.assertIn("swap_status=CRITICAL", result.stdout)
 
-    def test_missing_swap_control_file_fails_closed_when_explicit(self) -> None:
+    def test_invalid_swap_telemetry_fails_closed_when_explicit(self) -> None:
         result = self._run(include_swap=True, swap_current="10", swap_max="invalid")
         self.assertEqual(result.returncode, 3)
         self.assertIn("status=UNKNOWN", result.stdout)
         self.assertIn("swap_status=UNKNOWN", result.stdout)
+
+    def test_invalid_swap_mode_fails_closed(self) -> None:
+        result = self._run(
+            env_overrides={"IRLIGHT_CGROUP_RUNTIME_SWAP_MODE": "unexpected"}
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_CGROUP_RUNTIME_PRESSURE status=UNKNOWN reason=invalid_swap_mode",
+        )
 
     def test_invalid_timeout_fails_closed_without_unbounded_fallback(self) -> None:
         result = self._run(
