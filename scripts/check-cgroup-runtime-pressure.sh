@@ -8,6 +8,7 @@ cgroup_dir="${1:-${IRLIGHT_CGROUP_RUNTIME_DIR:-}}"
 events_baseline_path="${2:-${IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH:-}}"
 process_dir="${3:-${IRLIGHT_CGROUP_RUNTIME_PROCESS_DIR:-}}"
 swap_mode="${4:-${IRLIGHT_CGROUP_RUNTIME_SWAP_MODE:-disabled}}"
+cpu_stat_baseline_path="${IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_CGROUP_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 unknown() {
@@ -131,6 +132,16 @@ if [[ -n "$process_dir" ]]; then
   process_fd_status="$(status_for_code "$process_fd_code")"
 fi
 
+cpu_throttling_status=""
+cpu_throttling_code=""
+if [[ -n "$cpu_stat_baseline_path" ]]; then
+  cpu_throttling_code="$(run_component \
+    "$script_dir/check-cgroup-cpu-throttling.sh" \
+    "$cgroup_dir/cpu.stat" \
+    "$cpu_stat_baseline_path")"
+  cpu_throttling_status="$(status_for_code "$cpu_throttling_code")"
+fi
+
 swap_status=""
 swap_code=""
 if [[ "$swap_mode" == "enabled" ]]; then
@@ -152,12 +163,36 @@ fi
 if [[ -n "$process_fd_code" ]]; then
   merge_code "$process_fd_code"
 fi
+if [[ -n "$cpu_throttling_code" ]]; then
+  merge_code "$cpu_throttling_code"
+fi
 if [[ -n "$swap_code" ]]; then
   merge_code "$swap_code"
 fi
 
 overall_status="$(status_for_code "$overall_code")"
-if [[ "$swap_mode" == "enabled" ]]; then
+if [[ -n "$cpu_throttling_code" && "$swap_mode" == "enabled" ]]; then
+  printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s cpu_throttling_status=%s swap_status=%s\n' \
+    "$overall_status" \
+    "$(status_for_code "$memory_max_code")" \
+    "$(status_for_code "$memory_high_code")" \
+    "$(status_for_code "$pids_code")" \
+    "$(status_for_code "$psi_code")" \
+    "$memory_events_status" \
+    "$process_fd_status" \
+    "$cpu_throttling_status" \
+    "$swap_status"
+elif [[ -n "$cpu_throttling_code" ]]; then
+  printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s cpu_throttling_status=%s\n' \
+    "$overall_status" \
+    "$(status_for_code "$memory_max_code")" \
+    "$(status_for_code "$memory_high_code")" \
+    "$(status_for_code "$pids_code")" \
+    "$(status_for_code "$psi_code")" \
+    "$memory_events_status" \
+    "$process_fd_status" \
+    "$cpu_throttling_status"
+elif [[ "$swap_mode" == "enabled" ]]; then
   printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s swap_status=%s\n' \
     "$overall_status" \
     "$(status_for_code "$memory_max_code")" \
@@ -168,7 +203,8 @@ if [[ "$swap_mode" == "enabled" ]]; then
     "$process_fd_status" \
     "$swap_status"
 else
-  # Preserve the pre-swap output contract for existing monitoring parsers.
+  # Preserve the pre-swap/pre-CPU-throttling output contract for existing
+  # monitoring parsers unless an optional component is explicitly enabled.
   printf 'IRLIGHT_CGROUP_RUNTIME_PRESSURE status=%s memory_max_status=%s memory_high_status=%s pids_status=%s psi_status=%s memory_events_status=%s process_fd_status=%s\n' \
     "$overall_status" \
     "$(status_for_code "$memory_max_code")" \

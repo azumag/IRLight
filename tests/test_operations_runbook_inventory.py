@@ -118,6 +118,16 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("interface_errors_status=UNKNOWN", text)
         self.assertIn("aggregate 自身は作成・更新・削除しません", text)
 
+    def test_cgroup_runtime_runbook_keeps_cpu_throttling_opt_in_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["cgroup runtime pressure aggregate"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH", text)
+        self.assertIn("cpu_throttling_status=<status>", text)
+        self.assertIn("checker 単独では `CRITICAL` にしない", text)
+        self.assertIn("既存 stdout / exit code 形式を変更しない", text)
+        self.assertIn("baseline を作成・更新・削除しない", text)
+
     def test_deploy_rollback_runbook_keeps_safe_decision_boundaries(self) -> None:
         relative_path = RELATED_PROCEDURES["deploy rollback"]
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
