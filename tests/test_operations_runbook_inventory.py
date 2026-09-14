@@ -51,6 +51,7 @@ RELATED_PROCEDURES = {
     "targeted IPv6 default route diagnostics": "docs/operations/targeted-ipv6-default-route-diagnostics.md",
     "targeted network egress health": "docs/operations/targeted-network-egress-health.md",
     "network interface error monitoring": "docs/operations/network-interface-error-monitoring.md",
+    "udp snmp error monitoring": "docs/operations/udp-snmp-error-monitoring.md",
 }
 
 NEW_RUNBOOKS = {
