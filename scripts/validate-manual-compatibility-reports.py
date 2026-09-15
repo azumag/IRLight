@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
 MAX_MANUAL_REPORT_BYTES = 64 * 1024
+MAX_COMPATIBILITY_MATRIX_BYTES = 256 * 1024
 REPORT_RESULTS = {"PASS", "PARTIAL", "FAIL", "BLOCKED"}
 CHECK_RESULTS = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
 REQUIRED_REPORT_FIELDS = {
@@ -139,15 +140,18 @@ def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant is not allowed: {value}")
 
 
-def _load_strict_json_object(path: Path, *, description: str) -> dict[str, Any]:
+def _load_strict_json_object(
+    path: Path,
+    *,
+    description: str,
+    max_bytes: int = MAX_MANUAL_REPORT_BYTES,
+) -> dict[str, Any]:
     try:
         size = path.stat().st_size
     except OSError as exc:
         raise ValueError(f"cannot stat {description}: {exc}") from exc
-    if size > MAX_MANUAL_REPORT_BYTES:
-        raise ValueError(
-            f"{description} exceeds {MAX_MANUAL_REPORT_BYTES}-byte limit"
-        )
+    if size > max_bytes:
+        raise ValueError(f"{description} exceeds {max_bytes}-byte limit")
 
     try:
         raw = path.read_text(encoding="utf-8")
@@ -161,6 +165,16 @@ def _load_strict_json_object(path: Path, *, description: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{description} root must be an object")
     return value
+
+
+def load_compatibility_matrix(path: Path) -> dict[str, Any]:
+    """Load the shared compatibility ledger through the same strict JSON boundary."""
+
+    return _load_strict_json_object(
+        path,
+        description="compatibility matrix",
+        max_bytes=MAX_COMPATIBILITY_MATRIX_BYTES,
+    )
 
 
 def validate_report(
@@ -344,23 +358,13 @@ def validate_matrix_manual_reports(
     return errors
 
 
-def load_json_object(path: Path, *, description: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read {description}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"{description} root must be an object")
-    return value
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("matrix", nargs="?", type=Path, default=DEFAULT_MATRIX)
     args = parser.parse_args()
 
     try:
-        matrix = load_json_object(args.matrix, description="compatibility matrix")
+        matrix = load_compatibility_matrix(args.matrix)
     except ValueError as exc:
         print(f"manual compatibility evidence invalid: {exc}", file=sys.stderr)
         return 1
