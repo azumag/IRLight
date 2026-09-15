@@ -130,10 +130,12 @@ def _require_catalog_string(
     return value
 
 
-def _require_catalog_bool(
+def _validate_catalog_optional_bool(
     item: dict[str, Any], field: str, *, context: str
-) -> bool:
-    value = item.get(field)
+) -> bool | None:
+    if field not in item:
+        return None
+    value = item[field]
     if not isinstance(value, bool):
         raise CatalogStateError(f"{context} has invalid {field}")
     return value
@@ -164,22 +166,22 @@ def _require_catalog_optional_timestamp(
     return _require_catalog_timestamp(item, field, context=context)
 
 
-def _require_catalog_optional_string(
+def _validate_catalog_optional_string(
     item: dict[str, Any], field: str, *, context: str
 ) -> str | None:
     if field not in item:
-        raise CatalogStateError(f"{context} has invalid {field}")
+        return None
     value = item[field]
     if value is not None and not isinstance(value, str):
         raise CatalogStateError(f"{context} has invalid {field}")
     return value
 
 
-def _require_catalog_optional_dict(
+def _validate_catalog_optional_dict(
     item: dict[str, Any], field: str, *, context: str
 ) -> dict[str, Any] | None:
     if field not in item:
-        raise CatalogStateError(f"{context} has invalid {field}")
+        return None
     value = item[field]
     if value is not None and not isinstance(value, dict):
         raise CatalogStateError(f"{context} has invalid {field}")
@@ -222,13 +224,16 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
             ) from exc
         _require_catalog_timestamp(item, "created_at", context=context)
         _require_catalog_timestamp(item, "updated_at", context=context)
-        _require_catalog_bool(item, "enabled", context=context)
+        # Older persisted destinations predate `enabled`, verification error,
+        # and transport metadata. Validate those fields when present without
+        # making historical records unreadable in the absence of a migration.
+        _validate_catalog_optional_bool(item, "enabled", context=context)
         _require_catalog_string(item, "verification_status", context=context)
         _require_catalog_optional_timestamp(item, "last_verified_at", context=context)
-        _require_catalog_optional_string(
+        _validate_catalog_optional_string(
             item, "last_verification_error", context=context
         )
-        _require_catalog_optional_dict(item, "verification_transport", context=context)
+        _validate_catalog_optional_dict(item, "verification_transport", context=context)
 
     for asset_id, item in assets.items():
         if not isinstance(asset_id, str) or not asset_id or not isinstance(item, dict):
