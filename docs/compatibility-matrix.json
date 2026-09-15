@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "generated_claims_policy": "Only entries with status=automated or status=manual_verified are compatibility evidence. not_tested entries are coverage gaps, not support claims.",
+  "required_coverage": [
+    "pc.ffmpeg",
+    "pc.obs",
+    "pc.gstreamer",
+    "mobile.ios_a",
+    "mobile.ios_b",
+    "mobile.android_a",
+    "mobile.android_b",
+    "hardware.rtmp_encoder",
+    "destination.twitch",
+    "destination.youtube",
+    "destination.kick",
+    "destination.custom_rtmp"
+  ],
+  "entries": [
+    {
+      "id": "ffmpeg-rtmps-recovery-ci",
+      "coverage": "pc.ffmpeg",
+      "category": "publisher_software",
+      "subject": "FFmpeg",
+      "transport": "RTMPS",
+      "profile": "synthetic H.264/AAC recovery flow",
+      "network": "GitHub-hosted Docker test network",
+      "status": "automated",
+      "evidence": [
+        ".github/workflows/rtmps-ingest-recovery.yml",
+        "scripts/smoke-rtmps-ingest-recovery.sh"
+      ],
+      "notes": "Exercises authenticated RTMPS publish, disconnect, and recovery. This is software-publisher evidence, not OBS/mobile/hardware evidence."
+    },
+    {
+      "id": "ffmpeg-srt-recovery-ci",
+      "coverage": "pc.ffmpeg",
+      "category": "publisher_software",
+      "subject": "FFmpeg",
+      "transport": "SRT",
+      "profile": "synthetic H.264/AAC authenticated recovery flow",
+      "network": "GitHub-hosted Docker test network",
+      "status": "automated",
+      "evidence": [
+        ".github/workflows/srt-ingest-recovery.yml",
+        "scripts/smoke-srt-ingest-recovery.sh"
+      ],
+      "notes": "Exercises authenticated SRT publish, disconnect, and recovery."
+    },
+    {
+      "id": "obs-manual-gap",
+      "coverage": "pc.obs",
+      "category": "publisher_software",
+      "subject": "OBS Studio",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "representative 720p30 and 1080p30 profiles",
+      "network": "manual device/network matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Requires reproducible manual evidence before support can be claimed."
+    },
+    {
+      "id": "gstreamer-publisher-manual-gap",
+      "coverage": "pc.gstreamer",
+      "category": "publisher_software",
+      "subject": "GStreamer publisher",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "representative H.264/AAC profiles",
+      "network": "manual or dedicated CI publisher matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Current GStreamer use inside IRLight is not counted as independent publisher compatibility evidence."
+    },
+    {
+      "id": "ios-app-a-manual-gap",
+      "coverage": "mobile.ios_a",
+      "category": "mobile_publisher",
+      "subject": "iOS RTMP/SRT app A",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "device/application profile to be recorded",
+      "network": "Wi-Fi/4G/5G/tethering matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Record the exact app name/version and device/OS when tested."
+    },
+    {
+      "id": "ios-app-b-manual-gap",
+      "coverage": "mobile.ios_b",
+      "category": "mobile_publisher",
+      "subject": "iOS RTMP/SRT app B",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "device/application profile to be recorded",
+      "network": "Wi-Fi/4G/5G/tethering matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Keep this as a separate implementation/app family from app A."
+    },
+    {
+      "id": "android-app-a-manual-gap",
+      "coverage": "mobile.android_a",
+      "category": "mobile_publisher",
+      "subject": "Android RTMP/SRT app A",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "device/application profile to be recorded",
+      "network": "Wi-Fi/4G/5G/tethering matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Record the exact app name/version and device/OS when tested."
+    },
+    {
+      "id": "android-app-b-manual-gap",
+      "coverage": "mobile.android_b",
+      "category": "mobile_publisher",
+      "subject": "Android RTMP/SRT app B",
+      "transport": "RTMP/RTMPS/SRT",
+      "profile": "device/application profile to be recorded",
+      "network": "Wi-Fi/4G/5G/tethering matrix",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Keep this as a separate implementation/app family from app A."
+    },
+    {
+      "id": "hardware-encoder-manual-gap",
+      "coverage": "hardware.rtmp_encoder",
+      "category": "hardware_publisher",
+      "subject": "ATEM Mini Pro class or equivalent RTMP encoder",
+      "transport": "RTMP/RTMPS",
+      "profile": "hardware encoder profile to be recorded",
+      "network": "real device network",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "If hardware is unavailable, keep this explicitly unverified rather than inferring support from FFmpeg."
+    },
+    {
+      "id": "twitch-destination-manual-gap",
+      "coverage": "destination.twitch",
+      "category": "output_destination",
+      "subject": "Twitch",
+      "transport": "RTMP/RTMPS",
+      "profile": "platform-safe manual validation",
+      "network": "external platform",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Do not place real stream keys in CI or evidence files."
+    },
+    {
+      "id": "youtube-destination-manual-gap",
+      "coverage": "destination.youtube",
+      "category": "output_destination",
+      "subject": "YouTube",
+      "transport": "RTMP/RTMPS",
+      "profile": "platform-safe manual validation",
+      "network": "external platform",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Do not place real stream keys in CI or evidence files."
+    },
+    {
+      "id": "kick-destination-manual-gap",
+      "coverage": "destination.kick",
+      "category": "output_destination",
+      "subject": "Kick",
+      "transport": "RTMP/RTMPS",
+      "profile": "platform-safe manual validation",
+      "network": "external platform",
+      "status": "not_tested",
+      "evidence": [],
+      "notes": "Do not place real stream keys in CI or evidence files."
+    },
+    {
+      "id": "custom-rtmp-destination-ci",
+      "coverage": "destination.custom_rtmp",
+      "category": "output_destination",
+      "subject": "Custom RTMP server (local MediaMTX)",
+      "transport": "RTMP",
+      "profile": "synthetic local egress reconnect/terminal flows",
+      "network": "GitHub-hosted Docker test network",
+      "status": "automated",
+      "evidence": [
+        "scripts/smoke-egress-reconnect.sh",
+        "scripts/smoke-egress-stop-terminal.sh"
+      ],
+      "notes": "Local MediaMTX evidence does not imply Twitch/YouTube/Kick compatibility."
+    }
+  ]
+}
