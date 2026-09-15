@@ -67,6 +67,23 @@ class CatalogRecordAuthorityValidationTest(unittest.TestCase):
         self.assertEqual(len(list_destinations("user-1")), 1)
         self.assertEqual(len(list_assets("user-1")), 1)
 
+    def test_invalid_writer_input_does_not_replace_catalog(self) -> None:
+        before = CATALOG_PATH.read_bytes()
+
+        with self.assertRaises(CatalogStateError):
+            create_destination(
+                user_id="user-1",
+                type="rtmp",
+                display_name="",
+                server_url="rtmp://example.com/live",
+                secret_ref="secret/example",
+            )
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+
+        with self.assertRaises(CatalogStateError):
+            create_asset(user_id="", source_object_key="uploads/standby.png")
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+
     def test_destination_key_and_record_id_must_match(self) -> None:
         destination_id = str(uuid.uuid4())
         record = self._destination(str(uuid.uuid4()))
