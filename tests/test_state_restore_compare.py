@@ -272,7 +272,7 @@ class StateRestoreCompareTest(unittest.TestCase):
         def replace_marker(value: dict[str, object]) -> dict[str, object]:
             nonlocal replaced
             replacement.write_bytes(marker.read_bytes())
-            os.replace(replacement, marker)
+            os.replace(replacement, target)
             replaced = True
             return value
 
@@ -318,7 +318,13 @@ class StateRestoreCompareTest(unittest.TestCase):
             json.dumps(
                 {
                     "destinations": {},
-                    "assets": {"asset-1": {"note": dummy_secret}},
+                    "assets": {
+                        "asset-1": {
+                            "id": "asset-1",
+                            "user_id": "user-1",
+                            "source_object_key": dummy_secret,
+                        }
+                    },
                 },
                 sort_keys=True,
             ),
