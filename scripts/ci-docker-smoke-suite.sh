@@ -40,26 +40,76 @@ smokes=(
   scripts/smoke-egress-rtmp2-publish-conflict.sh
 )
 
+# Keep one compact, machine-searchable record per scenario in the workflow log.
+# The GitHub step summary mirrors the same records when available. Do not add
+# command lines, environment values, container inspection, or logs here because
+# media credentials may be present in those surfaces.
+results=()
 failures=()
+
+write_step_summary() {
+  local summary_file="${GITHUB_STEP_SUMMARY:-}"
+  local result smoke outcome status duration
+
+  if [[ -z "$summary_file" ]]; then
+    return 0
+  fi
+
+  {
+    echo '### Docker integration smoke suite'
+    echo
+    echo '| Scenario | Result | Exit | Duration |'
+    echo '| --- | --- | ---: | ---: |'
+    for result in "${results[@]}"; do
+      IFS='|' read -r smoke outcome status duration <<<"$result"
+      printf '| `%s` | %s | %s | %ss |\n' "$smoke" "$outcome" "$status" "$duration"
+    done
+  } >>"$summary_file"
+}
+
+emit_failure_context() {
+  echo '--- Docker smoke runner diagnostics (secret-safe) ---'
+  echo 'Filesystem:'
+  df -h / || true
+  echo 'Docker storage:'
+  docker system df || true
+  echo 'Compose projects:'
+  docker compose ls --all || true
+  echo 'Container state (name/image/status only):'
+  docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+}
+
 for smoke in "${smokes[@]}"; do
+  started_at=$SECONDS
   echo "::group::$smoke"
   if timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke"; then
+    duration=$((SECONDS - started_at))
     echo "PASS: $smoke"
+    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=PASS exit=0 duration_seconds=%d\n' \
+      "$smoke" "$duration"
+    results+=("$smoke|PASS|0|$duration")
   else
     status=$?
+    duration=$((SECONDS - started_at))
     if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
       echo "::error title=Docker smoke timed out::$smoke exceeded ${smoke_timeout_seconds}s (status $status)"
     else
       echo "::error title=Docker smoke failed::$smoke exited with status $status"
     fi
+    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=FAIL exit=%d duration_seconds=%d\n' \
+      "$smoke" "$status" "$duration"
+    results+=("$smoke|FAIL|$status|$duration")
     failures+=("$smoke:$status")
   fi
   echo "::endgroup::"
 done
 
+write_step_summary
+
 if ((${#failures[@]} > 0)); then
   printf 'Docker smoke failures (%d):\n' "${#failures[@]}" >&2
   printf '  %s\n' "${failures[@]}" >&2
+  emit_failure_context >&2
   exit 1
 fi
 
