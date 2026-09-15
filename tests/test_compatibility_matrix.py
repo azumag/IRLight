@@ -27,9 +27,12 @@ class CompatibilityMatrixTest(unittest.TestCase):
                 check=False,
             )
 
+        return self._run_validator_raw(json.dumps(matrix))
+
+    def _run_validator_raw(self, raw: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "matrix.json"
-            path.write_text(json.dumps(matrix), encoding="utf-8")
+            path.write_text(raw, encoding="utf-8")
             return subprocess.run(
                 [sys.executable, str(VALIDATOR), str(path)],
                 cwd=ROOT,
@@ -131,6 +134,44 @@ class CompatibilityMatrixTest(unittest.TestCase):
         )
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_validator_rejects_boolean_schema_version(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        matrix["schema_version"] = True
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("schema_version must be integer 1", result.stderr)
+
+    def test_validator_rejects_unknown_matrix_and_entry_fields(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        matrix["unexpected"] = "claim channel"
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown top-level fields are not allowed: unexpected", result.stderr)
+
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        matrix["entries"][0]["unexpected"] = "claim channel"
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("entries[0] has unknown fields: unexpected", result.stderr)
+
+    def test_validator_rejects_duplicate_keys_and_nonstandard_constants(self) -> None:
+        result = self._run_validator_raw('{"schema_version":1,"schema_version":1}')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate object key is not allowed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        result = self._run_validator_raw('{"schema_version":NaN}')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("non-standard JSON constant is not allowed: NaN", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_validator_rejects_oversized_matrix_before_parsing(self) -> None:
+        raw = '{"padding":"' + ("x" * (256 * 1024)) + '"}'
+        result = self._run_validator_raw(raw)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("compatibility matrix exceeds 262144-byte limit", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_validator_rejects_verified_and_not_tested_for_same_coverage(self) -> None:
         matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
         candidate = next(item for item in matrix["entries"] if item["coverage"] == "pc.obs")
@@ -187,6 +228,8 @@ class CompatibilityMatrixTest(unittest.TestCase):
             ".github/workflows/`, `scripts/`, or `tests/",
             ".yml` / `.yaml`",
             ".sh` / `.py`",
+            "256 KiB",
+            "Duplicate object keys",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, GUIDE)
