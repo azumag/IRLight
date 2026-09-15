@@ -95,6 +95,14 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK
 
 current/baseline path、IP、port、socket、counter の生値は aggregate 出力へ追加しません。
 
+## Opt-in status field の保守契約
+
+optional component の status field は、component ごとの出力分岐を組み合わせるのではなく、固定順の registry へ登録して最後に一度だけ stdout を組み立てます。現在の順序は `interface_errors_status` → `udp_snmp_errors_status` です。disabled の component は registry に登録せず、legacy 出力を byte-for-byte 維持します。
+
+新しい opt-in component を追加する場合は、component の exit code と status field を同じ登録処理へ渡し、status 表示と `CRITICAL > UNKNOWN > WARNING > OK` の severity merge を同時に更新します。個別の `printf` 分岐を増やしたり、field 登録だけ・severity merge だけを別々に追加しません。回帰テストでは all-disabled、各 component 単独、複数 component 同時有効の field 名・順序・exit code を固定します。
+
+この整理は保守性のための内部契約であり、既存 mode、checker invocation、timeout、baseline/current path、安全境界、公開 stdout field 名・順序を変更するものではありません。
+
 ## Status 契約
 
 exit code と status は既存の resource / network diagnostics と合わせます。
