@@ -13,6 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
+AUTOMATED_EVIDENCE_PREFIXES = (".github/workflows/", "scripts/", "tests/")
 ALLOWED_STATUSES = {"automated", "manual_verified", "not_tested"}
 ALLOWED_CATEGORIES = {
     "publisher_software",
@@ -134,6 +135,13 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}: not_tested entries must not carry evidence")
         if status in {"automated", "manual_verified"} and not evidence:
             errors.append(f"{prefix}: verified entries require evidence")
+        if status == "automated":
+            for raw_path in evidence:
+                if not raw_path.startswith(AUTOMATED_EVIDENCE_PREFIXES):
+                    errors.append(
+                        f"{prefix}: automated evidence must live under "
+                        ".github/workflows/, scripts/, or tests/"
+                    )
         if status == "manual_verified":
             for raw_path in evidence:
                 if not raw_path.startswith(MANUAL_REPORT_PREFIX):
