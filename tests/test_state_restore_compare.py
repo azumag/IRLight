@@ -272,7 +272,7 @@ class StateRestoreCompareTest(unittest.TestCase):
         def replace_marker(value: dict[str, object]) -> dict[str, object]:
             nonlocal replaced
             replacement.write_bytes(marker.read_bytes())
-            os.replace(replacement, target)
+            os.replace(replacement, marker)
             replaced = True
             return value
 
