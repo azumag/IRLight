@@ -122,6 +122,18 @@ class TcpSnmpAttemptFailsCheckTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
 
+    def test_missing_attempt_fails_is_unknown(self) -> None:
+        fields = [field for field in FIELDS if field != "AttemptFails"]
+        current = (
+            "Ip: Forwarding DefaultTTL\n"
+            "Ip: 2 64\n"
+            f"Tcp: {' '.join(fields)}\n"
+            f"Tcp: {' '.join('0' for _ in fields)}\n"
+        )
+        result = self._run(current=current)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("reason=invalid_snmp_record", result.stdout)
+
     def test_duplicate_attempt_fails_is_unknown(self) -> None:
         result = self._run(
             current=snmp_record(AttemptFails=4, extra_fields=[("AttemptFails", 4)]),
