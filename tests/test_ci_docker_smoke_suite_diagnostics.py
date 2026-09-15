@@ -34,7 +34,12 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
                 smokes.append(line)
         return smokes
 
-    def _run_harness(self, *, failing_smoke: str | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+    def _run_harness(
+        self,
+        *,
+        failing_smoke: str | None = None,
+        failure_stage: str = "compose-control-up",
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory(prefix="irlight-docker-smoke-diagnostics-") as tmp:
             root = Path(tmp)
             fake_bin = root / "bin"
@@ -63,8 +68,16 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
                 path = root / smoke
                 path.parent.mkdir(parents=True, exist_ok=True)
                 exit_code = 7 if smoke == failing_smoke else 0
+                diagnostic = ""
+                if exit_code:
+                    diagnostic = (
+                        "printf '%s\\n' "
+                        f"'::error title=IRLight docker smoke failure::stage={failure_stage}%0A"
+                        "credential=AUDIT_DUMMY_SECRET' >&2\n"
+                    )
                 path.write_text(
                     "#!/usr/bin/env bash\n"
+                    f"{diagnostic}"
                     f"exit {exit_code}\n",
                     encoding="utf-8",
                 )
@@ -93,11 +106,15 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             len(self.smokes),
         )
         for smoke in self.smokes:
-            self.assertIn(f"smoke={smoke} result=PASS exit=0", completed.stdout)
+            self.assertIn(
+                f"smoke={smoke} result=PASS exit=0",
+                completed.stdout,
+            )
+            self.assertIn("stage=-", completed.stdout)
             self.assertIn(f"| `{smoke}` | PASS | 0 |", summary)
         self.assertNotIn("Docker smoke runner diagnostics", completed.stderr)
 
-    def test_failure_records_exit_code_and_secret_safe_runner_context(self) -> None:
+    def test_failure_records_exit_code_stage_and_secret_safe_runner_context(self) -> None:
         failing_smoke = self.smokes[0]
         completed, summary = self._run_harness(failing_smoke=failing_smoke)
 
@@ -106,8 +123,12 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             f"smoke={failing_smoke} result=FAIL exit=7",
             completed.stdout,
         )
+        self.assertIn("stage=compose-control-up", completed.stdout)
         self.assertIn("Docker smoke failures (1):", completed.stderr)
-        self.assertIn(f"{failing_smoke}:7", completed.stderr)
+        self.assertIn(
+            f"{failing_smoke}:7:compose-control-up",
+            completed.stderr,
+        )
         self.assertIn("Docker smoke runner diagnostics (secret-safe)", completed.stderr)
         self.assertIn("FAKE_DOCKER system df", completed.stderr)
         self.assertIn("FAKE_DOCKER compose ls --all", completed.stderr)
@@ -116,6 +137,27 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             completed.stderr,
         )
         self.assertIn(f"| `{failing_smoke}` | FAIL | 7 |", summary)
+        self.assertIn("| `compose-control-up` |", summary)
+        self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
+
+    def test_failure_stage_is_allowlisted_before_entering_compact_outputs(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, summary = self._run_harness(
+            failing_smoke=failing_smoke,
+            failure_stage="node-auth-ready",
+        )
+
+        result_lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.startswith("IRLIGHT_DOCKER_SMOKE_RESULT")
+            and f"smoke={failing_smoke}" in line
+        ]
+        self.assertEqual(len(result_lines), 1)
+        self.assertIn("stage=node-auth-ready", result_lines[0])
+        self.assertNotIn("AUDIT_DUMMY_SECRET", result_lines[0])
+        self.assertIn("| `node-auth-ready` |", summary)
+        self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
 
     def test_failure_context_does_not_use_secret_prone_docker_inspect(self) -> None:
         self.assertNotIn("docker inspect", self.source)
