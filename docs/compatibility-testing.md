@@ -19,6 +19,30 @@ python3 scripts/validate-manual-compatibility-reports.py
 
 The normal unit suite also runs the same contract checks.
 
+## Manual execution worksheet
+
+Before serializing evidence, the tester may use the existing human-facing worksheet below to capture the observation. `WARN` is a triage result, not a verified compatibility claim: a warning must remain unverified until the evidence can be represented by the JSON schema below with report-level `PASS` and passing applicable checks.
+
+```text
+Test ID: <stable id matching/replacing a matrix entry>
+Date (UTC): <YYYY-MM-DD>
+Tester: <role or non-sensitive handle>
+Subject: <app/device/platform name>
+Version: <app/firmware/OS version>
+Transport: <RTMP|RTMPS|SRT>
+Video: <resolution/fps/codec/profile/bitrate/GOP>
+Audio: <codec/sample rate/channels/bitrate>
+Network: <Wi-Fi/4G/5G/tethering/wired + sanitized conditions>
+Scenario: <connect/disconnect/recover/long-run/etc.>
+Expected: <observable contract>
+Observed: <observable result>
+Result: PASS | WARN | FAIL
+Evidence: <sanitized log/artifact reference; no credentials>
+Known limitations: <anything not covered>
+```
+
+If a result is platform-specific or depends on an account feature, record that limitation rather than generalizing it to all accounts or regions.
+
 ## Manual test report schema
 
 Create a sanitized JSON report under `docs/compatibility-reports/` only when a manual slot is actually exercised. Schema version 1 is deliberately closed: reports may contain only the fields shown below, and each `checks` object may contain only `name`, `result`, and optional `notes`. Additions require an explicit validator/schema change first rather than silently creating a new free-form evidence channel.
