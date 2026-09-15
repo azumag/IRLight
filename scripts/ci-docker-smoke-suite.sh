@@ -48,6 +48,7 @@ smokes=(
 # token into the compact result rather than propagating the rest of diagnostics.
 results=()
 failures=()
+failure_contexts=()
 diagnostic_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-docker-smoke-suite.XXXXXX")"
 trap 'rm -rf "$diagnostic_tmp_dir"' EXIT
 
@@ -68,7 +69,8 @@ extract_failure_stage() {
 
 write_step_summary() {
   local summary_file="${GITHUB_STEP_SUMMARY:-}"
-  local result smoke outcome status duration stage
+  local result smoke outcome status duration stage context context_file
+  local project service container image state docker_status
 
   if [[ -z "$summary_file" ]]; then
     return 0
@@ -84,18 +86,40 @@ write_step_summary() {
       printf '| `%s` | %s | %s | %ss | `%s` |\n' \
         "$smoke" "$outcome" "$status" "$duration" "$stage"
     done
+
+    for context in "${failure_contexts[@]}"; do
+      IFS='|' read -r smoke context_file <<<"$context"
+      echo
+      printf '#### Failure context: `%s`\n\n' "$smoke"
+      if [[ ! -s "$context_file" ]]; then
+        echo 'No Compose-managed containers remained at the failure boundary.'
+        continue
+      fi
+
+      echo '| Compose project | Service | Container | Image | State | Status |'
+      echo '| --- | --- | --- | --- | --- | --- |'
+      while IFS='|' read -r project service container image state docker_status; do
+        printf '| `%s` | `%s` | `%s` | `%s` | `%s` | %s |\n' \
+          "$project" "$service" "$container" "$image" "$state" "$docker_status"
+      done <"$context_file"
+    done
   } >>"$summary_file"
 }
 
 emit_failure_context() {
   local smoke="$1"
+  local safe_name="${smoke//\//_}"
+  local container_state_file
+
+  safe_name="${safe_name//./_}"
+  container_state_file="$diagnostic_tmp_dir/${safe_name}.containers"
 
   # Capture this immediately after the failed scenario returns. Waiting until
   # all 17 smokes finish lets later scenario cleanup erase the very container
   # state needed to distinguish an application failure from runner pressure.
-  # Keep the snapshot deliberately narrow: names, images and Docker's status
-  # string are useful for exit/health classification without exposing env,
-  # commands, inspect payloads or arbitrary container logs.
+  # Keep the snapshot deliberately narrow: Compose project/service, names,
+  # images and Docker state/status are useful for exit/health classification
+  # without exposing env, commands, inspect payloads or arbitrary logs.
   printf '%s\n' "--- Docker smoke runner diagnostics (secret-safe; scenario=$smoke) ---"
   echo 'Filesystem:'
   df -h / || true
@@ -103,8 +127,22 @@ emit_failure_context() {
   docker system df || true
   echo 'Compose projects:'
   docker compose ls --all || true
-  echo 'Container state (name/image/status only):'
-  docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+
+  if ! docker ps -a \
+    --filter label=com.docker.compose.project \
+    --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}' \
+    >"$container_state_file"
+  then
+    : >"$container_state_file"
+  fi
+
+  echo 'Compose container state (project/service/name/image/state/status only):'
+  if [[ -s "$container_state_file" ]]; then
+    cat "$container_state_file"
+  else
+    echo '(none)'
+  fi
+  failure_contexts+=("$smoke|$container_state_file")
 }
 
 for smoke in "${smokes[@]}"; do
