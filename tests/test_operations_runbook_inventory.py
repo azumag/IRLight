@@ -176,11 +176,17 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
 
         self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
         self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("IRLIGHT_TCP_ESTABLISHED_RESETS_MODE=enabled", text)
+        self.assertIn("tcp_established_resets_status=UNKNOWN", text)
         self.assertIn("同じ host", text)
         self.assertIn("network namespace", text)
         self.assertIn("WARNING", text)
         self.assertIn("単独では `CRITICAL`", text)
         self.assertIn("baseline を作成・更新・削除", text)
+        self.assertIn(
+            "interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status",
+            text,
+        )
 
     def test_cgroup_runtime_runbook_keeps_cpu_throttling_opt_in_contract(self) -> None:
         relative_path = RELATED_PROCEDURES["cgroup runtime pressure aggregate"]
