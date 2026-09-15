@@ -46,6 +46,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - network interface error / drop delta の targeted read-only 診断: [network-interface-error-monitoring.md](network-interface-error-monitoring.md)
 - UDP SNMP error delta の targeted read-only 診断: [udp-snmp-error-monitoring.md](udp-snmp-error-monitoring.md)
 - TCP SNMP retransmit delta の targeted read-only 診断: [tcp-snmp-retransmit-monitoring.md](tcp-snmp-retransmit-monitoring.md)
+- TCP listen overflow / drop delta の targeted read-only 診断: [tcp-listen-overflow-monitoring.md](tcp-listen-overflow-monitoring.md)
 - 認証 Session GC: [auth-session-gc.md](auth-session-gc.md)
 - ユーザー単位の同時 Session 利用枠診断: [session-capacity-exhaustion.md](session-capacity-exhaustion.md)
 - structured log redaction audit: [log-redaction-audit.md](log-redaction-audit.md)
