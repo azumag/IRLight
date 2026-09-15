@@ -40,7 +40,7 @@ Example shape:
 
 Allowed overall results are `PASS`, `PARTIAL`, `FAIL`, and `BLOCKED`. A report referenced by a `manual_verified` matrix entry must be `PASS`; partial, failed, or blocked runs can be retained as investigation evidence but must not be promoted into a compatibility support claim.
 
-Check results are `PASS`, `FAIL`, `BLOCKED`, or `NOT_APPLICABLE`.
+Check results are `PASS`, `FAIL`, `BLOCKED`, or `NOT_APPLICABLE`. For `manual_verified` evidence, every applicable check must be `PASS`, no check may be `FAIL` or `BLOCKED`, and at least one check must actually be `PASS`; an all-`NOT_APPLICABLE` report cannot establish compatibility.
 
 ## Secret boundary
 
