@@ -33,6 +33,7 @@ REQUIRED_REPORT_FIELDS = {
     "checks",
     "notes",
 }
+ALLOWED_CHECK_FIELDS = {"name", "result", "notes"}
 SENSITIVE_FIELD_NAMES = {
     "apikey",
     "accesstoken",
@@ -144,6 +145,11 @@ def validate_report(
     missing = sorted(REQUIRED_REPORT_FIELDS - report.keys())
     if missing:
         errors.append("missing fields: " + ", ".join(missing))
+    unknown = sorted(
+        str(field) for field in report.keys() if field not in REQUIRED_REPORT_FIELDS
+    )
+    if unknown:
+        errors.append("unknown fields are not allowed: " + ", ".join(unknown))
 
     for field in (
         "entry_id",
@@ -181,6 +187,13 @@ def validate_report(
             if not isinstance(check, dict):
                 errors.append(f"{prefix} must be an object")
                 continue
+            unknown_check_fields = sorted(
+                str(field) for field in check.keys() if field not in ALLOWED_CHECK_FIELDS
+            )
+            if unknown_check_fields:
+                errors.append(
+                    f"{prefix} has unknown fields: " + ", ".join(unknown_check_fields)
+                )
             if not _string(check.get("name")):
                 errors.append(f"{prefix}.name must be a non-empty string")
             check_result = check.get("result")
@@ -222,9 +235,10 @@ def _safe_report_path(root: Path, raw_path: str) -> Path | None:
     relative = Path(raw_path)
     if relative.is_absolute() or any(part == ".." for part in relative.parts):
         return None
+    report_root = (root / MANUAL_REPORT_PREFIX.rstrip("/")).resolve()
     candidate = (root / relative).resolve()
     try:
-        candidate.relative_to(root.resolve())
+        candidate.relative_to(report_root)
     except ValueError:
         return None
     return candidate
