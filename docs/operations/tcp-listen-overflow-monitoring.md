@@ -30,6 +30,26 @@ IRLIGHT_TCP_NETSTAT_BASELINE_PATH=/run/irlight-monitor/netstat.baseline \
 
 baseline は **同じ host、同じ network namespace、同じ boot / counter generation** でのみ比較してください。再起動、network namespace 再作成、counter generation の切替後は、障害がないことを確認して monitoring 側で baseline を取り直します。current の対象 counter が baseline より小さい場合、checker は generation を推測せず `UNKNOWN / counter_reset` にします。
 
+## network egress aggregate への opt-in
+
+通常の `check-network-egress-health.sh` は baseline を持たない既存環境の stdout / exit code を変えないため、TCP listener pressure を既定では含めません。同じ一次切り分けに含める場合だけ、`IRLIGHT_TCP_LISTEN_PRESSURE_MODE=enabled` と baseline を明示します。
+
+```bash
+IRLIGHT_TCP_LISTEN_PRESSURE_MODE=enabled \
+IRLIGHT_TCP_NETSTAT_BASELINE_PATH=/run/irlight-monitor/netstat.baseline \
+bash scripts/check-network-egress-health.sh eth0 dual
+```
+
+aggregate 内でも current は既定 `/proc/net/netstat` で、fixture 用に `IRLIGHT_TCP_NETSTAT_PATH` を上書きできます。mode は `disabled`（既定）または `enabled` のみです。不正 mode、baseline/current 欠損・破損、counter reset、component timeout は `tcp_listen_pressure_status=UNKNOWN` として fail-closed します。
+
+新規 `ListenOverflows` / `ListenDrops` は `WARNING` です。host / network namespace 全体の signal であり、特定 Session、port、service の確定障害へ自動帰属しないため、この component 単独では `CRITICAL` にしません。aggregate の severity は既存どおり `CRITICAL > UNKNOWN > WARNING > OK` なので、link / route / NIC の確定 `CRITICAL` を listener pressure の `WARNING` / `UNKNOWN` が隠しません。
+
+有効時だけ `tcp_listen_pressure_status` が optional status registry の末尾に追加されます。現在の固定順は `interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` です。aggregate 自身は baseline を作成・更新・削除せず、path、IP、port、counter 生値、credential を stdout に追加しません。
+
+```text
+IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK ipv6_route_status=OK tcp_listen_pressure_status=WARNING family=dual
+```
+
 ## status 契約
 
 - `OK` / exit `0`: `ListenOverflows` / `ListenDrops` に増加なし。
@@ -50,7 +70,9 @@ IRLIGHT_TCP_LISTEN_OVERFLOWS status=WARNING reason=tcp_listener_pressure listen_
 
 ```bash
 python -m unittest discover -s tests -p 'test_tcp_listen_overflows_check.py' -v
+python -m unittest discover -s tests -p 'test_network_egress_tcp_listen_pressure.py' -v
 bash -n scripts/check-tcp-listen-overflows.sh
+bash -n scripts/check-network-egress-health.sh
 ```
 
 この診断は原因を自動修復しません。backlog / sysctl 変更、service restart、traffic shaping、firewall 変更、provider 操作は影響範囲を確認した別の運用判断として扱います。
