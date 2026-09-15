@@ -11,7 +11,7 @@ RTMP / RTMPS など TCP を使う配信で reconnect、throughput 低下、送�
 - `OutSegs`: 送信した TCP segment の累積数。観測期間の送出 activity を確認する文脈値として出力します。
 - `RetransSegs`: 再送した TCP segment の累積数。baseline から増加していれば `WARNING` にします。
 
-`OutSegs` の増加だけでは warning にしません。また、kernel が将来追加した未知 field は record 全体の数値整合性を確認したうえで無視します。
+`OutSegs` の増加だけでは warning にしません。判定に使う `OutSegs` / `RetransSegs` は非負の有界整数として厳密に検査します。一方、Linux の標準 `Tcp:` record には `MaxConn=-1` のような signed sentinel が存在するため、判定対象外 field の値域を unsigned counter と決め付けず無視します。header と value の個数対応は維持し、将来 field が追加されても対象2 counter の意味が変わらない限り互換に扱います。
 
 ## baseline
 
@@ -32,7 +32,7 @@ baseline は **同じ host、同じ network namespace、同じ boot / counter ge
 
 - `OK` / exit `0`: `RetransSegs` に増加なし。
 - `WARNING` / exit `1`: `RetransSegs` が baseline から増加。
-- `UNKNOWN` / exit `3`: current / baseline 不在、TCP record の欠損・重複・不正値、counter reset 等で安全に評価できない。
+- `UNKNOWN` / exit `3`: current / baseline 不在、TCP record の欠損・重複、対象 counter の不正値、counter reset 等で安全に評価できない。
 
 TCP retransmission は host / network namespace 全体の signal です。少量の再送は通常のネットワークでも起こり得るため、この checker 単独では `CRITICAL` にせず、特定 IRLight Session や特定 destination の障害原因へ自動的に帰属させません。RTMP / RTMPS reconnect、destination 側 event、NIC error / drop、CPU / PSI、同時刻の packet loss 等の証跡と合わせて判断します。SRT など UDP の切り分けには別の UDP SNMP 診断を使います。
 
