@@ -95,9 +95,33 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK
 
 current/baseline path、IP、port、socket、counter の生値は aggregate 出力へ追加しません。
 
+## TCP SNMP retransmit delta の opt-in
+
+既定では `/proc/net/snmp` の TCP retransmission counter を aggregate に含めません。`OutSegs` / `RetransSegs` は host / network namespace 全体の signal であり、特定 Session や destination の障害へ自動帰属できないためです。また baseline generation を operator 側で管理できない環境の stdout / exit code を変えません。
+
+`check-tcp-snmp-retransmits.sh` を一次切り分けに含める場合だけ、`IRLIGHT_TCP_SNMP_RETRANSMITS_MODE=enabled` と baseline file を明示します。
+
+```bash
+IRLIGHT_TCP_SNMP_RETRANSMITS_MODE=enabled \
+IRLIGHT_TCP_SNMP_BASELINE_PATH=/run/irlight-monitor/proc-net-snmp.baseline \
+bash scripts/check-network-egress-health.sh eth0 dual
+```
+
+current は既定 `/proc/net/snmp` を読みます。fixture や明示した network namespace の snapshot を検査する場合だけ `IRLIGHT_TCP_SNMP_PATH` で上書きできます。baseline は [tcp-snmp-retransmit-monitoring.md](tcp-snmp-retransmit-monitoring.md) の契約どおり、同じ host / network namespace / boot generation から operator / monitoring 側が用意し、aggregate 自身は baseline を作成・更新・削除しません。
+
+mode は `disabled`（既定）または `enabled` のみです。不正 mode、baseline/current 欠損・破損、counter reset、component timeout は `tcp_snmp_retransmits_status=UNKNOWN` として fail-closed します。`RetransSegs` の新規増加は `WARNING` です。host-wide signal 単独では Session の確定障害を証明できないため、この component 単独では `CRITICAL` にしません。link / route / NIC の確定 `CRITICAL` は TCP `WARNING` / `UNKNOWN` に隠されません。
+
+TCP mode 未指定または `disabled` の場合、既存 stdout / exit code 形式を変更しません。有効時だけ `tcp_snmp_retransmits_status` を追加します。NIC、UDP、TCP を同時に有効化した場合は、その固定順で status field を表示します。
+
+```text
+IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK ipv6_route_status=OK tcp_snmp_retransmits_status=WARNING family=dual
+```
+
+current/baseline path、IP、port、socket、counter の生値は aggregate 出力へ追加しません。
+
 ## Opt-in status field の保守契約
 
-optional component の status field は、component ごとの出力分岐を組み合わせるのではなく、固定順の registry へ登録して最後に一度だけ stdout を組み立てます。現在の順序は `interface_errors_status` → `udp_snmp_errors_status` です。disabled の component は registry に登録せず、legacy 出力を byte-for-byte 維持します。
+optional component の status field は、component ごとの出力分岐を組み合わせるのではなく、固定順の registry へ登録して最後に一度だけ stdout を組み立てます。現在の順序は `interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` です。disabled の component は registry に登録せず、legacy 出力を byte-for-byte 維持します。
 
 新しい opt-in component を追加する場合は、component の exit code と status field を同じ登録処理へ渡し、status 表示と `CRITICAL > UNKNOWN > WARNING > OK` の severity merge を同時に更新します。個別の `printf` 分岐を増やしたり、field 登録だけ・severity merge だけを別々に追加しません。回帰テストでは all-disabled、各 component 単独、複数 component 同時有効の field 名・順序・exit code を固定します。
 
@@ -132,12 +156,14 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK ipv4_route_status=OK ipv6
 - NIC error/drop opt-in でも sysfs / baseline を変更せず、baseline lifecycle は monitoring 側に残します。
 - UDP SNMP opt-in でも current / baseline / proc / sysctl / socket を変更せず、baseline lifecycle は monitoring 側に残します。
 - UDP SNMP counter は host / network namespace 全体の signal として扱い、特定 interface / Session へ自動帰属しません。
+- TCP SNMP opt-in でも current / baseline / proc / sysctl / socket を変更せず、baseline lifecycle は monitoring 側に残します。
+- TCP retransmission counter は host / network namespace 全体の signal として扱い、特定 interface / Session / destination へ自動帰属しません。
 - `dual` を自動推測しません。address-family policy は deployment ごとに operator が明示します。
 - component timeout を無効化して unbounded execution に切り替える設定はありません。
 - `CRITICAL` を見ても自動修復せず、provider / OS / network の状態と進行中 Session への影響を確認してから復旧操作を判断します。
 
 ## 切り分け
 
-`link_status=CRITICAL` なら、まず interface / virtual NIC / provider network の状態を確認します。link が `OK` で route のみ `CRITICAL` なら、対象 family の default route と network configuration の変更履歴を read-only で確認します。`interface_errors_status=WARNING|CRITICAL` の場合は [network-interface-error-monitoring.md](network-interface-error-monitoring.md) で delta の意味と baseline generation を確認し、host / hypervisor / provider network、driver、queue、MTU、帯域飽和などを read-only で追加確認します。`udp_snmp_errors_status=WARNING` の場合は [udp-snmp-error-monitoring.md](udp-snmp-error-monitoring.md) で baseline generation と各 delta の意味を確認し、socket buffer pressure、checksum error、host-wide UDP activity を read-only で追加確認します。特定 Session への影響は Session / process / destination 側の証跡で別途確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout、baseline lifecycle、`timeout` utility の有無も確認し、「route がない」「NIC が壊れた」「UDP が詰まった」と推測して設定を書き換えないでください。
+`link_status=CRITICAL` なら、まず interface / virtual NIC / provider network の状態を確認します。link が `OK` で route のみ `CRITICAL` なら、対象 family の default route と network configuration の変更履歴を read-only で確認します。`interface_errors_status=WARNING|CRITICAL` の場合は [network-interface-error-monitoring.md](network-interface-error-monitoring.md) で delta の意味と baseline generation を確認し、host / hypervisor / provider network、driver、queue、MTU、帯域飽和などを read-only で追加確認します。`udp_snmp_errors_status=WARNING` の場合は [udp-snmp-error-monitoring.md](udp-snmp-error-monitoring.md) で baseline generation と各 delta の意味を確認し、socket buffer pressure、checksum error、host-wide UDP activity を read-only で追加確認します。`tcp_snmp_retransmits_status=WARNING` の場合は [tcp-snmp-retransmit-monitoring.md](tcp-snmp-retransmit-monitoring.md) で baseline generation を確認し、host-wide retransmission activity と Session / destination 側の reconnect、RTT、packet loss などの証跡を突き合わせます。TCP warning だけで特定 Session の障害や経路異常を断定しません。特定 Session への影響は Session / process / destination 側の証跡で別途確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout、baseline lifecycle、`timeout` utility の有無も確認し、「route がない」「NIC が壊れた」「UDP が詰まった」「TCP 経路が壊れた」と推測して設定を書き換えないでください。
 
 DNS 名前解決、宛先固有の疎通、RTMPS/TLS、実 publish の成否はこの check の範囲外です。egress 障害時は [egress-widespread-failure.md](egress-widespread-failure.md) と、必要に応じて Destination verification の診断を併用します。
