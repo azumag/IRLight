@@ -214,6 +214,16 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertIn("| `node-auth-ready` |", summary)
         self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
 
+    def test_resource_probes_are_timeout_bounded(self) -> None:
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=2s 10s df -h /",
+            self.source,
+        )
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=2s 10s docker system df",
+            self.source,
+        )
+
     def test_failure_context_does_not_use_secret_prone_docker_inspect(self) -> None:
         self.assertNotIn("docker inspect", self.source)
         self.assertIn("--filter label=com.docker.compose.project", self.source)
