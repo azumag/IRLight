@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from auth_store import _validate_sessions, _validate_users
-from catalog_store import CatalogValidationError, _validate_destination_server_url
+from catalog_store import CatalogStateError, _validate_catalog_authority
 from control_store import _validate_control
 from node_internal import _validate_tokens, validate_node_authority
 from state_safety import load_json_authority
@@ -157,25 +157,11 @@ def _inspect_authority(root_fd: int, authority_name: str, validator: Validator) 
 
 
 def _validate_catalog(value: dict[str, Any]) -> dict[str, Any]:
-    destinations = value.get("destinations")
-    assets = value.get("assets")
-    if not isinstance(destinations, dict) or not isinstance(assets, dict):
-        raise StateReadinessError("catalog has invalid structure")
-    for section in (destinations, assets):
-        if any(
-            not isinstance(key, str) or not isinstance(item, dict)
-            for key, item in section.items()
-        ):
-            raise StateReadinessError("catalog has an invalid record")
-    for item in destinations.values():
-        server_url = item.get("server_url")
-        if not isinstance(server_url, str):
-            continue
-        try:
-            _validate_destination_server_url(server_url)
-        except CatalogValidationError as exc:
-            raise StateReadinessError("catalog contains an unsafe destination") from exc
-    return value
+    """Reuse the CatalogStore authority contract without locks, writes, or repair."""
+    try:
+        return _validate_catalog_authority(value)
+    except CatalogStateError as exc:
+        raise StateReadinessError("catalog failed authority validation") from exc
 
 
 def _optional_entry_stat(
