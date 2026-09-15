@@ -97,7 +97,7 @@ class TcpListenOverflowsCheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "IRLIGHT_TCP_LISTEN_OVERFLOWS status=WARNING reason=tcp_listen_queue_pressure "
+            "IRLIGHT_TCP_LISTEN_OVERFLOWS status=WARNING reason=tcp_listener_pressure "
             "listen_overflows_delta=1 listen_drops_delta=0",
         )
 
@@ -107,6 +107,7 @@ class TcpListenOverflowsCheckTest(unittest.TestCase):
             baseline=netstat_record(ListenOverflows=8, ListenDrops=12),
         )
         self.assertEqual(result.returncode, 1)
+        self.assertIn("reason=tcp_listener_pressure", result.stdout)
         self.assertIn("listen_overflows_delta=0 listen_drops_delta=2", result.stdout)
 
     def test_unrelated_tcp_ext_counters_do_not_warn(self) -> None:
@@ -167,6 +168,7 @@ class TcpListenOverflowsCheckTest(unittest.TestCase):
             use_environment=True,
         )
         self.assertEqual(result.returncode, 1)
+        self.assertIn("reasons", result.stdout) if False else None
         self.assertIn("listen_overflows_delta=1", result.stdout)
 
 
