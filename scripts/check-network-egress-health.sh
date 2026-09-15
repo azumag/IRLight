@@ -124,6 +124,17 @@ link_code="$(run_component "$script_dir/check-network-link-health.sh" "$interfac
 overall_code="$link_code"
 ipv4_status="NOT_REQUIRED"
 ipv6_status="NOT_REQUIRED"
+optional_status_fields=()
+
+register_optional_status() {
+  local field_name="$1"
+  local exit_code="$2"
+
+  # Keep status rendering and severity aggregation coupled so future opt-in
+  # components cannot accidentally update one side without the other.
+  optional_status_fields+=("${field_name}=$(status_for_code "$exit_code")")
+  overall_code="$(merge_code "$overall_code" "$exit_code")"
+}
 
 if [[ "$address_family" == "ipv4" || "$address_family" == "dual" ]]; then
   ipv4_code="$(run_component "$script_dir/check-ipv4-default-route.sh" "$interface_name" "$ipv4_route_table")"
@@ -137,7 +148,6 @@ if [[ "$address_family" == "ipv6" || "$address_family" == "dual" ]]; then
   overall_code="$(merge_code "$overall_code" "$ipv6_code")"
 fi
 
-interface_errors_status=""
 case "$interface_errors_mode" in
   disabled)
     ;;
@@ -146,17 +156,13 @@ case "$interface_errors_mode" in
       "$script_dir/check-network-interface-errors.sh" \
       "$interface_dir/statistics" \
       "$interface_errors_baseline_dir")"
-    interface_errors_status="$(status_for_code "$interface_errors_code")"
-    overall_code="$(merge_code "$overall_code" "$interface_errors_code")"
+    register_optional_status "interface_errors_status" "$interface_errors_code"
     ;;
   *)
-    interface_errors_code=3
-    interface_errors_status="UNKNOWN"
-    overall_code="$(merge_code "$overall_code" "$interface_errors_code")"
+    register_optional_status "interface_errors_status" 3
     ;;
 esac
 
-udp_snmp_errors_status=""
 case "$udp_snmp_errors_mode" in
   disabled)
     ;;
@@ -165,47 +171,21 @@ case "$udp_snmp_errors_mode" in
       "$script_dir/check-udp-snmp-errors.sh" \
       "$udp_snmp_path" \
       "$udp_snmp_baseline_path")"
-    udp_snmp_errors_status="$(status_for_code "$udp_snmp_errors_code")"
-    overall_code="$(merge_code "$overall_code" "$udp_snmp_errors_code")"
+    register_optional_status "udp_snmp_errors_status" "$udp_snmp_errors_code"
     ;;
   *)
-    udp_snmp_errors_code=3
-    udp_snmp_errors_status="UNKNOWN"
-    overall_code="$(merge_code "$overall_code" "$udp_snmp_errors_code")"
+    register_optional_status "udp_snmp_errors_status" 3
     ;;
 esac
 
-if [[ "$interface_errors_mode" == "disabled" && "$udp_snmp_errors_mode" == "disabled" ]]; then
-  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s family=%s\n' \
-    "$(status_for_code "$overall_code")" \
-    "$(status_for_code "$link_code")" \
-    "$ipv4_status" \
-    "$ipv6_status" \
-    "$address_family"
-elif [[ "$udp_snmp_errors_mode" == "disabled" ]]; then
-  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s interface_errors_status=%s family=%s\n' \
-    "$(status_for_code "$overall_code")" \
-    "$(status_for_code "$link_code")" \
-    "$ipv4_status" \
-    "$ipv6_status" \
-    "$interface_errors_status" \
-    "$address_family"
-elif [[ "$interface_errors_mode" == "disabled" ]]; then
-  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s udp_snmp_errors_status=%s family=%s\n' \
-    "$(status_for_code "$overall_code")" \
-    "$(status_for_code "$link_code")" \
-    "$ipv4_status" \
-    "$ipv6_status" \
-    "$udp_snmp_errors_status" \
-    "$address_family"
-else
-  printf 'IRLIGHT_NETWORK_EGRESS_HEALTH status=%s link_status=%s ipv4_route_status=%s ipv6_route_status=%s interface_errors_status=%s udp_snmp_errors_status=%s family=%s\n' \
-    "$(status_for_code "$overall_code")" \
-    "$(status_for_code "$link_code")" \
-    "$ipv4_status" \
-    "$ipv6_status" \
-    "$interface_errors_status" \
-    "$udp_snmp_errors_status" \
-    "$address_family"
-fi
+output_fields=(
+  "IRLIGHT_NETWORK_EGRESS_HEALTH"
+  "status=$(status_for_code "$overall_code")"
+  "link_status=$(status_for_code "$link_code")"
+  "ipv4_route_status=$ipv4_status"
+  "ipv6_route_status=$ipv6_status"
+)
+output_fields+=("${optional_status_fields[@]}")
+output_fields+=("family=$address_family")
+printf '%s\n' "${output_fields[*]}"
 exit "$overall_code"

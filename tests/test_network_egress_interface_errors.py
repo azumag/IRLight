@@ -110,11 +110,14 @@ class NetworkEgressInterfaceErrorsTest(unittest.TestCase):
             "ipv4_route_status=OK ipv6_route_status=OK family=dual",
         )
 
-    def test_enabled_ok_is_included_in_aggregate(self) -> None:
+    def test_enabled_ok_preserves_interface_only_field_order(self) -> None:
         result, _ = self.run_check(mode="enabled", baseline={})
         self.assertEqual(result.returncode, 0)
-        self.assertIn("status=OK", result.stdout)
-        self.assertIn("interface_errors_status=OK", result.stdout)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK "
+            "ipv4_route_status=OK ipv6_route_status=OK interface_errors_status=OK family=dual",
+        )
 
     def test_drop_delta_propagates_warning(self) -> None:
         result, _ = self.run_check(
