@@ -15,6 +15,8 @@ The normal unit test suite also exercises the manual-report contract.
 
 A report uses `schema_version: 1` and records the matrix `entry_id` and `coverage` it supports. `tested_at` must be an ISO 8601 timestamp with an explicit timezone. The subject/application version, execution environment or device/OS, transport, media profile, network conditions, overall result, and concrete checks must be recorded.
 
+Manual report files must be strict JSON and must not exceed 64 KiB. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected before schema validation so evidence has one parser-independent meaning and cannot become an unbounded CI input.
+
 Example shape:
 
 ```json
@@ -46,7 +48,7 @@ Check results are `PASS`, `FAIL`, `BLOCKED`, or `NOT_APPLICABLE`. For `manual_ve
 
 Never commit real stream keys, passwords, passphrases, bearer/API tokens, cookies, private keys, credential-bearing URLs, raw authentication headers, or unredacted logs. The validator rejects common secret-bearing field names recursively, including separator/case variants such as `clientSecret` and `access-token`. It also rejects URL userinfo and URL query fields whose decoded names are recognized as secret-bearing (for example `passphrase`, `stream_key`, `token`, or `client_secret`) without echoing the URL value into the validation error. SRT `streamid` query values are rejected as evidence URLs as well because they can carry authentication and routing material; record only a sanitized description of the SRT mode instead of the live endpoint.
 
-These checks are intentionally fail-closed guards, not a complete secret scanner. They do not make arbitrary report text safe to publish and do not replace manual sanitization before commit. In particular, redact logs and free-form diagnostics before copying them into `notes`, `checks`, or additional report fields.
+These checks are intentionally fail-closed guards, not a complete secret scanner. They do not make arbitrary report text safe to publish and do not replace manual sanitization before commit. In particular, redact logs and free-form diagnostics before summarizing them in report `notes` or check `notes`; schema v1 does not allow additional report fields.
 
 Use opaque Session IDs and fixed dummy values only when an identifier is necessary to explain the test. Keep platform credentials and private keys outside the repository and CI.
 
