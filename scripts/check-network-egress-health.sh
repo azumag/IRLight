@@ -18,6 +18,9 @@ udp_snmp_baseline_path="${IRLIGHT_UDP_SNMP_BASELINE_PATH:-}"
 tcp_snmp_retransmits_mode="${IRLIGHT_TCP_SNMP_RETRANSMITS_MODE:-disabled}"
 tcp_snmp_path="${IRLIGHT_TCP_SNMP_PATH:-/proc/net/snmp}"
 tcp_snmp_baseline_path="${IRLIGHT_TCP_SNMP_BASELINE_PATH:-}"
+tcp_listen_pressure_mode="${IRLIGHT_TCP_LISTEN_PRESSURE_MODE:-disabled}"
+tcp_netstat_path="${IRLIGHT_TCP_NETSTAT_PATH:-/proc/net/netstat}"
+tcp_netstat_baseline_path="${IRLIGHT_TCP_NETSTAT_BASELINE_PATH:-}"
 
 unknown() {
   local reason="$1"
@@ -193,6 +196,21 @@ case "$tcp_snmp_retransmits_mode" in
     ;;
   *)
     register_optional_status "tcp_snmp_retransmits_status" 3
+    ;;
+esac
+
+case "$tcp_listen_pressure_mode" in
+  disabled)
+    ;;
+  enabled)
+    tcp_listen_pressure_code="$(run_component \
+      "$script_dir/check-tcp-listen-overflows.sh" \
+      "$tcp_netstat_path" \
+      "$tcp_netstat_baseline_path")"
+    register_optional_status "tcp_listen_pressure_status" "$tcp_listen_pressure_code"
+    ;;
+  *)
+    register_optional_status "tcp_listen_pressure_status" 3
     ;;
 esac
 
