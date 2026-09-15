@@ -119,6 +119,17 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("interface_errors_status=UNKNOWN", text)
         self.assertIn("aggregate 自身は作成・更新・削除しません", text)
 
+    def test_network_egress_runbook_keeps_udp_snmp_opt_in_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["targeted network egress health"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_UDP_SNMP_ERRORS_MODE=enabled", text)
+        self.assertIn("IRLIGHT_UDP_SNMP_BASELINE_PATH", text)
+        self.assertIn("既定では `/proc/net/snmp` の UDP 累積 error counter を aggregate に含めません", text)
+        self.assertIn("udp_snmp_errors_status=UNKNOWN", text)
+        self.assertIn("host / network namespace 全体の signal", text)
+        self.assertIn("aggregate 自身は作成・更新・削除しません", text)
+
     def test_cgroup_runtime_runbook_keeps_cpu_throttling_opt_in_contract(self) -> None:
         relative_path = RELATED_PROCEDURES["cgroup runtime pressure aggregate"]
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
