@@ -88,7 +88,15 @@ write_step_summary() {
 }
 
 emit_failure_context() {
-  echo '--- Docker smoke runner diagnostics (secret-safe) ---'
+  local smoke="$1"
+
+  # Capture this immediately after the failed scenario returns. Waiting until
+  # all 17 smokes finish lets later scenario cleanup erase the very container
+  # state needed to distinguish an application failure from runner pressure.
+  # Keep the snapshot deliberately narrow: names, images and Docker's status
+  # string are useful for exit/health classification without exposing env,
+  # commands, inspect payloads or arbitrary container logs.
+  printf '%s\n' "--- Docker smoke runner diagnostics (secret-safe; scenario=$smoke) ---"
   echo 'Filesystem:'
   df -h / || true
   echo 'Docker storage:'
@@ -128,6 +136,7 @@ for smoke in "${smokes[@]}"; do
       "$smoke" "$status" "$duration" "$stage"
     results+=("$smoke|FAIL|$status|$duration|$stage")
     failures+=("$smoke:$status:$stage")
+    emit_failure_context "$smoke" >&2
   fi
   echo "::endgroup::"
 done
@@ -137,7 +146,6 @@ write_step_summary
 if ((${#failures[@]} > 0)); then
   printf 'Docker smoke failures (%d):\n' "${#failures[@]}" >&2
   printf '  %s\n' "${failures[@]}" >&2
-  emit_failure_context >&2
   exit 1
 fi
 
