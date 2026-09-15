@@ -168,7 +168,6 @@ class TcpListenOverflowsCheckTest(unittest.TestCase):
             use_environment=True,
         )
         self.assertEqual(result.returncode, 1)
-        self.assertIn("reasons", result.stdout) if False else None
         self.assertIn("listen_overflows_delta=1", result.stdout)
 
 
