@@ -14,13 +14,14 @@ Validate the matrix with:
 
 ```sh
 python3 scripts/validate-compatibility-matrix.py
+python3 scripts/validate-manual-compatibility-reports.py
 ```
 
 The normal unit suite also runs the same contract checks.
 
-## Manual test report template
+## Manual execution worksheet
 
-Create a sanitized report under `docs/compatibility-reports/` when a manual slot is actually exercised. A report should contain at least:
+Before serializing evidence, the tester may use the existing human-facing worksheet below to capture the observation. `WARN` is a triage result, not a verified compatibility claim: a warning must remain unverified until the evidence can be represented by the JSON schema below with report-level `PASS` and passing applicable checks.
 
 ```text
 Test ID: <stable id matching/replacing a matrix entry>
@@ -42,13 +43,59 @@ Known limitations: <anything not covered>
 
 If a result is platform-specific or depends on an account feature, record that limitation rather than generalizing it to all accounts or regions.
 
+## Manual test report schema
+
+Create a sanitized JSON report under `docs/compatibility-reports/` only when a manual slot is actually exercised. Schema version 1 is deliberately closed: reports may contain only the fields shown below, and each `checks` object may contain only `name`, `result`, and optional `notes`. Additions require an explicit validator/schema change first rather than silently creating a new free-form evidence channel.
+
+```json
+{
+  "schema_version": 1,
+  "entry_id": "obs-real-device",
+  "coverage": "pc.obs",
+  "tested_at": "2026-09-16T05:30:00+09:00",
+  "subject": "OBS Studio",
+  "version": "32.2.1",
+  "environment": "macOS 15, Apple Silicon test host",
+  "transport": "RTMPS",
+  "profile": "1080p30 H.264/AAC",
+  "network": "wired LAN to local IRLight node",
+  "result": "PASS",
+  "checks": [
+    {
+      "name": "publish accepted",
+      "result": "PASS",
+      "notes": "Sanitized observation only"
+    },
+    {
+      "name": "disconnect and recover",
+      "result": "PASS"
+    }
+  ],
+  "notes": "Sanitized compatibility evidence; no credentials recorded."
+}
+```
+
+Report-level `result` is one of `PASS`, `PARTIAL`, `FAIL`, or `BLOCKED`. Check results are one of `PASS`, `FAIL`, `BLOCKED`, or `NOT_APPLICABLE`. A matrix entry may use `manual_verified` only when the bound report has `result=PASS`, every applicable check passes, and at least one check is `PASS`.
+
+`tested_at` must include a timezone offset. `entry_id` and `coverage` must match the matrix entry exactly. Record versions, profile, environment, and network conditions precisely enough to reproduce the test, but keep account identities, private endpoints, credentials, and raw logs out of the report.
+
+Evidence paths are resolved before use and the resolved file must remain inside `docs/compatibility-reports/`. A path traversal or symlink that resolves elsewhere in the repository is rejected rather than treated as manual evidence.
+
+## Secret boundary
+
+Never commit real stream keys, passwords, passphrases, bearer/API tokens, cookies, private keys, credential-bearing URLs, raw authentication headers, or unredacted logs. The validator rejects common secret-bearing field names recursively, including separator/case variants such as `clientSecret` and `access-token`. It also rejects URL userinfo and URL query fields whose decoded names are recognized as secret-bearing (for example `passphrase`, `stream_key`, `token`, or `client_secret`) without echoing the URL value into the validation error. SRT `streamid` query values are rejected as evidence URLs as well because they can carry authentication and routing material; record only a sanitized description of the SRT mode instead of the live endpoint.
+
+These checks are intentionally fail-closed guards, not a complete secret scanner. They do not make arbitrary report text safe to publish and do not replace manual sanitization before commit. In particular, redact logs and free-form diagnostics before copying them into `notes` or check `notes`.
+
+Use opaque Session IDs and fixed dummy values only when an identifier is necessary to explain the test. Keep platform credentials and private keys outside the repository and CI.
+
 ## Updating the matrix
 
 When evidence is added, replace or update the matching coverage entry rather than leaving both a `not_tested` placeholder and a verified claim for the same exact test identity. Keep `required_coverage` explicit so deleting an untested mobile/hardware/platform row cannot make the dashboard look more complete.
 
 Automated evidence must point to a repository-owned automation surface under `.github/workflows/`, `scripts/`, or `tests/`, and every referenced path must exist. Workflow evidence must use `.yml` / `.yaml`; script or test evidence must use `.sh` / `.py`. A README, design note, or other documentation file is not sufficient by itself to promote a coverage slot to `automated`, even when it lives inside one of those directories. This catches renamed/deleted smoke workflows and prevents a documentation-only reference from becoming a stale compatibility claim.
 
-Manual evidence remains restricted to sanitized reports under `docs/compatibility-reports/`. Supporting logs or screenshots may be described from that report, but credentials and private account details must not be committed.
+Manual evidence remains restricted to sanitized JSON reports under `docs/compatibility-reports/`. Supporting logs or screenshots may be described from that report, but credentials and private account details must not be committed.
 
 ## Scope not covered by this slice
 

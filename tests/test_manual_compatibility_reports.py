@@ -140,6 +140,16 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
             any(error.startswith("checks[0].result must be one of") for error in errors)
         )
 
+    def test_report_rejects_unknown_top_level_and_check_fields(self) -> None:
+        report = self._report()
+        report["diagnostics"] = {"message": "sanitized diagnostic text"}
+        report["checks"][0]["command_line"] = "sanitized command description"
+
+        errors = validator.validate_report(report)
+
+        self.assertIn("unknown fields are not allowed: diagnostics", errors)
+        self.assertIn("checks[0] has unknown fields: command_line", errors)
+
     def test_report_rejects_sensitive_field_names_recursively(self) -> None:
         report = self._report()
         report["diagnostics"] = {
@@ -148,6 +158,7 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
 
         errors = validator.validate_report(report)
 
+        self.assertIn("unknown fields are not allowed: diagnostics", errors)
         self.assertTrue(
             any(
                 "sensitive field name is not allowed in evidence: "
@@ -184,31 +195,34 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
         self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
 
     def test_report_rejects_percent_encoded_sensitive_query_name(self) -> None:
-        report = self._report()
-        report["diagnostics"] = {
-            "endpoint": (
+        report = self._report(
+            notes=(
+                "Observed endpoint "
                 "srt://example.invalid:9000?Pass%70hrase=AUDIT_DUMMY_SECRET"
             )
-        }
+        )
 
         errors = validator.validate_report(report)
 
         self.assertIn(
-            "credential-bearing URL is not allowed in evidence: diagnostics.endpoint",
+            "credential-bearing URL is not allowed in evidence: notes",
             errors,
         )
         self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
 
     def test_report_rejects_srt_streamid_url(self) -> None:
-        report = self._report()
-        report["diagnostics"] = {
-            "endpoint": "srt://example.invalid:9000?streamid=publish:live:dummy-user:AUDIT_DUMMY_SECRET"
-        }
+        report = self._report(
+            notes=(
+                "Observed endpoint "
+                "srt://example.invalid:9000?streamid="
+                "publish:live:dummy-user:AUDIT_DUMMY_SECRET"
+            )
+        )
 
         errors = validator.validate_report(report)
 
         self.assertIn(
-            "credential-bearing URL is not allowed in evidence: diagnostics.endpoint",
+            "credential-bearing URL is not allowed in evidence: notes",
             errors,
         )
         self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
@@ -229,6 +243,41 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
         errors = validator.validate_matrix_manual_reports(
             self._matrix(["docs/compatibility-reports/../obs.json"]), root=ROOT
         )
+        self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
+
+    def test_manual_evidence_symlink_cannot_escape_report_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_dir = root / "docs" / "compatibility-reports"
+            report_dir.mkdir(parents=True)
+            outside = root / "docs" / "outside.json"
+            outside.write_text(json.dumps(self._report()), encoding="utf-8")
+            (report_dir / "obs.json").symlink_to(outside)
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
+        self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
+
+    def test_manual_evidence_directory_symlink_cannot_redirect_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / "docs"
+            docs.mkdir()
+            outside_dir = root / "outside-reports"
+            outside_dir.mkdir()
+            (outside_dir / "obs.json").write_text(
+                json.dumps(self._report()), encoding="utf-8"
+            )
+            (docs / "compatibility-reports").symlink_to(
+                outside_dir, target_is_directory=True
+            )
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
         self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
 
 
