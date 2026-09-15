@@ -30,7 +30,6 @@ class CatalogReadinessAuthoritySyncTest(unittest.TestCase):
             script = textwrap.dedent(
                 """
                 import json
-                from pathlib import Path
 
                 import app as control_app
                 from fastapi import HTTPException
@@ -60,7 +59,33 @@ class CatalogReadinessAuthoritySyncTest(unittest.TestCase):
                                 "type": "rtmp",
                                 "display_name": "Example",
                                 "server_url": "rtmp://example.invalid/live",
-                                "secret_ref": sentinel,
+                                "secret_ref": "secret/example",
+                            }
+                        },
+                        "assets": {},
+                    },
+                    {
+                        "destinations": {
+                            "destination-1": {
+                                "id": "destination-1",
+                                "user_id": "user-1",
+                                "type": "rtmp",
+                                "display_name": "Example",
+                                "server_url": "rtmp://example.invalid/live",
+                                "secret_ref": [sentinel],
+                            }
+                        },
+                        "assets": {},
+                    },
+                    {
+                        "destinations": {
+                            "destination-1": {
+                                "id": "destination-1",
+                                "user_id": "user-1",
+                                "type": "rtmp",
+                                "display_name": "Example",
+                                "server_url": f"rtmp://user:{sentinel}@example.invalid/live",
+                                "secret_ref": "secret/example",
                             }
                         },
                         "assets": {},
