@@ -59,9 +59,13 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             docker.write_text(
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
-                "printf 'FAKE_DOCKER %s\\n' \"$*\"\n"
+                "printf 'FAKE_DOCKER %s\\n' \"$*\" >&2\n"
+                "if [[ \"${1:-}\" == \"ps\" ]]; then\n"
+                "  printf '%s\\n' "
+                "'irlight-ci|control|irlight-ci-control-1|irlight/control:ci|exited|Exited (7) 1 second ago'\n"
+                "fi\n"
                 "if [[ -f failed-scenario-state ]]; then\n"
-                "  printf 'FAKE_DOCKER_STATE failed-scenario-present\\n'\n"
+                "  printf 'FAKE_DOCKER_STATE failed-scenario-present\\n' >&2\n"
                 "fi\n",
                 encoding="utf-8",
             )
@@ -119,6 +123,7 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             self.assertIn("stage=-", completed.stdout)
             self.assertIn(f"| `{smoke}` | PASS | 0 |", summary)
         self.assertNotIn("Docker smoke runner diagnostics", completed.stderr)
+        self.assertNotIn("Failure context:", summary)
 
     def test_failure_records_exit_code_stage_and_secret_safe_runner_context(self) -> None:
         failing_smoke = self.smokes[0]
@@ -142,11 +147,24 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertIn("FAKE_DOCKER system df", completed.stderr)
         self.assertIn("FAKE_DOCKER compose ls --all", completed.stderr)
         self.assertIn(
-            "FAKE_DOCKER ps -a --format table {{.Names}}\\t{{.Image}}\\t{{.Status}}",
+            "FAKE_DOCKER ps -a --filter label=com.docker.compose.project",
+            completed.stderr,
+        )
+        self.assertIn(
+            "Compose container state (project/service/name/image/state/status only):",
+            completed.stderr,
+        )
+        self.assertIn(
+            "irlight-ci|control|irlight-ci-control-1|irlight/control:ci|exited|Exited (7) 1 second ago",
             completed.stderr,
         )
         self.assertIn(f"| `{failing_smoke}` | FAIL | 7 |", summary)
         self.assertIn("| `compose-control-up` |", summary)
+        self.assertIn(f"#### Failure context: `{failing_smoke}`", summary)
+        self.assertIn(
+            "| `irlight-ci` | `control` | `irlight-ci-control-1` | `irlight/control:ci` | `exited` | Exited (7) 1 second ago |",
+            summary,
+        )
         self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
 
     def test_failure_context_is_captured_before_later_smoke_cleanup(self) -> None:
@@ -181,6 +199,8 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
 
     def test_failure_context_does_not_use_secret_prone_docker_inspect(self) -> None:
         self.assertNotIn("docker inspect", self.source)
+        self.assertIn("--filter label=com.docker.compose.project", self.source)
+        self.assertIn('com.docker.compose.service', self.source)
 
 
 if __name__ == "__main__":
