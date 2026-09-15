@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
+MAX_MANUAL_REPORT_BYTES = 64 * 1024
 REPORT_RESULTS = {"PASS", "PARTIAL", "FAIL", "BLOCKED"}
 CHECK_RESULTS = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
 REQUIRED_REPORT_FIELDS = {
@@ -123,6 +124,43 @@ def _credential_url_paths(value: Any, *, prefix: str = "") -> list[str]:
             ):
                 findings.append(prefix or "<root>")
     return findings
+
+
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError("duplicate object key is not allowed")
+        value[key] = child
+    return value
+
+
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
+def _load_strict_json_object(path: Path, *, description: str) -> dict[str, Any]:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"cannot stat {description}: {exc}") from exc
+    if size > MAX_MANUAL_REPORT_BYTES:
+        raise ValueError(
+            f"{description} exceeds {MAX_MANUAL_REPORT_BYTES}-byte limit"
+        )
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        value = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_object_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"cannot read {description}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{description} root must be an object")
+    return value
 
 
 def validate_report(
@@ -288,12 +326,11 @@ def validate_matrix_manual_reports(
                 errors.append(f"{prefix}: unsafe manual evidence path: {raw_path}")
                 continue
             try:
-                report = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                errors.append(f"{prefix}: cannot read {raw_path}: {exc}")
-                continue
-            if not isinstance(report, dict):
-                errors.append(f"{prefix}: report root must be an object: {raw_path}")
+                report = _load_strict_json_object(
+                    path, description=f"manual compatibility report {raw_path}"
+                )
+            except ValueError as exc:
+                errors.append(f"{prefix}: {exc}")
                 continue
 
             for error in validate_report(
