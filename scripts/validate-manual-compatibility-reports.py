@@ -87,7 +87,11 @@ def validate_report(
     errors: list[str] = []
 
     schema_version = report.get("schema_version")
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 1
+    ):
         errors.append("schema_version must be integer 1")
 
     missing = sorted(REQUIRED_REPORT_FIELDS - report.keys())
@@ -121,6 +125,7 @@ def validate_report(
         errors.append("notes must be a string")
 
     checks = report.get("checks")
+    valid_check_results: list[str] = []
     if not isinstance(checks, list) or not checks:
         errors.append("checks must be a non-empty list")
     else:
@@ -136,8 +141,18 @@ def validate_report(
                 errors.append(
                     f"{prefix}.result must be one of {sorted(CHECK_RESULTS)}"
                 )
+            else:
+                valid_check_results.append(check_result)
+                if require_pass and check_result not in {"PASS", "NOT_APPLICABLE"}:
+                    errors.append(
+                        f"{prefix}.result must be PASS or NOT_APPLICABLE for "
+                        "manual_verified evidence"
+                    )
             if "notes" in check and not isinstance(check.get("notes"), str):
                 errors.append(f"{prefix}.notes must be a string when present")
+
+    if require_pass and valid_check_results and "PASS" not in valid_check_results:
+        errors.append("manual_verified evidence must include at least one PASS check")
 
     entry_id = report.get("entry_id")
     coverage = report.get("coverage")
