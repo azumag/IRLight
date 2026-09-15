@@ -10,8 +10,10 @@ Destination records additionally require non-empty string values for `type`, `di
 
 Asset records require a non-empty string `source_object_key` in addition to the shared identity fields.
 
+Both Destination and Asset records require finite numeric `created_at` and `updated_at` values matching the shape emitted by the existing writers. Missing timestamps, booleans, strings, nulls, non-finite values, and integers that overflow finite float normalization are rejected as `CatalogStateError`. The same validator runs before persistence, so invalid in-memory timestamps cannot replace the last readable catalog.
+
 Validation is read-only. A rejected `catalog.json` is not repaired, rewritten, normalized, or replaced with an empty catalog. The public `/v1/destinations*` and `/v1/assets*` API boundary maps the resulting `CatalogStateError` to the stable `503` reason `CATALOG_STATE_UNAVAILABLE`.
 
 ## Deliberately unchanged
 
-This validation does not define new product policy. Destination protocol vocabulary, verification-state vocabulary, Asset processing-state vocabulary, timestamp bounds, retention, provider behavior, billing, secret values, and migration/repair policy are unchanged. Further tightening of those fields requires compatibility review against persisted production state before it is made authoritative.
+This validation does not define new product policy. Destination protocol vocabulary, verification-state vocabulary, Asset processing-state vocabulary, timestamp ordering or semantic range, retention, provider behavior, billing, secret values, and migration/repair policy are unchanged. Further tightening of those fields requires compatibility review against persisted production state before it is made authoritative.
