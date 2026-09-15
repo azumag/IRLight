@@ -77,11 +77,7 @@ class CatalogOperationalMetadataValidationTest(unittest.TestCase):
                 else:
                     raise AssertionError(f"invalid {field} was accepted")
 
-            for field in (
-                "last_verified_at",
-                "last_verification_error",
-                "verification_transport",
-            ):
+            for field in ("verification_status", "last_verified_at"):
                 damaged = copy.deepcopy(baseline)
                 damaged["destinations"][destination_id].pop(field)
                 CATALOG_PATH.write_text(json.dumps(damaged), encoding="utf-8")
@@ -91,6 +87,42 @@ class CatalogOperationalMetadataValidationTest(unittest.TestCase):
                     assert field in str(exc), (field, exc)
                 else:
                     raise AssertionError(f"missing {field} was accepted")
+            '''
+        )
+
+    def test_historical_destination_shape_remains_readable(self) -> None:
+        self._run_isolated(
+            r'''
+            import json
+
+            from catalog_store import CATALOG_PATH, ensure_catalog, list_destinations
+
+            ensure_catalog()
+            historical = {
+                "destinations": {
+                    "destination-1": {
+                        "id": "destination-1",
+                        "user_id": "owner",
+                        "type": "rtmp",
+                        "display_name": "Historical destination",
+                        "server_url": "rtmp://example.com/live",
+                        "secret_ref": "secret/destination",
+                        "verification_status": "UNVERIFIED",
+                        "last_verified_at": None,
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                },
+                "assets": {},
+            }
+            CATALOG_PATH.write_text(json.dumps(historical), encoding="utf-8")
+
+            items = list_destinations("owner")
+            assert len(items) == 1, items
+            assert items[0]["id"] == "destination-1", items
+            assert "enabled" not in items[0], items
+            assert "last_verification_error" not in items[0], items
+            assert "verification_transport" not in items[0], items
             '''
         )
 
