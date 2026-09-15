@@ -46,7 +46,7 @@ If a result is platform-specific or depends on an account feature, record that l
 
 When evidence is added, replace or update the matching coverage entry rather than leaving both a `not_tested` placeholder and a verified claim for the same exact test identity. Keep `required_coverage` explicit so deleting an untested mobile/hardware/platform row cannot make the dashboard look more complete.
 
-Automated evidence must be an executable repository-owned test surface under `.github/workflows/`, `scripts/`, or `tests/`, and every referenced path must exist. A README, design note, or other documentation file is not sufficient by itself to promote a coverage slot to `automated`. This catches renamed/deleted smoke workflows and prevents a documentation-only reference from becoming a stale compatibility claim.
+Automated evidence must point to a repository-owned automation surface under `.github/workflows/`, `scripts/`, or `tests/`, and every referenced path must exist. Workflow evidence must use `.yml` / `.yaml`; script or test evidence must use `.sh` / `.py`. A README, design note, or other documentation file is not sufficient by itself to promote a coverage slot to `automated`, even when it lives inside one of those directories. This catches renamed/deleted smoke workflows and prevents a documentation-only reference from becoming a stale compatibility claim.
 
 Manual evidence remains restricted to sanitized reports under `docs/compatibility-reports/`. Supporting logs or screenshots may be described from that report, but credentials and private account details must not be committed.
 
