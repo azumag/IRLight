@@ -260,6 +260,26 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
 
         self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
 
+    def test_manual_evidence_directory_symlink_cannot_redirect_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / "docs"
+            docs.mkdir()
+            outside_dir = root / "outside-reports"
+            outside_dir.mkdir()
+            (outside_dir / "obs.json").write_text(
+                json.dumps(self._report()), encoding="utf-8"
+            )
+            (docs / "compatibility-reports").symlink_to(
+                outside_dir, target_is_directory=True
+            )
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
+        self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
