@@ -13,12 +13,19 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
+MAX_MATRIX_BYTES = 256 * 1024
 ALLOWED_STATUSES = {"automated", "manual_verified", "not_tested"}
 ALLOWED_CATEGORIES = {
     "publisher_software",
     "mobile_publisher",
     "hardware_publisher",
     "output_destination",
+}
+REQUIRED_MATRIX_FIELDS = {
+    "schema_version",
+    "generated_claims_policy",
+    "required_coverage",
+    "entries",
 }
 REQUIRED_ENTRY_FIELDS = {
     "id",
@@ -60,10 +67,40 @@ def _automated_evidence_path(raw: str) -> bool:
     return False
 
 
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError("duplicate object key is not allowed")
+        value[key] = child
+    return value
+
+
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
 def validate_matrix(matrix: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    if matrix.get("schema_version") != 1:
-        errors.append("schema_version must be 1")
+
+    missing_matrix_fields = sorted(REQUIRED_MATRIX_FIELDS - matrix.keys())
+    if missing_matrix_fields:
+        errors.append("missing top-level fields: " + ", ".join(missing_matrix_fields))
+    unknown_matrix_fields = sorted(
+        str(field) for field in matrix.keys() if field not in REQUIRED_MATRIX_FIELDS
+    )
+    if unknown_matrix_fields:
+        errors.append(
+            "unknown top-level fields are not allowed: " + ", ".join(unknown_matrix_fields)
+        )
+
+    schema_version = matrix.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 1
+    ):
+        errors.append("schema_version must be integer 1")
 
     policy = matrix.get("generated_claims_policy")
     if not _string(policy):
@@ -101,6 +138,12 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
         missing = sorted(REQUIRED_ENTRY_FIELDS - entry.keys())
         if missing:
             errors.append(f"{prefix} missing fields: {', '.join(missing)}")
+        unknown = sorted(
+            str(field) for field in entry.keys() if field not in REQUIRED_ENTRY_FIELDS
+        )
+        if unknown:
+            errors.append(f"{prefix} has unknown fields: {', '.join(unknown)}")
+        if missing:
             continue
 
         entry_id = entry.get("id")
@@ -190,8 +233,19 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
 
 def load_matrix(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"cannot stat compatibility matrix: {exc}") from exc
+    if size > MAX_MATRIX_BYTES:
+        raise ValueError(f"compatibility matrix exceeds {MAX_MATRIX_BYTES}-byte limit")
+
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_object_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"cannot read compatibility matrix: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError("compatibility matrix root must be an object")
