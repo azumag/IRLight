@@ -20,6 +20,8 @@ class TcpAttemptFailRunbookTest(unittest.TestCase):
 
         self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
         self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("IRLIGHT_TCP_ATTEMPT_FAILS_MODE=enabled", text)
+        self.assertIn("tcp_attempt_fails_status=UNKNOWN", text)
         self.assertIn("同じ host", text)
         self.assertIn("network namespace", text)
         self.assertIn("WARNING", text)
@@ -27,6 +29,10 @@ class TcpAttemptFailRunbookTest(unittest.TestCase):
         self.assertIn("baseline を作成・更新・削除", text)
         self.assertIn("host / network namespace 全体の signal", text)
         self.assertIn("MaxConn=-1", text)
+        self.assertIn(
+            "interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status` → `tcp_attempt_fails_status",
+            text,
+        )
 
 
 if __name__ == "__main__":

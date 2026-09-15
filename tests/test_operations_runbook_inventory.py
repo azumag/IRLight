@@ -54,6 +54,7 @@ RELATED_PROCEDURES = {
     "udp snmp error monitoring": "docs/operations/udp-snmp-error-monitoring.md",
     "tcp snmp retransmit monitoring": "docs/operations/tcp-snmp-retransmit-monitoring.md",
     "tcp established reset monitoring": "docs/operations/tcp-established-reset-monitoring.md",
+    "tcp connection attempt failure monitoring": "docs/operations/tcp-connection-attempt-failure-monitoring.md",
 }
 
 NEW_RUNBOOKS = {
@@ -185,6 +186,24 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("baseline を作成・更新・削除", text)
         self.assertIn(
             "interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status",
+            text,
+        )
+
+    def test_tcp_attempt_fail_runbook_keeps_read_only_baseline_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["tcp connection attempt failure monitoring"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
+        self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("IRLIGHT_TCP_ATTEMPT_FAILS_MODE=enabled", text)
+        self.assertIn("tcp_attempt_fails_status=UNKNOWN", text)
+        self.assertIn("同じ host", text)
+        self.assertIn("network namespace", text)
+        self.assertIn("WARNING", text)
+        self.assertIn("単独では `CRITICAL`", text)
+        self.assertIn("baseline を作成・更新・削除", text)
+        self.assertIn(
+            "interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status` → `tcp_attempt_fails_status",
             text,
         )
 
