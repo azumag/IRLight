@@ -15,6 +15,9 @@ interface_errors_baseline_dir="${IRLIGHT_NETWORK_STATS_BASELINE_DIR:-}"
 udp_snmp_errors_mode="${IRLIGHT_UDP_SNMP_ERRORS_MODE:-disabled}"
 udp_snmp_path="${IRLIGHT_UDP_SNMP_PATH:-/proc/net/snmp}"
 udp_snmp_baseline_path="${IRLIGHT_UDP_SNMP_BASELINE_PATH:-}"
+tcp_snmp_retransmits_mode="${IRLIGHT_TCP_SNMP_RETRANSMITS_MODE:-disabled}"
+tcp_snmp_path="${IRLIGHT_TCP_SNMP_PATH:-/proc/net/snmp}"
+tcp_snmp_baseline_path="${IRLIGHT_TCP_SNMP_BASELINE_PATH:-}"
 
 unknown() {
   local reason="$1"
@@ -175,6 +178,21 @@ case "$udp_snmp_errors_mode" in
     ;;
   *)
     register_optional_status "udp_snmp_errors_status" 3
+    ;;
+esac
+
+case "$tcp_snmp_retransmits_mode" in
+  disabled)
+    ;;
+  enabled)
+    tcp_snmp_retransmits_code="$(run_component \
+      "$script_dir/check-tcp-snmp-retransmits.sh" \
+      "$tcp_snmp_path" \
+      "$tcp_snmp_baseline_path")"
+    register_optional_status "tcp_snmp_retransmits_status" "$tcp_snmp_retransmits_code"
+    ;;
+  *)
+    register_optional_status "tcp_snmp_retransmits_status" 3
     ;;
 esac
 
