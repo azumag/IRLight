@@ -50,6 +50,16 @@ def _safe_repo_path(raw: str) -> Path | None:
     return candidate
 
 
+def _automated_evidence_path(raw: str) -> bool:
+    path = Path(raw)
+    suffix = path.suffix.lower()
+    if raw.startswith(".github/workflows/"):
+        return suffix in {".yml", ".yaml"}
+    if raw.startswith("scripts/") or raw.startswith("tests/"):
+        return suffix in {".sh", ".py"}
+    return False
+
+
 def validate_matrix(matrix: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if matrix.get("schema_version") != 1:
@@ -134,6 +144,13 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}: not_tested entries must not carry evidence")
         if status in {"automated", "manual_verified"} and not evidence:
             errors.append(f"{prefix}: verified entries require evidence")
+        if status == "automated":
+            for raw_path in evidence:
+                if not _automated_evidence_path(raw_path):
+                    errors.append(
+                        f"{prefix}: automated evidence must be a workflow (.yml/.yaml) "
+                        "or test script (.sh/.py) under .github/workflows/, scripts/, or tests/"
+                    )
         if status == "manual_verified":
             for raw_path in evidence:
                 if not raw_path.startswith(MANUAL_REPORT_PREFIX):

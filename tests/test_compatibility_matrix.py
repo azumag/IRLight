@@ -143,6 +143,28 @@ class CompatibilityMatrixTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("coverage pc.obs cannot be both not_tested and verified", result.stderr)
 
+    def test_automated_evidence_must_be_an_automation_surface(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        candidate = next(item for item in matrix["entries"] if item["status"] == "automated")
+        for evidence in (
+            "README.md",
+            "scripts/notes.md",
+            "tests/README.md",
+            ".github/workflows/README.md",
+        ):
+            with self.subTest(evidence=evidence):
+                mutated = copy.deepcopy(matrix)
+                mutated_candidate = next(
+                    item for item in mutated["entries"] if item["id"] == candidate["id"]
+                )
+                mutated_candidate["evidence"] = [evidence]
+                result = self._run_validator(mutated)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "automated evidence must be a workflow (.yml/.yaml) or test script (.sh/.py)",
+                    result.stderr,
+                )
+
     def test_manual_verified_evidence_must_be_a_sanitized_report(self) -> None:
         matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
         candidate = next(item for item in matrix["entries"] if item["coverage"] == "pc.obs")
@@ -162,6 +184,9 @@ class CompatibilityMatrixTest(unittest.TestCase):
             "Never promote FFmpeg or local MediaMTX results",
             "docs/compatibility-reports/",
             "PASS | WARN | FAIL",
+            ".github/workflows/`, `scripts/`, or `tests/",
+            ".yml` / `.yaml`",
+            ".sh` / `.py`",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, GUIDE)
