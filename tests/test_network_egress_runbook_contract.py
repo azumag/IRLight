@@ -25,6 +25,8 @@ class NetworkEgressRunbookContractTests(unittest.TestCase):
             "check-tcp-snmp-established-resets.sh",
             "IRLIGHT_TCP_ATTEMPT_FAILS_MODE=enabled",
             "check-tcp-snmp-attempt-fails.sh",
+            "IRLIGHT_CONNTRACK_PRESSURE_MODE=enabled",
+            "check-conntrack-pressure.sh",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.text)
@@ -33,7 +35,8 @@ class NetworkEgressRunbookContractTests(unittest.TestCase):
         expected = (
             "`interface_errors_status` → `udp_snmp_errors_status` → "
             "`tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → "
-            "`tcp_established_resets_status` → `tcp_attempt_fails_status`"
+            "`tcp_established_resets_status` → `tcp_attempt_fails_status` → "
+            "`conntrack_pressure_status`"
         )
         self.assertIn(expected, self.text)
 
@@ -47,6 +50,19 @@ class NetworkEgressRunbookContractTests(unittest.TestCase):
             "`EstabResets` は host / network namespace 全体の signal",
             "`AttemptFails` は host / network namespace 全体の signal",
             "特定 Session / destination / service へ自動帰属しません",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.text)
+
+    def test_conntrack_signal_keeps_fail_closed_read_only_contract(self) -> None:
+        for marker in (
+            "conntrack_pressure_status=UNKNOWN",
+            "IRLIGHT_CONNTRACK_COUNT_PATH",
+            "IRLIGHT_CONNTRACK_MAX_PATH",
+            "IRLIGHT_CONNTRACK_WARNING_PERCENT",
+            "IRLIGHT_CONNTRACK_CRITICAL_PERCENT",
+            "host / network namespace 全体の signal",
+            "conntrack table や sysctl を変更しません",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.text)
