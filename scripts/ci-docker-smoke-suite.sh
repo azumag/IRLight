@@ -74,11 +74,13 @@ capture_runner_resources() {
   # container environment, commands, labels, mounts or logs, so the baseline
   # is safe to retain alongside a failure and can be compared with the
   # failure-boundary snapshot when runner disk/cache pressure is suspected.
+  # Keep diagnostics independently bounded so an unhealthy Docker daemon cannot
+  # wedge the suite outside the per-scenario timeout.
   {
     echo 'Filesystem:'
-    df -h / || true
+    timeout --signal=TERM --kill-after=2s 10s df -h / || true
     echo 'Docker storage:'
-    docker system df || true
+    timeout --signal=TERM --kill-after=2s 10s docker system df || true
   } >"$output_file" 2>&1
 }
 
