@@ -86,6 +86,26 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
             any("manual_verified evidence must have result=PASS" in error for error in errors)
         )
 
+    def test_manual_verified_rejects_failed_or_all_not_applicable_checks(self) -> None:
+        failed = self._report(
+            checks=[
+                {"name": "publish accepted", "result": "PASS"},
+                {"name": "disconnect and recover", "result": "FAIL"},
+            ]
+        )
+        errors = validator.validate_report(failed, require_pass=True)
+        self.assertTrue(
+            any("must be PASS or NOT_APPLICABLE" in error for error in errors)
+        )
+
+        no_positive_check = self._report(
+            checks=[{"name": "publish accepted", "result": "NOT_APPLICABLE"}]
+        )
+        errors = validator.validate_report(no_positive_check, require_pass=True)
+        self.assertIn(
+            "manual_verified evidence must include at least one PASS check", errors
+        )
+
     def test_manual_report_must_match_entry_id_and_coverage(self) -> None:
         report = self._report(entry_id="other-entry", coverage="mobile.ios_a")
 
