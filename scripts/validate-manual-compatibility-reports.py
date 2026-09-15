@@ -86,8 +86,9 @@ def validate_report(
 ) -> list[str]:
     errors: list[str] = []
 
-    if report.get("schema_version") != 1:
-        errors.append("schema_version must be 1")
+    schema_version = report.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
+        errors.append("schema_version must be integer 1")
 
     missing = sorted(REQUIRED_REPORT_FIELDS - report.keys())
     if missing:
@@ -110,7 +111,7 @@ def validate_report(
         errors.append("tested_at must be a timezone-aware ISO 8601 timestamp")
 
     result = report.get("result")
-    if result not in REPORT_RESULTS:
+    if not isinstance(result, str) or result not in REPORT_RESULTS:
         errors.append(f"result must be one of {sorted(REPORT_RESULTS)}")
     elif require_pass and result != "PASS":
         errors.append("manual_verified evidence must have result=PASS")
@@ -130,7 +131,8 @@ def validate_report(
                 continue
             if not _string(check.get("name")):
                 errors.append(f"{prefix}.name must be a non-empty string")
-            if check.get("result") not in CHECK_RESULTS:
+            check_result = check.get("result")
+            if not isinstance(check_result, str) or check_result not in CHECK_RESULTS:
                 errors.append(
                     f"{prefix}.result must be one of {sorted(CHECK_RESULTS)}"
                 )
@@ -140,13 +142,9 @@ def validate_report(
     entry_id = report.get("entry_id")
     coverage = report.get("coverage")
     if expected_entry_id is not None and entry_id != expected_entry_id:
-        errors.append(
-            f"entry_id must match matrix entry {expected_entry_id!r}"
-        )
+        errors.append(f"entry_id must match matrix entry {expected_entry_id!r}")
     if expected_coverage is not None and coverage != expected_coverage:
-        errors.append(
-            f"coverage must match matrix coverage {expected_coverage!r}"
-        )
+        errors.append(f"coverage must match matrix coverage {expected_coverage!r}")
 
     for path in _sensitive_field_paths(report):
         errors.append(f"sensitive field name is not allowed in evidence: {path}")
