@@ -145,7 +145,11 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
         raise CatalogStateError("catalog state has invalid structure")
 
     for destination_id, item in destinations.items():
-        if not isinstance(destination_id, str) or not destination_id or not isinstance(item, dict):
+        if (
+            not isinstance(destination_id, str)
+            or not destination_id
+            or not isinstance(item, dict)
+        ):
             raise CatalogStateError("catalog state has an invalid destination record")
         context = "catalog destination record"
         _validate_catalog_identity(destination_id, item, context=context)
@@ -187,6 +191,8 @@ def _load() -> dict[str, Any]:
 
 
 def _save(catalog: dict[str, Any]) -> None:
+    # Never publish a payload that the reader would reject on the next request.
+    _validate_catalog_authority(catalog)
     atomic_write_json(CATALOG_PATH, catalog)
 
 
