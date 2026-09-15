@@ -108,6 +108,18 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
             "tested_at must be a timezone-aware ISO 8601 timestamp", errors
         )
 
+    def test_malformed_schema_and_enum_shapes_fail_closed(self) -> None:
+        report = self._report(schema_version=True, result=["PASS"])
+        report["checks"] = [{"name": "publish accepted", "result": ["PASS"]}]
+
+        errors = validator.validate_report(report)
+
+        self.assertIn("schema_version must be integer 1", errors)
+        self.assertTrue(any(error.startswith("result must be one of") for error in errors))
+        self.assertTrue(
+            any(error.startswith("checks[0].result must be one of") for error in errors)
+        )
+
     def test_report_rejects_sensitive_field_names_recursively(self) -> None:
         report = self._report()
         report["diagnostics"] = {
