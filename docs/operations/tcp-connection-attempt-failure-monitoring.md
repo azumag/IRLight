@@ -22,6 +22,26 @@ bash scripts/check-tcp-snmp-attempt-fails.sh
 
 baseline の取得は operator の責任で行います。再起動や network namespace の再作成など counter generation が変わったと判断した場合のみ、新しい安定時 snapshot を明示的に baseline として採用してください。診断結果を理由に自動で baseline を更新してはいけません。
 
+## Network egress aggregate への opt-in
+
+通常の `check-network-egress-health.sh` は baseline を持たない既存環境の stdout / exit code を変えないため、connection attempt failure delta を既定では含めません。同じ一次切り分けに含める場合だけ `IRLIGHT_TCP_ATTEMPT_FAILS_MODE=enabled` と baseline を明示します。
+
+```bash
+IRLIGHT_TCP_ATTEMPT_FAILS_MODE=enabled \
+IRLIGHT_TCP_SNMP_BASELINE_PATH=/run/irlight-monitor/proc-net-snmp.baseline \
+bash scripts/check-network-egress-health.sh eth0 dual
+```
+
+current は既定 `/proc/net/snmp` を使い、fixture や明示した network namespace の snapshot だけ `IRLIGHT_TCP_SNMP_PATH` で上書きします。aggregate は checker と同じ bounded component timeout の配下で実行し、baseline/current の欠損・破損、counter reset、timeout、不正 mode は `tcp_attempt_fails_status=UNKNOWN` として fail-closed します。attempt-failure delta 増加は `WARNING` です。
+
+有効時だけ `tcp_attempt_fails_status` を optional status registry の末尾に追加します。現在の固定順は `interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status` → `tcp_attempt_fails_status` です。aggregate severity は既存どおり `CRITICAL > UNKNOWN > WARNING > OK` のため、link / route / NIC の確定 `CRITICAL` を attempt-failure の `WARNING` / `UNKNOWN` が隠しません。
+
+aggregate 自身も baseline を作成・更新・削除せず、current/baseline path、counter 生値、IP、port、credential、secret を stdout に追加しません。
+
+```text
+IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK ipv6_route_status=OK tcp_attempt_fails_status=WARNING family=dual
+```
+
 ## Status 契約
 
 差分がない場合:
@@ -58,6 +78,8 @@ exit code は `0=OK`、`1=WARNING`、`3=UNKNOWN` です。
 
 この checker は `/proc/net/snmp` と指定された baseline を読み取るだけです。socket、route、firewall、sysctl、service、process、Session、provider resource、baseline file を変更しません。`WARNING` / `UNKNOWN` を理由に自動 restart、route 変更、firewall 変更、Session stop を行いません。
 
+aggregate へ opt-in した場合も同じ read-only 境界を維持します。aggregate は baseline を作成・更新・削除せず、attempt-failure signal を特定 Session / destination / service の確定障害へ自動帰属しません。
+
 ## 切り分け
 
 attempt failure delta が増えた場合は、同じ観測期間について次を相関させます。
@@ -77,8 +99,10 @@ focused regression と shell syntax check:
 
 ```bash
 python -m unittest discover -s tests -p 'test_tcp_snmp_attempt_fails_check.py' -v
+python -m unittest discover -s tests -p 'test_network_egress_tcp_attempt_fails.py' -v
 python -m unittest discover -s tests -p 'test_tcp_attempt_fail_runbook.py' -v
 bash -n scripts/check-tcp-snmp-attempt-fails.sh
+bash -n scripts/check-network-egress-health.sh
 ```
 
 通常の repository CI と Dependency audit も merge gate とします。
