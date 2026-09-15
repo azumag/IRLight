@@ -156,6 +156,70 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
             )
         )
 
+    def test_report_rejects_normalized_sensitive_field_name_variants(self) -> None:
+        report = self._report()
+        report["diagnostics"] = {
+            "clientSecret": "AUDIT_DUMMY_SECRET",
+            "access-token": "AUDIT_DUMMY_TOKEN",
+        }
+
+        errors = validator.validate_report(report)
+
+        self.assertTrue(any("diagnostics.clientSecret" in error for error in errors))
+        self.assertTrue(any("diagnostics.access-token" in error for error in errors))
+
+    def test_report_rejects_credential_bearing_url_userinfo(self) -> None:
+        report = self._report(
+            notes=(
+                "Observed endpoint "
+                "rtmps://publisher:AUDIT_DUMMY_SECRET@example.invalid/live during QA"
+            )
+        )
+
+        errors = validator.validate_report(report)
+
+        self.assertIn(
+            "credential-bearing URL is not allowed in evidence: notes", errors
+        )
+        self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
+
+    def test_report_rejects_percent_encoded_sensitive_query_name(self) -> None:
+        report = self._report()
+        report["diagnostics"] = {
+            "endpoint": (
+                "srt://example.invalid:9000?Pass%70hrase=AUDIT_DUMMY_SECRET"
+            )
+        }
+
+        errors = validator.validate_report(report)
+
+        self.assertIn(
+            "credential-bearing URL is not allowed in evidence: diagnostics.endpoint",
+            errors,
+        )
+        self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
+
+    def test_report_rejects_srt_streamid_url(self) -> None:
+        report = self._report()
+        report["diagnostics"] = {
+            "endpoint": "srt://example.invalid:9000?streamid=publish:live:dummy-user:AUDIT_DUMMY_SECRET"
+        }
+
+        errors = validator.validate_report(report)
+
+        self.assertIn(
+            "credential-bearing URL is not allowed in evidence: diagnostics.endpoint",
+            errors,
+        )
+        self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
+
+    def test_report_allows_non_credential_url(self) -> None:
+        report = self._report(
+            notes="Reference: https://example.invalid/docs?profile=1080p30&transport=rtmps"
+        )
+
+        self.assertEqual(validator.validate_report(report), [])
+
     def test_manual_evidence_must_be_json_under_report_directory(self) -> None:
         errors = validator.validate_matrix_manual_reports(
             self._matrix(["docs/compatibility-reports/obs.md"]), root=ROOT

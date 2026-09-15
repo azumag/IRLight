@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,17 +34,24 @@ REQUIRED_REPORT_FIELDS = {
     "notes",
 }
 SENSITIVE_FIELD_NAMES = {
-    "api_key",
+    "apikey",
+    "accesstoken",
     "authorization",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
     "cookie",
+    "credential",
     "passphrase",
     "password",
-    "private_key",
+    "privatekey",
     "secret",
-    "stream_key",
+    "sessiontoken",
     "streamkey",
     "token",
 }
+SENSITIVE_URL_QUERY_NAMES = SENSITIVE_FIELD_NAMES | {"streamid"}
+URL_CANDIDATE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>'\"`]+")
 
 
 def _string(value: Any) -> bool:
@@ -60,20 +69,58 @@ def _timezone_aware_iso8601(value: Any) -> bool:
     return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
 
+def _normalize_sensitive_name(value: Any) -> str:
+    return "".join(character for character in str(value).strip().lower() if character.isalnum())
+
+
 def _sensitive_field_paths(value: Any, *, prefix: str = "") -> list[str]:
     findings: list[str] = []
     if isinstance(value, dict):
         for raw_key, child in value.items():
             key = str(raw_key)
             path = f"{prefix}.{key}" if prefix else key
-            normalized = key.strip().lower().replace("-", "_")
-            if normalized in SENSITIVE_FIELD_NAMES:
+            if _normalize_sensitive_name(key) in SENSITIVE_FIELD_NAMES:
                 findings.append(path)
             findings.extend(_sensitive_field_paths(child, prefix=path))
     elif isinstance(value, list):
         for index, child in enumerate(value):
             path = f"{prefix}[{index}]" if prefix else f"[{index}]"
             findings.extend(_sensitive_field_paths(child, prefix=path))
+    return findings
+
+
+def _credential_url_paths(value: Any, *, prefix: str = "") -> list[str]:
+    findings: list[str] = []
+    if isinstance(value, dict):
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            path = f"{prefix}.{key}" if prefix else key
+            findings.extend(_credential_url_paths(child, prefix=path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            path = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            findings.extend(_credential_url_paths(child, prefix=path))
+    elif isinstance(value, str):
+        for raw_candidate in URL_CANDIDATE_RE.findall(value):
+            candidate = raw_candidate.rstrip(".,);]}")
+            try:
+                parsed = urlsplit(candidate)
+            except ValueError:
+                continue
+            if not parsed.netloc:
+                continue
+            if parsed.username is not None or parsed.password is not None:
+                findings.append(prefix or "<root>")
+                continue
+            try:
+                query_fields = parse_qsl(parsed.query, keep_blank_values=True)
+            except ValueError:
+                continue
+            if any(
+                _normalize_sensitive_name(name) in SENSITIVE_URL_QUERY_NAMES
+                for name, _ in query_fields
+            ):
+                findings.append(prefix or "<root>")
     return findings
 
 
@@ -161,8 +208,10 @@ def validate_report(
     if expected_coverage is not None and coverage != expected_coverage:
         errors.append(f"coverage must match matrix coverage {expected_coverage!r}")
 
-    for path in _sensitive_field_paths(report):
+    for path in sorted(set(_sensitive_field_paths(report))):
         errors.append(f"sensitive field name is not allowed in evidence: {path}")
+    for path in sorted(set(_credential_url_paths(report))):
+        errors.append(f"credential-bearing URL is not allowed in evidence: {path}")
 
     return errors
 
