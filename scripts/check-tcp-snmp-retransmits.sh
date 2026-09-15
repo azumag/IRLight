@@ -49,16 +49,17 @@ read_tcp_counters() {
   for ((i = 1; i < ${#headers[@]}; i++)); do
     key="${headers[$i]}"
     value="${values[$i]}"
-    is_uint64_bounded "$value" || unknown invalid_snmp_record
 
     case "$key" in
       OutSegs)
         (( seen_out_segments == 0 )) || unknown invalid_snmp_record
+        is_uint64_bounded "$value" || unknown invalid_snmp_record
         seen_out_segments=1
         printf -v "${prefix}_out_segments" '%d' "$((10#$value))"
         ;;
       RetransSegs)
         (( seen_retrans_segments == 0 )) || unknown invalid_snmp_record
+        is_uint64_bounded "$value" || unknown invalid_snmp_record
         seen_retrans_segments=1
         printf -v "${prefix}_retrans_segments" '%d' "$((10#$value))"
         ;;
