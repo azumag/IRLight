@@ -131,6 +131,18 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("host / network namespace 全体の signal", text)
         self.assertIn("aggregate 自身は作成・更新・削除しません", text)
 
+    def test_network_egress_runbook_keeps_tcp_snmp_opt_in_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["targeted network egress health"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_TCP_SNMP_RETRANSMITS_MODE=enabled", text)
+        self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
+        self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("tcp_snmp_retransmits_status=UNKNOWN", text)
+        self.assertIn("host / network namespace 全体の signal", text)
+        self.assertIn("aggregate 自身は baseline を作成・更新・削除しません", text)
+        self.assertIn("interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status", text)
+
     def test_tcp_snmp_runbook_keeps_read_only_baseline_contract(self) -> None:
         relative_path = RELATED_PROCEDURES["tcp snmp retransmit monitoring"]
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
