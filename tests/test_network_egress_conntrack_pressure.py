@@ -13,7 +13,7 @@ SCRIPTS = ROOT / "scripts"
 AGGREGATE = SCRIPTS / "check-network-egress-health.sh"
 IPV4_HEADER = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
 ZERO6 = "0" * 32
-OPTIONAL_MODE_VARS = (
+ISOLATED_ENV_VARS = (
     "IRLIGHT_NETWORK_INTERFACE_ERRORS_MODE",
     "IRLIGHT_UDP_SNMP_ERRORS_MODE",
     "IRLIGHT_TCP_SNMP_RETRANSMITS_MODE",
@@ -21,6 +21,8 @@ OPTIONAL_MODE_VARS = (
     "IRLIGHT_TCP_ESTABLISHED_RESETS_MODE",
     "IRLIGHT_TCP_ATTEMPT_FAILS_MODE",
     "IRLIGHT_CONNTRACK_PRESSURE_MODE",
+    "IRLIGHT_CONNTRACK_WARNING_PERCENT",
+    "IRLIGHT_CONNTRACK_CRITICAL_PERCENT",
 )
 
 
@@ -110,7 +112,7 @@ class NetworkEgressConntrackPressureTest(unittest.TestCase):
                 max_path.write_text(maximum, encoding="ascii")
 
             env = os.environ.copy()
-            for key in OPTIONAL_MODE_VARS:
+            for key in ISOLATED_ENV_VARS:
                 env.pop(key, None)
             env["IRLIGHT_CONNTRACK_COUNT_PATH"] = str(count_path)
             env["IRLIGHT_CONNTRACK_MAX_PATH"] = str(max_path)
@@ -174,14 +176,25 @@ class NetworkEgressConntrackPressureTest(unittest.TestCase):
         self.assertIn("status=CRITICAL", critical.stdout)
         self.assertIn("conntrack_pressure_status=CRITICAL", critical.stdout)
 
-    def test_missing_current_and_invalid_mode_fail_closed(self) -> None:
+    def test_missing_current_invalid_mode_timeout_and_exit_fail_closed(self) -> None:
         missing, _ = self.run_check(mode="enabled", count=None)
         self.assertEqual(missing.returncode, 3)
         self.assertIn("conntrack_pressure_status=UNKNOWN", missing.stdout)
 
-        invalid, _ = self.run_check(mode="yes")
-        self.assertEqual(invalid.returncode, 3)
-        self.assertIn("conntrack_pressure_status=UNKNOWN", invalid.stdout)
+        invalid_mode, _ = self.run_check(mode="yes")
+        self.assertEqual(invalid_mode.returncode, 3)
+        self.assertIn("conntrack_pressure_status=UNKNOWN", invalid_mode.stdout)
+
+        invalid_timeout, _ = self.run_check(mode="enabled", timeout_seconds="0")
+        self.assertEqual(invalid_timeout.returncode, 3)
+        self.assertIn("conntrack_pressure_status=UNKNOWN", invalid_timeout.stdout)
+
+        abnormal_exit, _ = self.run_check(
+            mode="enabled",
+            conntrack_checker_body="#!/usr/bin/env bash\nexit 9\n",
+        )
+        self.assertEqual(abnormal_exit.returncode, 3)
+        self.assertIn("conntrack_pressure_status=UNKNOWN", abnormal_exit.stdout)
 
     def test_confirmed_route_critical_wins_over_conntrack_warning_or_unknown(self) -> None:
         warning, _ = self.run_check(mode="enabled", count="80\n", ipv6_content="")
