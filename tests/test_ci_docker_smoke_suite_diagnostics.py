@@ -59,7 +59,10 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             docker.write_text(
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
-                "printf 'FAKE_DOCKER %s\\n' \"$*\"\n",
+                "printf 'FAKE_DOCKER %s\\n' \"$*\"\n"
+                "if [[ -f failed-scenario-state ]]; then\n"
+                "  printf 'FAKE_DOCKER_STATE failed-scenario-present\\n'\n"
+                "fi\n",
                 encoding="utf-8",
             )
             docker.chmod(0o755)
@@ -69,7 +72,9 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 exit_code = 7 if smoke == failing_smoke else 0
                 diagnostic = ""
+                marker = "rm -f failed-scenario-state\n"
                 if exit_code:
+                    marker = "touch failed-scenario-state\n"
                     diagnostic = (
                         "printf '%s\\n' "
                         f"'::error title=IRLight docker smoke failure::stage={failure_stage}%0A"
@@ -77,6 +82,7 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
                     )
                 path.write_text(
                     "#!/usr/bin/env bash\n"
+                    f"{marker}"
                     f"{diagnostic}"
                     f"exit {exit_code}\n",
                     encoding="utf-8",
@@ -129,7 +135,10 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             f"{failing_smoke}:7:compose-control-up",
             completed.stderr,
         )
-        self.assertIn("Docker smoke runner diagnostics (secret-safe)", completed.stderr)
+        self.assertIn(
+            f"Docker smoke runner diagnostics (secret-safe; scenario={failing_smoke})",
+            completed.stderr,
+        )
         self.assertIn("FAKE_DOCKER system df", completed.stderr)
         self.assertIn("FAKE_DOCKER compose ls --all", completed.stderr)
         self.assertIn(
@@ -139,6 +148,17 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertIn(f"| `{failing_smoke}` | FAIL | 7 |", summary)
         self.assertIn("| `compose-control-up` |", summary)
         self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
+
+    def test_failure_context_is_captured_before_later_smoke_cleanup(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, _ = self._run_harness(failing_smoke=failing_smoke)
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(
+            completed.stderr.count("Docker smoke runner diagnostics (secret-safe; scenario="),
+            1,
+        )
+        self.assertIn("FAKE_DOCKER_STATE failed-scenario-present", completed.stderr)
 
     def test_failure_stage_is_allowlisted_before_entering_compact_outputs(self) -> None:
         failing_smoke = self.smokes[0]
