@@ -92,7 +92,7 @@ reason="none"
 exit_code=0
 if (( delta_listen_overflows > 0 || delta_listen_drops > 0 )); then
   status="WARNING"
-  reason="tcp_listen_queue_pressure"
+  reason="tcp_listener_pressure"
   exit_code=1
 fi
 
