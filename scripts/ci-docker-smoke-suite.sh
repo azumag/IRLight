@@ -181,12 +181,12 @@ emit_failure_context() {
 }
 
 for smoke in "${smokes[@]}"; do
-  started_at=$SECONDS
   safe_name="${smoke//\//_}"
   safe_name="${safe_name//./_}"
   scenario_log="$diagnostic_tmp_dir/${safe_name}.log"
   resource_before_file="$diagnostic_tmp_dir/${safe_name}.resources-before"
   capture_runner_resources "$resource_before_file"
+  started_at=$SECONDS
   echo "::group::$smoke"
 
   # Keep the scenario output live while retaining a run-local copy from which
