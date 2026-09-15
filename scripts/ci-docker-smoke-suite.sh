@@ -43,13 +43,32 @@ smokes=(
 # Keep one compact, machine-searchable record per scenario in the workflow log.
 # The GitHub step summary mirrors the same records when available. Do not add
 # command lines, environment values, container inspection, or logs here because
-# media credentials may be present in those surfaces.
+# media credentials may be present in those surfaces. A failing smoke may expose
+# an existing GitHub annotation with a `stage=` token; copy only that allowlisted
+# token into the compact result rather than propagating the rest of diagnostics.
 results=()
 failures=()
+diagnostic_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-docker-smoke-suite.XXXXXX")"
+trap 'rm -rf "$diagnostic_tmp_dir"' EXIT
+
+extract_failure_stage() {
+  local log_file="$1"
+  local stage
+
+  stage="$(
+    sed -nE \
+      's/.*::error title=IRLight docker smoke failure::stage=([A-Za-z0-9._-]+).*/\1/p' \
+      "$log_file" | tail -n 1
+  )"
+  if [[ -z "$stage" ]]; then
+    stage="-"
+  fi
+  printf '%s' "$stage"
+}
 
 write_step_summary() {
   local summary_file="${GITHUB_STEP_SUMMARY:-}"
-  local result smoke outcome status duration
+  local result smoke outcome status duration stage
 
   if [[ -z "$summary_file" ]]; then
     return 0
@@ -58,11 +77,12 @@ write_step_summary() {
   {
     echo '### Docker integration smoke suite'
     echo
-    echo '| Scenario | Result | Exit | Duration |'
-    echo '| --- | --- | ---: | ---: |'
+    echo '| Scenario | Result | Exit | Duration | Stage |'
+    echo '| --- | --- | ---: | ---: | --- |'
     for result in "${results[@]}"; do
-      IFS='|' read -r smoke outcome status duration <<<"$result"
-      printf '| `%s` | %s | %s | %ss |\n' "$smoke" "$outcome" "$status" "$duration"
+      IFS='|' read -r smoke outcome status duration stage <<<"$result"
+      printf '| `%s` | %s | %s | %ss | `%s` |\n' \
+        "$smoke" "$outcome" "$status" "$duration" "$stage"
     done
   } >>"$summary_file"
 }
@@ -81,25 +101,33 @@ emit_failure_context() {
 
 for smoke in "${smokes[@]}"; do
   started_at=$SECONDS
+  safe_name="${smoke//\//_}"
+  scenario_log="$diagnostic_tmp_dir/${safe_name//./_}.log"
   echo "::group::$smoke"
-  if timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke"; then
-    duration=$((SECONDS - started_at))
+
+  # Keep the scenario output live while retaining a run-local copy from which
+  # only a narrowly allowlisted stage token is extracted. PIPESTATUS preserves
+  # the smoke exit code instead of treating a successful tee as a passing smoke.
+  timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke" 2>&1 | tee "$scenario_log"
+  status=${PIPESTATUS[0]}
+  duration=$((SECONDS - started_at))
+
+  if [[ "$status" -eq 0 ]]; then
     echo "PASS: $smoke"
-    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=PASS exit=0 duration_seconds=%d\n' \
+    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=PASS exit=0 duration_seconds=%d stage=-\n' \
       "$smoke" "$duration"
-    results+=("$smoke|PASS|0|$duration")
+    results+=("$smoke|PASS|0|$duration|-")
   else
-    status=$?
-    duration=$((SECONDS - started_at))
+    stage="$(extract_failure_stage "$scenario_log")"
     if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
       echo "::error title=Docker smoke timed out::$smoke exceeded ${smoke_timeout_seconds}s (status $status)"
     else
       echo "::error title=Docker smoke failed::$smoke exited with status $status"
     fi
-    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=FAIL exit=%d duration_seconds=%d\n' \
-      "$smoke" "$status" "$duration"
-    results+=("$smoke|FAIL|$status|$duration")
-    failures+=("$smoke:$status")
+    printf 'IRLIGHT_DOCKER_SMOKE_RESULT smoke=%s result=FAIL exit=%d duration_seconds=%d stage=%s\n' \
+      "$smoke" "$status" "$duration" "$stage"
+    results+=("$smoke|FAIL|$status|$duration|$stage")
+    failures+=("$smoke:$status:$stage")
   fi
   echo "::endgroup::"
 done
