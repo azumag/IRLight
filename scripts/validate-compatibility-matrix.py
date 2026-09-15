@@ -12,6 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
+MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
 ALLOWED_STATUSES = {"automated", "manual_verified", "not_tested"}
 ALLOWED_CATEGORIES = {
     "publisher_software",
@@ -75,6 +76,7 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
 
     ids: set[str] = set()
     covered: set[str] = set()
+    coverage_statuses: dict[str, set[str]] = {}
     for index, entry in enumerate(entries):
         prefix = f"entries[{index}]"
         if not isinstance(entry, dict):
@@ -97,7 +99,9 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
         coverage = entry.get("coverage")
         if not _string(coverage):
             errors.append(f"{prefix}.coverage must be a non-empty string")
+            valid_coverage = None
         else:
+            valid_coverage = coverage
             covered.add(coverage)
 
         for field in ("subject", "transport", "profile", "network", "notes"):
@@ -113,6 +117,8 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
         status = entry.get("status")
         if status not in ALLOWED_STATUSES:
             errors.append(f"{prefix}.status must be one of {sorted(ALLOWED_STATUSES)}")
+        elif valid_coverage is not None:
+            coverage_statuses.setdefault(valid_coverage, set()).add(status)
 
         evidence = entry.get("evidence")
         if not isinstance(evidence, list) or any(not _string(item) for item in evidence):
@@ -123,6 +129,13 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}: not_tested entries must not carry evidence")
         if status in {"automated", "manual_verified"} and not evidence:
             errors.append(f"{prefix}: verified entries require evidence")
+        if status == "manual_verified":
+            for raw_path in evidence:
+                if not raw_path.startswith(MANUAL_REPORT_PREFIX):
+                    errors.append(
+                        f"{prefix}: manual_verified evidence must live under "
+                        f"{MANUAL_REPORT_PREFIX}"
+                    )
 
         for raw_path in evidence:
             path = _safe_repo_path(raw_path)
@@ -143,6 +156,12 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             "entries use coverage keys not declared in required_coverage: "
             + ", ".join(unexpected_coverage)
         )
+
+    for coverage, statuses in sorted(coverage_statuses.items()):
+        if "not_tested" in statuses and statuses & {"automated", "manual_verified"}:
+            errors.append(
+                f"coverage {coverage} cannot be both not_tested and verified"
+            )
 
     return errors
 
