@@ -199,6 +199,20 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
         )
         self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
 
+    def test_report_rejects_srt_streamid_url(self) -> None:
+        report = self._report()
+        report["diagnostics"] = {
+            "endpoint": "srt://example.invalid:9000?streamid=publish:live:dummy-user:AUDIT_DUMMY_SECRET"
+        }
+
+        errors = validator.validate_report(report)
+
+        self.assertIn(
+            "credential-bearing URL is not allowed in evidence: diagnostics.endpoint",
+            errors,
+        )
+        self.assertTrue(all("AUDIT_DUMMY_SECRET" not in error for error in errors))
+
     def test_report_allows_non_credential_url(self) -> None:
         report = self._report(
             notes="Reference: https://example.invalid/docs?profile=1080p30&transport=rtmps"
