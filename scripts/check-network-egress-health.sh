@@ -21,6 +21,7 @@ tcp_snmp_baseline_path="${IRLIGHT_TCP_SNMP_BASELINE_PATH:-}"
 tcp_listen_pressure_mode="${IRLIGHT_TCP_LISTEN_PRESSURE_MODE:-disabled}"
 tcp_netstat_path="${IRLIGHT_TCP_NETSTAT_PATH:-/proc/net/netstat}"
 tcp_netstat_baseline_path="${IRLIGHT_TCP_NETSTAT_BASELINE_PATH:-}"
+tcp_established_resets_mode="${IRLIGHT_TCP_ESTABLISHED_RESETS_MODE:-disabled}"
 
 unknown() {
   local reason="$1"
@@ -211,6 +212,21 @@ case "$tcp_listen_pressure_mode" in
     ;;
   *)
     register_optional_status "tcp_listen_pressure_status" 3
+    ;;
+esac
+
+case "$tcp_established_resets_mode" in
+  disabled)
+    ;;
+  enabled)
+    tcp_established_resets_code="$(run_component \
+      "$script_dir/check-tcp-snmp-established-resets.sh" \
+      "$tcp_snmp_path" \
+      "$tcp_snmp_baseline_path")"
+    register_optional_status "tcp_established_resets_status" "$tcp_established_resets_code"
+    ;;
+  *)
+    register_optional_status "tcp_established_resets_status" 3
     ;;
 esac
 
