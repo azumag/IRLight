@@ -280,6 +280,67 @@ class ManualCompatibilityReportValidationTest(unittest.TestCase):
 
         self.assertTrue(any("unsafe manual evidence path" in error for error in errors))
 
+    def test_manual_evidence_rejects_oversized_report_before_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "docs" / "compatibility-reports" / "obs.json"
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(
+                json.dumps(
+                    self._report(notes="x" * validator.MAX_MANUAL_REPORT_BYTES)
+                ),
+                encoding="utf-8",
+            )
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
+        self.assertTrue(
+            any(
+                f"exceeds {validator.MAX_MANUAL_REPORT_BYTES}-byte limit" in error
+                for error in errors
+            )
+        )
+
+    def test_manual_evidence_rejects_duplicate_json_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "docs" / "compatibility-reports" / "obs.json"
+            report_path.parent.mkdir(parents=True)
+            raw = json.dumps(self._report())
+            raw = raw[:-1] + ', "notes": "second sanitized note"}'
+            report_path.write_text(raw, encoding="utf-8")
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
+        self.assertTrue(
+            any("duplicate object key is not allowed" in error for error in errors)
+        )
+
+    def test_manual_evidence_rejects_nonstandard_json_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "docs" / "compatibility-reports" / "obs.json"
+            report_path.parent.mkdir(parents=True)
+            raw = json.dumps(self._report()).replace(
+                '"schema_version": 1', '"schema_version": NaN', 1
+            )
+            report_path.write_text(raw, encoding="utf-8")
+
+            errors = validator.validate_matrix_manual_reports(
+                self._matrix(["docs/compatibility-reports/obs.json"]), root=root
+            )
+
+        self.assertTrue(
+            any(
+                "non-standard JSON constant is not allowed: NaN" in error
+                for error in errors
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
