@@ -191,9 +191,32 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK
 
 current/baseline path、IP、port、destination、credential、counter の生値は aggregate 出力へ追加しません。
 
+## Conntrack pressure の opt-in
+
+既定では host / network namespace 全体の conntrack 使用率を aggregate に含めません。`nf_conntrack_count` / `nf_conntrack_max` は外向き通信障害と相関し得ますが、この signal だけで特定 Session、interface、destination の障害原因を確定できないためです。また既存利用者の stdout / exit code 契約を維持します。
+
+`check-conntrack-pressure.sh` を同じ一次切り分けに含める場合だけ、`IRLIGHT_CONNTRACK_PRESSURE_MODE=enabled` を明示します。
+
+```bash
+IRLIGHT_CONNTRACK_PRESSURE_MODE=enabled \
+bash scripts/check-network-egress-health.sh eth0 dual
+```
+
+checker は既定で `/proc/sys/net/netfilter/nf_conntrack_count` と `/proc/sys/net/netfilter/nf_conntrack_max` を read-only で読みます。fixture や明示した network namespace の snapshot を検査する場合は `IRLIGHT_CONNTRACK_COUNT_PATH` / `IRLIGHT_CONNTRACK_MAX_PATH` で上書きできます。warning / critical threshold は既存 checker 契約の `IRLIGHT_CONNTRACK_WARNING_PERCENT` / `IRLIGHT_CONNTRACK_CRITICAL_PERCENT` を再利用します。aggregate 自身は conntrack table や sysctl を変更しません。
+
+mode は `disabled`（既定）または `enabled` のみです。不正 mode、count/max の欠損・破損、不正 threshold、component timeout、checker の異常 exit は `conntrack_pressure_status=UNKNOWN` として fail-closed します。使用率が critical threshold 以上なら `CRITICAL`、warning threshold 以上なら `WARNING`、それ未満なら `OK` です。集約優先順位は `CRITICAL > UNKNOWN > WARNING > OK` のままで、確認済み conntrack 枯渇を別 component の `UNKNOWN` が隠しません。
+
+mode 未指定または `disabled` の場合、既存 stdout / exit code 形式を変更しません。有効時だけ `conntrack_pressure_status` を追加します。
+
+```text
+IRLIGHT_NETWORK_EGRESS_HEALTH status=WARNING link_status=OK ipv4_route_status=OK ipv6_route_status=OK conntrack_pressure_status=WARNING family=dual
+```
+
+conntrack は host / network namespace 全体の signal として扱い、特定 Session / interface / destination へ自動帰属しません。count/max、path、IP、port、credential の生値は aggregate 出力へ追加しません。
+
 ## Opt-in status field の保守契約
 
-optional component の status field は、component ごとの出力分岐を組み合わせるのではなく、固定順の registry へ登録して最後に一度だけ stdout を組み立てます。現在の順序は `interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status` → `tcp_attempt_fails_status` です。disabled の component は registry に登録せず、legacy 出力を byte-for-byte 維持します。
+optional component の status field は、component ごとの出力分岐を組み合わせるのではなく、固定順の registry へ登録して最後に一度だけ stdout を組み立てます。現在の順序は `interface_errors_status` → `udp_snmp_errors_status` → `tcp_snmp_retransmits_status` → `tcp_listen_pressure_status` → `tcp_established_resets_status` → `tcp_attempt_fails_status` → `conntrack_pressure_status` です。disabled の component は registry に登録せず、legacy 出力を byte-for-byte 維持します。
 
 新しい opt-in component を追加する場合は、component の exit code と status field を同じ登録処理へ渡し、status 表示と `CRITICAL > UNKNOWN > WARNING > OK` の severity merge を同時に更新します。個別の `printf` 分岐を増やしたり、field 登録だけ・severity merge だけを別々に追加しません。回帰テストでは all-disabled、各 component 単独、複数 component 同時有効の field 名・順序・exit code を固定します。
 
@@ -236,6 +259,8 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK ipv4_route_status=OK ipv6
 - `EstabResets` は host / network namespace 全体の signal として扱い、特定 Session / destination / service へ自動帰属しません。
 - TCP attempt failure opt-in でも current / baseline / proc / sysctl / socket / route / service を変更せず、baseline lifecycle は monitoring 側に残します。
 - `AttemptFails` は host / network namespace 全体の signal として扱い、特定 Session / destination / service へ自動帰属しません。
+- Conntrack pressure opt-in でも proc/sys の current 値、conntrack table、sysctl、socket、route、firewall を変更しません。
+- Conntrack pressure は host / network namespace 全体の signal として扱い、特定 Session / interface / destination へ自動帰属しません。
 - `dual` を自動推測しません。address-family policy は deployment ごとに operator が明示します。
 - component timeout を無効化して unbounded execution に切り替える設定はありません。
 - `CRITICAL` を見ても自動修復せず、provider / OS / network の状態と進行中 Session への影響を確認してから復旧操作を判断します。
@@ -248,6 +273,8 @@ IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK ipv4_route_status=OK ipv6
 
 `tcp_established_resets_status=WARNING` の場合は [tcp-established-reset-monitoring.md](tcp-established-reset-monitoring.md) で baseline generation を確認し、同じ観測期間の retransmit、NIC error/drop、egress reconnect/disconnect、複数 destination での同時発生を相関させます。`tcp_attempt_fails_status=WARNING` の場合は [tcp-connection-attempt-failure-monitoring.md](tcp-connection-attempt-failure-monitoring.md) で baseline generation を確認し、established reset、retransmit、route/NIC、connect/reconnect reason、destination ごとの偏りを相関させます。
 
-TCP warning だけで特定 Session、port、service、destination の障害や経路異常を断定しません。特定 Session への影響は Session / process / destination 側の証跡で別途確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout、baseline lifecycle、`timeout` utility の有無も確認し、「route がない」「NIC が壊れた」「UDP が詰まった」「TCP 経路が壊れた」「listener backlog が不足した」「接続先が reset した」「外向き connect が失敗した」と推測して設定を書き換えないでください。
+`conntrack_pressure_status=WARNING|CRITICAL` の場合は [host-pressure-monitoring.md](host-pressure-monitoring.md) の threshold 契約を確認し、同時刻の connection churn、NAT/firewall、reconnect、provider/network の証跡を read-only で相関させます。conntrack pressure だけで特定 Session / destination の障害原因を断定せず、sysctl を自動調整したり conntrack table を flush したりしません。
+
+TCP warning だけで特定 Session、port、service、destination の障害や経路異常を断定しません。特定 Session への影響は Session / process / destination 側の証跡で別途確認します。`UNKNOWN` の場合は proc/sysfs の欠落・権限・record 破損に加えて component timeout、baseline lifecycle、conntrack path / threshold、`timeout` utility の有無も確認し、「route がない」「NIC が壊れた」「UDP が詰まった」「TCP 経路が壊れた」「listener backlog が不足した」「接続先が reset した」「外向き connect が失敗した」「conntrack が枯渇した」と推測して設定を書き換えないでください。
 
 DNS 名前解決、宛先固有の疎通、RTMPS/TLS、実 publish の成否はこの check の範囲外です。egress 障害時は [egress-widespread-failure.md](egress-widespread-failure.md) と、必要に応じて Destination verification の診断を併用します。
