@@ -120,6 +120,17 @@ class CompatibilityMatrixTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("entries do not cover required_coverage: mobile.ios_b", result.stderr)
 
+    def test_validator_rejects_malformed_required_coverage_without_traceback(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        matrix["required_coverage"][0] = {"invalid": "shape"}
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "required_coverage entries must be non-empty strings",
+            result.stderr,
+        )
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_validator_rejects_verified_and_not_tested_for_same_coverage(self) -> None:
         matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
         candidate = next(item for item in matrix["entries"] if item["coverage"] == "pc.obs")
