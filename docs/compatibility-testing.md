@@ -19,7 +19,7 @@ python3 scripts/validate-manual-compatibility-reports.py
 
 The normal unit suite also runs the same contract checks.
 
-The matrix itself is strict JSON with a closed top-level and entry schema. It is limited to 256 KiB before parsing, rejects duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`), and requires `schema_version` to be the integer `1` rather than a JSON boolean. This keeps the compatibility ledger parser-independent and prevents undeclared fields from becoming an accidental support-claim channel.
+The matrix itself is strict JSON with a closed top-level and entry schema and is limited to 256 KiB before parsing. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected, and `schema_version` must be the integer `1` rather than a JSON boolean. This keeps the compatibility ledger parser-independent and prevents undeclared fields from becoming an accidental support-claim channel.
 
 ## Manual execution worksheet
 
