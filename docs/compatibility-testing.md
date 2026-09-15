@@ -19,6 +19,8 @@ python3 scripts/validate-manual-compatibility-reports.py
 
 The normal unit suite also runs the same contract checks.
 
+The matrix itself is strict JSON with a closed top-level and entry schema and is limited to 256 KiB before parsing. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected, and `schema_version` must be the integer `1` rather than a JSON boolean. This keeps the compatibility ledger parser-independent and prevents undeclared fields from becoming an accidental support-claim channel.
+
 ## Manual execution worksheet
 
 Before serializing evidence, the tester may use the existing human-facing worksheet below to capture the observation. `WARN` is a triage result, not a verified compatibility claim: a warning must remain unverified until the evidence can be represented by the JSON schema below with report-level `PASS` and passing applicable checks.
