@@ -59,14 +59,19 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
     if not _string(policy):
         errors.append("generated_claims_policy must be a non-empty string")
 
-    required_coverage = matrix.get("required_coverage")
-    if not isinstance(required_coverage, list) or not required_coverage:
+    raw_required_coverage = matrix.get("required_coverage")
+    required_coverage: list[str] = []
+    if not isinstance(raw_required_coverage, list) or not raw_required_coverage:
         errors.append("required_coverage must be a non-empty list")
-        required_coverage = []
-    elif any(not _string(item) for item in required_coverage):
-        errors.append("required_coverage entries must be non-empty strings")
+    else:
+        if any(not _string(item) for item in raw_required_coverage):
+            errors.append("required_coverage entries must be non-empty strings")
+        required_coverage = [
+            item for item in raw_required_coverage if _string(item)
+        ]
 
-    if len(required_coverage) != len(set(required_coverage)):
+    required_coverage_set = set(required_coverage)
+    if len(required_coverage) != len(required_coverage_set):
         errors.append("required_coverage entries must be unique")
 
     entries = matrix.get("entries")
@@ -144,13 +149,13 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             elif not path.is_file():
                 errors.append(f"{prefix}.evidence does not exist: {raw_path}")
 
-    missing_coverage = sorted(set(required_coverage) - covered)
+    missing_coverage = sorted(required_coverage_set - covered)
     if missing_coverage:
         errors.append(
             "entries do not cover required_coverage: " + ", ".join(missing_coverage)
         )
 
-    unexpected_coverage = sorted(covered - set(required_coverage))
+    unexpected_coverage = sorted(covered - required_coverage_set)
     if unexpected_coverage:
         errors.append(
             "entries use coverage keys not declared in required_coverage: "
