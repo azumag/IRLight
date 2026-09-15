@@ -50,6 +50,7 @@ SENSITIVE_FIELD_NAMES = {
     "streamkey",
     "token",
 }
+SENSITIVE_URL_QUERY_NAMES = SENSITIVE_FIELD_NAMES | {"streamid"}
 URL_CANDIDATE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>'\"`]+")
 
 
@@ -116,7 +117,7 @@ def _credential_url_paths(value: Any, *, prefix: str = "") -> list[str]:
             except ValueError:
                 continue
             if any(
-                _normalize_sensitive_name(name) in SENSITIVE_FIELD_NAMES
+                _normalize_sensitive_name(name) in SENSITIVE_URL_QUERY_NAMES
                 for name, _ in query_fields
             ):
                 findings.append(prefix or "<root>")
