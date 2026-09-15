@@ -92,6 +92,13 @@ class TcpSnmpRetransmitsCheckTest(unittest.TestCase):
             "out_segments_delta=20 retrans_segments_delta=1",
         )
 
+    def test_linux_maxconn_negative_one_is_accepted(self) -> None:
+        baseline = snmp_record(MaxConn=-1, OutSegs=100, RetransSegs=2)
+        current = snmp_record(MaxConn=-1, OutSegs=110, RetransSegs=2)
+        result = self._run(current=current, baseline=baseline)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("out_segments_delta=10", result.stdout)
+
     def test_unrelated_tcp_counters_do_not_warn(self) -> None:
         result = self._run(current=snmp_record(InSegs=50, EstabResets=7))
         self.assertEqual(result.returncode, 0)
