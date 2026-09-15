@@ -23,6 +23,7 @@ tcp_netstat_path="${IRLIGHT_TCP_NETSTAT_PATH:-/proc/net/netstat}"
 tcp_netstat_baseline_path="${IRLIGHT_TCP_NETSTAT_BASELINE_PATH:-}"
 tcp_established_resets_mode="${IRLIGHT_TCP_ESTABLISHED_RESETS_MODE:-disabled}"
 tcp_attempt_fails_mode="${IRLIGHT_TCP_ATTEMPT_FAILS_MODE:-disabled}"
+conntrack_pressure_mode="${IRLIGHT_CONNTRACK_PRESSURE_MODE:-disabled}"
 
 unknown() {
   local reason="$1"
@@ -243,6 +244,18 @@ case "$tcp_attempt_fails_mode" in
     ;;
   *)
     register_optional_status "tcp_attempt_fails_status" 3
+    ;;
+esac
+
+case "$conntrack_pressure_mode" in
+  disabled)
+    ;;
+  enabled)
+    conntrack_pressure_code="$(run_component "$script_dir/check-conntrack-pressure.sh")"
+    register_optional_status "conntrack_pressure_status" "$conntrack_pressure_code"
+    ;;
+  *)
+    register_optional_status "conntrack_pressure_status" 3
     ;;
 esac
 
