@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import tempfile
 import threading
@@ -129,6 +130,21 @@ def _require_catalog_string(
     return value
 
 
+def _require_catalog_timestamp(
+    item: dict[str, Any], field: str, *, context: str
+) -> float:
+    value = item.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise CatalogStateError(f"{context} has invalid {field}") from None
+    if not math.isfinite(normalized):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return normalized
+
+
 def _validate_catalog_identity(
     item_id: str, item: dict[str, Any], *, context: str
 ) -> None:
@@ -163,6 +179,8 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
             raise CatalogStateError(
                 "catalog contains a destination URL with embedded credential material"
             ) from exc
+        _require_catalog_timestamp(item, "created_at", context=context)
+        _require_catalog_timestamp(item, "updated_at", context=context)
 
     for asset_id, item in assets.items():
         if not isinstance(asset_id, str) or not asset_id or not isinstance(item, dict):
@@ -170,6 +188,8 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
         context = "catalog asset record"
         _validate_catalog_identity(asset_id, item, context=context)
         _require_catalog_string(item, "source_object_key", context=context)
+        _require_catalog_timestamp(item, "created_at", context=context)
+        _require_catalog_timestamp(item, "updated_at", context=context)
 
     return catalog
 
