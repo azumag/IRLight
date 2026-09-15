@@ -44,7 +44,9 @@ Check results are `PASS`, `FAIL`, `BLOCKED`, or `NOT_APPLICABLE`. For `manual_ve
 
 ## Secret boundary
 
-Never commit real stream keys, passwords, passphrases, bearer/API tokens, cookies, private keys, credential-bearing URLs, raw authentication headers, or unredacted logs. The validator rejects common secret-bearing field names recursively as a fail-closed guard, but that is not a complete secret scanner. Reports still require manual sanitization before commit.
+Never commit real stream keys, passwords, passphrases, bearer/API tokens, cookies, private keys, credential-bearing URLs, raw authentication headers, or unredacted logs. The validator rejects common secret-bearing field names recursively, including separator/case variants such as `clientSecret` and `access-token`. It also rejects URL userinfo and URL query fields whose decoded names are recognized as secret-bearing (for example `passphrase`, `stream_key`, `token`, or `client_secret`) without echoing the URL value into the validation error.
+
+These checks are intentionally fail-closed guards, not a complete secret scanner. They do not make arbitrary report text safe to publish and do not replace manual sanitization before commit. In particular, redact logs and free-form diagnostics before copying them into `notes`, `checks`, or additional report fields.
 
 Use opaque Session IDs and fixed dummy values only when an identifier is necessary to explain the test. Keep platform credentials and private keys outside the repository and CI.
 
