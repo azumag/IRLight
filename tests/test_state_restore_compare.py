@@ -323,6 +323,8 @@ class StateRestoreCompareTest(unittest.TestCase):
                             "id": "asset-1",
                             "user_id": "user-1",
                             "source_object_key": dummy_secret,
+                            "created_at": 1.0,
+                            "updated_at": 1.0,
                         }
                     },
                 },
