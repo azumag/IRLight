@@ -53,6 +53,7 @@ RELATED_PROCEDURES = {
     "network interface error monitoring": "docs/operations/network-interface-error-monitoring.md",
     "udp snmp error monitoring": "docs/operations/udp-snmp-error-monitoring.md",
     "tcp snmp retransmit monitoring": "docs/operations/tcp-snmp-retransmit-monitoring.md",
+    "tcp established reset monitoring": "docs/operations/tcp-established-reset-monitoring.md",
 }
 
 NEW_RUNBOOKS = {
@@ -159,6 +160,18 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
 
     def test_tcp_snmp_runbook_keeps_read_only_baseline_contract(self) -> None:
         relative_path = RELATED_PROCEDURES["tcp snmp retransmit monitoring"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
+        self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("同じ host", text)
+        self.assertIn("network namespace", text)
+        self.assertIn("WARNING", text)
+        self.assertIn("単独では `CRITICAL`", text)
+        self.assertIn("baseline を作成・更新・削除", text)
+
+    def test_tcp_established_reset_runbook_keeps_read_only_baseline_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["tcp established reset monitoring"]
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
         self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
