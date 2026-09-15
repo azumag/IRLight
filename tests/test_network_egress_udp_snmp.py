@@ -134,12 +134,15 @@ class NetworkEgressUdpSnmpTest(unittest.TestCase):
             "ipv4_route_status=OK ipv6_route_status=OK family=dual",
         )
 
-    def test_enabled_ok_is_included_in_aggregate(self) -> None:
+    def test_enabled_ok_preserves_udp_only_field_order(self) -> None:
         baseline = snmp_record(InErrors=3, RcvbufErrors=4, SndbufErrors=5, InCsumErrors=6)
         result, _ = self.run_check(mode="enabled", current=baseline, baseline=baseline)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("status=OK", result.stdout)
-        self.assertIn("udp_snmp_errors_status=OK", result.stdout)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_NETWORK_EGRESS_HEALTH status=OK link_status=OK "
+            "ipv4_route_status=OK ipv6_route_status=OK udp_snmp_errors_status=OK family=dual",
+        )
 
     def test_udp_error_delta_propagates_warning(self) -> None:
         result, _ = self.run_check(
