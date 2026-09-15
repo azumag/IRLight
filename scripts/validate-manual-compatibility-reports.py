@@ -235,8 +235,9 @@ def _safe_report_path(root: Path, raw_path: str) -> Path | None:
     relative = Path(raw_path)
     if relative.is_absolute() or any(part == ".." for part in relative.parts):
         return None
-    report_root = (root / MANUAL_REPORT_PREFIX.rstrip("/")).resolve()
-    candidate = (root / relative).resolve()
+    root_resolved = root.resolve()
+    report_root = root_resolved / MANUAL_REPORT_PREFIX.rstrip("/")
+    candidate = (root_resolved / relative).resolve()
     try:
         candidate.relative_to(report_root)
     except ValueError:
