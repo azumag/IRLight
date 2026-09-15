@@ -81,6 +81,8 @@ Report-level `result` is one of `PASS`, `PARTIAL`, `FAIL`, or `BLOCKED`. Check r
 
 Evidence paths are resolved before use and the resolved file must remain inside `docs/compatibility-reports/`. A path traversal or symlink that resolves elsewhere in the repository is rejected rather than treated as manual evidence.
 
+Manual report files are strict JSON and are limited to 64 KiB before parsing. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected so different JSON parsers cannot interpret the same evidence differently and a report cannot become an unbounded CI input.
+
 ## Secret boundary
 
 Never commit real stream keys, passwords, passphrases, bearer/API tokens, cookies, private keys, credential-bearing URLs, raw authentication headers, or unredacted logs. The validator rejects common secret-bearing field names recursively, including separator/case variants such as `clientSecret` and `access-token`. It also rejects URL userinfo and URL query fields whose decoded names are recognized as secret-bearing (for example `passphrase`, `stream_key`, `token`, or `client_secret`) without echoing the URL value into the validation error. SRT `streamid` query values are rejected as evidence URLs as well because they can carry authentication and routing material; record only a sanitized description of the SRT mode instead of the live endpoint.
