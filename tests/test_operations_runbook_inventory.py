@@ -52,6 +52,7 @@ RELATED_PROCEDURES = {
     "targeted network egress health": "docs/operations/targeted-network-egress-health.md",
     "network interface error monitoring": "docs/operations/network-interface-error-monitoring.md",
     "udp snmp error monitoring": "docs/operations/udp-snmp-error-monitoring.md",
+    "tcp snmp retransmit monitoring": "docs/operations/tcp-snmp-retransmit-monitoring.md",
 }
 
 NEW_RUNBOOKS = {
@@ -129,6 +130,18 @@ class OperationsRunbookInventoryTests(unittest.TestCase):
         self.assertIn("udp_snmp_errors_status=UNKNOWN", text)
         self.assertIn("host / network namespace 全体の signal", text)
         self.assertIn("aggregate 自身は作成・更新・削除しません", text)
+
+    def test_tcp_snmp_runbook_keeps_read_only_baseline_contract(self) -> None:
+        relative_path = RELATED_PROCEDURES["tcp snmp retransmit monitoring"]
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+        self.assertIn("IRLIGHT_TCP_SNMP_BASELINE_PATH", text)
+        self.assertIn("IRLIGHT_TCP_SNMP_PATH", text)
+        self.assertIn("同じ host", text)
+        self.assertIn("network namespace", text)
+        self.assertIn("WARNING", text)
+        self.assertIn("単独では `CRITICAL`", text)
+        self.assertIn("baseline を作成・更新・削除", text)
 
     def test_cgroup_runtime_runbook_keeps_cpu_throttling_opt_in_contract(self) -> None:
         relative_path = RELATED_PROCEDURES["cgroup runtime pressure aggregate"]
