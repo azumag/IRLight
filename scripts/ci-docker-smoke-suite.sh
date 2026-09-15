@@ -67,9 +67,27 @@ extract_failure_stage() {
   printf '%s' "$stage"
 }
 
+capture_runner_resources() {
+  local output_file="$1"
+
+  # Capture only aggregate runner capacity. These commands do not expose
+  # container environment, commands, labels, mounts or logs, so the baseline
+  # is safe to retain alongside a failure and can be compared with the
+  # failure-boundary snapshot when runner disk/cache pressure is suspected.
+  # Keep diagnostics independently bounded so an unhealthy Docker daemon cannot
+  # wedge the suite outside the per-scenario timeout.
+  {
+    echo 'Filesystem:'
+    timeout --signal=TERM --kill-after=2s 10s df -h / || true
+    echo 'Docker storage:'
+    timeout --signal=TERM --kill-after=2s 10s docker system df || true
+  } >"$output_file" 2>&1
+}
+
 write_step_summary() {
   local summary_file="${GITHUB_STEP_SUMMARY:-}"
   local result smoke outcome status duration stage context context_file
+  local resource_before_file resource_after_file
   local project service container image state docker_status
 
   if [[ -z "$summary_file" ]]; then
@@ -88,9 +106,25 @@ write_step_summary() {
     done
 
     for context in "${failure_contexts[@]}"; do
-      IFS='|' read -r smoke context_file <<<"$context"
+      IFS='|' read -r smoke context_file resource_before_file resource_after_file <<<"$context"
       echo
       printf '#### Failure context: `%s`\n\n' "$smoke"
+
+      echo '<details><summary>Runner resources before scenario</summary>'
+      echo
+      echo '```text'
+      cat "$resource_before_file" 2>/dev/null || echo '(resource baseline unavailable)'
+      echo '```'
+      echo '</details>'
+      echo
+      echo '<details><summary>Runner resources at failure boundary</summary>'
+      echo
+      echo '```text'
+      cat "$resource_after_file" 2>/dev/null || echo '(failure resource snapshot unavailable)'
+      echo '```'
+      echo '</details>'
+      echo
+
       if [[ ! -s "$context_file" ]]; then
         echo 'No Compose-managed containers remained at the failure boundary.'
         continue
@@ -108,11 +142,14 @@ write_step_summary() {
 
 emit_failure_context() {
   local smoke="$1"
+  local resource_before_file="$2"
   local safe_name="${smoke//\//_}"
-  local container_state_file
+  local container_state_file resource_after_file
 
   safe_name="${safe_name//./_}"
   container_state_file="$diagnostic_tmp_dir/${safe_name}.containers"
+  resource_after_file="$diagnostic_tmp_dir/${safe_name}.resources-after"
+  capture_runner_resources "$resource_after_file"
 
   # Capture this immediately after the failed scenario returns. Waiting until
   # all 17 smokes finish lets later scenario cleanup erase the very container
@@ -121,10 +158,10 @@ emit_failure_context() {
   # images and Docker state/status are useful for exit/health classification
   # without exposing env, commands, inspect payloads or arbitrary logs.
   printf '%s\n' "--- Docker smoke runner diagnostics (secret-safe; scenario=$smoke) ---"
-  echo 'Filesystem:'
-  df -h / || true
-  echo 'Docker storage:'
-  docker system df || true
+  echo 'Runner resources before scenario:'
+  cat "$resource_before_file" 2>/dev/null || echo '(resource baseline unavailable)'
+  echo 'Runner resources at failure boundary:'
+  cat "$resource_after_file" 2>/dev/null || echo '(failure resource snapshot unavailable)'
   echo 'Compose projects:'
   docker compose ls --all || true
 
@@ -142,13 +179,16 @@ emit_failure_context() {
   else
     echo '(none)'
   fi
-  failure_contexts+=("$smoke|$container_state_file")
+  failure_contexts+=("$smoke|$container_state_file|$resource_before_file|$resource_after_file")
 }
 
 for smoke in "${smokes[@]}"; do
-  started_at=$SECONDS
   safe_name="${smoke//\//_}"
-  scenario_log="$diagnostic_tmp_dir/${safe_name//./_}.log"
+  safe_name="${safe_name//./_}"
+  scenario_log="$diagnostic_tmp_dir/${safe_name}.log"
+  resource_before_file="$diagnostic_tmp_dir/${safe_name}.resources-before"
+  capture_runner_resources "$resource_before_file"
+  started_at=$SECONDS
   echo "::group::$smoke"
 
   # Keep the scenario output live while retaining a run-local copy from which
@@ -174,7 +214,7 @@ for smoke in "${smokes[@]}"; do
       "$smoke" "$status" "$duration" "$stage"
     results+=("$smoke|FAIL|$status|$duration|$stage")
     failures+=("$smoke:$status:$stage")
-    emit_failure_context "$smoke" >&2
+    emit_failure_context "$smoke" "$resource_before_file" >&2
   fi
   echo "::endgroup::"
 done

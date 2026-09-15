@@ -124,6 +124,7 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             self.assertIn(f"| `{smoke}` | PASS | 0 |", summary)
         self.assertNotIn("Docker smoke runner diagnostics", completed.stderr)
         self.assertNotIn("Failure context:", summary)
+        self.assertNotIn("Runner resources before scenario", summary)
 
     def test_failure_records_exit_code_stage_and_secret_safe_runner_context(self) -> None:
         failing_smoke = self.smokes[0]
@@ -144,7 +145,9 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             f"Docker smoke runner diagnostics (secret-safe; scenario={failing_smoke})",
             completed.stderr,
         )
-        self.assertIn("FAKE_DOCKER system df", completed.stderr)
+        self.assertIn("Runner resources before scenario:", completed.stderr)
+        self.assertIn("Runner resources at failure boundary:", completed.stderr)
+        self.assertGreaterEqual(completed.stderr.count("FAKE_DOCKER system df"), 2)
         self.assertIn("FAKE_DOCKER compose ls --all", completed.stderr)
         self.assertIn(
             "FAKE_DOCKER ps -a --filter label=com.docker.compose.project",
@@ -161,6 +164,9 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertIn(f"| `{failing_smoke}` | FAIL | 7 |", summary)
         self.assertIn("| `compose-control-up` |", summary)
         self.assertIn(f"#### Failure context: `{failing_smoke}`", summary)
+        self.assertIn("<summary>Runner resources before scenario</summary>", summary)
+        self.assertIn("<summary>Runner resources at failure boundary</summary>", summary)
+        self.assertEqual(summary.count("FAKE_DOCKER system df"), 2)
         self.assertIn(
             "| `irlight-ci` | `control` | `irlight-ci-control-1` | `irlight/control:ci` | `exited` | Exited (7) 1 second ago |",
             summary,
@@ -177,6 +183,17 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             1,
         )
         self.assertIn("FAKE_DOCKER_STATE failed-scenario-present", completed.stderr)
+
+    def test_failure_resource_baseline_is_retained_for_before_after_comparison(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, summary = self._run_harness(failing_smoke=failing_smoke)
+
+        self.assertEqual(completed.returncode, 1)
+        before = summary.index("<summary>Runner resources before scenario</summary>")
+        after = summary.index("<summary>Runner resources at failure boundary</summary>")
+        self.assertLess(before, after)
+        self.assertEqual(summary.count("Docker storage:"), 2)
+        self.assertEqual(summary.count("Filesystem:"), 2)
 
     def test_failure_stage_is_allowlisted_before_entering_compact_outputs(self) -> None:
         failing_smoke = self.smokes[0]
@@ -197,10 +214,21 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertIn("| `node-auth-ready` |", summary)
         self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
 
+    def test_resource_probes_are_timeout_bounded(self) -> None:
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=2s 10s df -h /",
+            self.source,
+        )
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=2s 10s docker system df",
+            self.source,
+        )
+
     def test_failure_context_does_not_use_secret_prone_docker_inspect(self) -> None:
         self.assertNotIn("docker inspect", self.source)
         self.assertIn("--filter label=com.docker.compose.project", self.source)
         self.assertIn('com.docker.compose.service', self.source)
+        self.assertIn("docker system df", self.source)
 
 
 if __name__ == "__main__":
