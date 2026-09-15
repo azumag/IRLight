@@ -120,6 +120,56 @@ def _validate_destination_server_url(server_url: str) -> None:
         raise CatalogValidationError(str(exc)) from exc
 
 
+def _require_catalog_string(
+    item: dict[str, Any], field: str, *, context: str
+) -> str:
+    value = item.get(field)
+    if not isinstance(value, str) or not value:
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _validate_catalog_identity(
+    item_id: str, item: dict[str, Any], *, context: str
+) -> None:
+    stored_id = _require_catalog_string(item, "id", context=context)
+    _require_catalog_string(item, "user_id", context=context)
+    if stored_id != item_id:
+        raise CatalogStateError(f"{context} id does not match its key")
+
+
+def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
+    destinations = catalog.get("destinations")
+    assets = catalog.get("assets")
+    if not isinstance(destinations, dict) or not isinstance(assets, dict):
+        raise CatalogStateError("catalog state has invalid structure")
+
+    for destination_id, item in destinations.items():
+        if not isinstance(destination_id, str) or not destination_id or not isinstance(item, dict):
+            raise CatalogStateError("catalog state has an invalid destination record")
+        context = "catalog destination record"
+        _validate_catalog_identity(destination_id, item, context=context)
+        _require_catalog_string(item, "type", context=context)
+        _require_catalog_string(item, "display_name", context=context)
+        server_url = _require_catalog_string(item, "server_url", context=context)
+        _require_catalog_string(item, "secret_ref", context=context)
+        try:
+            _validate_destination_server_url(server_url)
+        except CatalogValidationError as exc:
+            raise CatalogStateError(
+                "catalog contains a destination URL with embedded credential material"
+            ) from exc
+
+    for asset_id, item in assets.items():
+        if not isinstance(asset_id, str) or not asset_id or not isinstance(item, dict):
+            raise CatalogStateError("catalog state has an invalid asset record")
+        context = "catalog asset record"
+        _validate_catalog_identity(asset_id, item, context=context)
+        _require_catalog_string(item, "source_object_key", context=context)
+
+    return catalog
+
+
 def ensure_catalog() -> None:
     with _catalog_lock(exclusive=True):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,33 +183,7 @@ def ensure_catalog() -> None:
 
 
 def _load() -> dict[str, Any]:
-    catalog = read_json(CATALOG_PATH, _default_catalog())
-    if not isinstance(catalog.get("destinations"), dict) or not isinstance(
-        catalog.get("assets"), dict
-    ):
-        raise CatalogStateError("catalog state has invalid structure")
-    for section in ("destinations", "assets"):
-        if any(
-            not isinstance(key, str) or not isinstance(item, dict)
-            for key, item in catalog[section].items()
-        ):
-            raise CatalogStateError("catalog state has an invalid record")
-
-    # A credential-bearing URL is unsafe even for a read: list/get responses
-    # would otherwise echo the persisted secret back to the API client. Fail
-    # closed without rewriting the authority so an operator can recover it
-    # deliberately and rotate the affected credential.
-    for item in catalog["destinations"].values():
-        server_url = item.get("server_url")
-        if not isinstance(server_url, str):
-            continue
-        try:
-            _validate_destination_server_url(server_url)
-        except CatalogValidationError as exc:
-            raise CatalogStateError(
-                "catalog contains a destination URL with embedded credential material"
-            ) from exc
-    return catalog
+    return _validate_catalog_authority(read_json(CATALOG_PATH, _default_catalog()))
 
 
 def _save(catalog: dict[str, Any]) -> None:
