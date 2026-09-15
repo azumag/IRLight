@@ -13,7 +13,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
-AUTOMATED_EVIDENCE_PREFIXES = (".github/workflows/", "scripts/", "tests/")
 ALLOWED_STATUSES = {"automated", "manual_verified", "not_tested"}
 ALLOWED_CATEGORIES = {
     "publisher_software",
@@ -49,6 +48,16 @@ def _safe_repo_path(raw: str) -> Path | None:
     except ValueError:
         return None
     return candidate
+
+
+def _automated_evidence_path(raw: str) -> bool:
+    path = Path(raw)
+    suffix = path.suffix.lower()
+    if raw.startswith(".github/workflows/"):
+        return suffix in {".yml", ".yaml"}
+    if raw.startswith("scripts/") or raw.startswith("tests/"):
+        return suffix in {".sh", ".py"}
+    return False
 
 
 def validate_matrix(matrix: dict[str, Any]) -> list[str]:
@@ -137,10 +146,10 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}: verified entries require evidence")
         if status == "automated":
             for raw_path in evidence:
-                if not raw_path.startswith(AUTOMATED_EVIDENCE_PREFIXES):
+                if not _automated_evidence_path(raw_path):
                     errors.append(
-                        f"{prefix}: automated evidence must live under "
-                        ".github/workflows/, scripts/, or tests/"
+                        f"{prefix}: automated evidence must be a workflow (.yml/.yaml) "
+                        "or test script (.sh/.py) under .github/workflows/, scripts/, or tests/"
                     )
         if status == "manual_verified":
             for raw_path in evidence:
