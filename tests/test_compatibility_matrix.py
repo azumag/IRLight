@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -118,6 +119,30 @@ class CompatibilityMatrixTest(unittest.TestCase):
         result = self._run_validator(matrix)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("entries do not cover required_coverage: mobile.ios_b", result.stderr)
+
+    def test_validator_rejects_verified_and_not_tested_for_same_coverage(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        candidate = next(item for item in matrix["entries"] if item["coverage"] == "pc.obs")
+        duplicate = copy.deepcopy(candidate)
+        duplicate["id"] = "obs-false-verified-claim"
+        duplicate["status"] = "automated"
+        duplicate["evidence"] = ["scripts/publish-test.sh"]
+        matrix["entries"].append(duplicate)
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("coverage pc.obs cannot be both not_tested and verified", result.stderr)
+
+    def test_manual_verified_evidence_must_be_a_sanitized_report(self) -> None:
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        candidate = next(item for item in matrix["entries"] if item["coverage"] == "pc.obs")
+        candidate["status"] = "manual_verified"
+        candidate["evidence"] = ["scripts/publish-test.sh"]
+        result = self._run_validator(matrix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "manual_verified evidence must live under docs/compatibility-reports/",
+            result.stderr,
+        )
 
     def test_manual_workflow_forbids_credentials_and_support_inference(self) -> None:
         for expected in (
