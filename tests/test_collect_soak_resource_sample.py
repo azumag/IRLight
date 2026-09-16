@@ -36,36 +36,24 @@ class SoakResourceSampleCollectorTest(unittest.TestCase):
                 with self.assertRaises(SampleCollectionError):
                     MODULE.validate_project_name(invalid)
 
-    def test_parse_size_supports_docker_decimal_and_binary_units(self) -> None:
-        self.assertEqual(MODULE.parse_size("42B"), 42)
-        self.assertEqual(MODULE.parse_size("1.5kB"), 1500)
-        self.assertEqual(MODULE.parse_size("1MiB"), 1024 * 1024)
-        self.assertEqual(MODULE.parse_size("1.5GiB"), round(1.5 * 1024**3))
-        for invalid in ("", "12", "-1MiB", "NaNMiB", "1PiB"):
-            with self.subTest(invalid=invalid):
-                with self.assertRaises(SampleCollectionError):
-                    MODULE.parse_size(invalid)
-
-    def test_parse_stats_aggregates_memory_and_cpu(self) -> None:
+    def test_parse_stats_aggregates_cpu_only(self) -> None:
         output = "\n".join(
             [
-                json.dumps({"MemUsage": "1MiB / 1GiB", "CPUPerc": "12.5%"}),
-                json.dumps({"MemUsage": "500kB / 1GB", "CPUPerc": "0.5%"}),
+                json.dumps({"CPUPerc": "12.5%"}),
+                json.dumps({"CPUPerc": "0.5%"}),
             ]
         )
-        memory, cpu = MODULE.parse_stats_output(output, 2)
-        self.assertEqual(memory, 1024 * 1024 + 500_000)
-        self.assertEqual(cpu, 13.0)
+        self.assertEqual(MODULE.parse_stats_output(output, 2), 13.0)
 
     def test_parse_stats_fails_closed_on_shape_count_and_numbers(self) -> None:
         with self.assertRaisesRegex(SampleCollectionError, "expected 2 Docker stats rows"):
-            MODULE.parse_stats_output(
-                json.dumps({"MemUsage": "1MiB / 1GiB", "CPUPerc": "1%"}), 2
-            )
+            MODULE.parse_stats_output(json.dumps({"CPUPerc": "1%"}), 2)
         for value in (
-            {"MemUsage": "1MiB / 1GiB"},
-            {"MemUsage": "wat / 1GiB", "CPUPerc": "1%"},
-            {"MemUsage": "1MiB / 1GiB", "CPUPerc": "nan%"},
+            {},
+            {"CPUPerc": 1},
+            {"CPUPerc": "nan%"},
+            {"CPUPerc": "-1%"},
+            {"CPUPerc": "1"},
         ):
             with self.subTest(value=value):
                 with self.assertRaises(SampleCollectionError):
@@ -74,15 +62,19 @@ class SoakResourceSampleCollectorTest(unittest.TestCase):
     def test_parse_top_and_aggregate_process_observations(self) -> None:
         rows = MODULE.parse_top_output("101 Ssl\n102 Z\n103 R+\n")
         self.assertEqual(rows, [(101, "Ssl"), (102, "Z"), (103, "R+")])
-        counts = {101: 5, 102: 1, 103: 7}
-        processes, zombies, fds = MODULE.aggregate_processes(rows, counts.__getitem__)
-        self.assertEqual((processes, zombies, fds), (3, 1, 13))
+        observations = {101: (1000, 5), 102: (2000, 1), 103: (3000, 7)}
+        memory, processes, zombies, fds = MODULE.aggregate_processes(
+            rows, observations.__getitem__
+        )
+        self.assertEqual((memory, processes, zombies, fds), (6000, 3, 1, 13))
 
-    def test_process_aggregation_rejects_duplicate_pids_and_invalid_fds(self) -> None:
+    def test_process_aggregation_rejects_duplicate_pids_and_invalid_proc_values(self) -> None:
         with self.assertRaisesRegex(SampleCollectionError, "duplicate PID"):
-            MODULE.aggregate_processes([(10, "S"), (10, "R")], lambda _: 1)
+            MODULE.aggregate_processes([(10, "S"), (10, "R")], lambda _: (1, 1))
+        with self.assertRaisesRegex(SampleCollectionError, "RSS byte count"):
+            MODULE.aggregate_processes([(10, "S")], lambda _: (True, 1))
         with self.assertRaisesRegex(SampleCollectionError, "file-descriptor count"):
-            MODULE.aggregate_processes([(10, "S")], lambda _: True)
+            MODULE.aggregate_processes([(10, "S")], lambda _: (1, True))
         with self.assertRaisesRegex(SampleCollectionError, "unexpected docker top row"):
             MODULE.parse_top_output("not-a-pid S")
 
@@ -240,8 +232,10 @@ class SoakResourceSampleCollectorTest(unittest.TestCase):
         }
         with (
             mock.patch.object(MODULE, "compose_service_ids", return_value=service_ids),
-            mock.patch.object(MODULE, "collect_stats", return_value=(1234, 17.5)),
-            mock.patch.object(MODULE, "collect_process_observations", return_value=(9, 0, 80)),
+            mock.patch.object(MODULE, "collect_cpu_percent", return_value=17.5),
+            mock.patch.object(
+                MODULE, "collect_process_observations", return_value=(1234, 9, 0, 80)
+            ),
             mock.patch.object(MODULE, "load_media_metrics", return_value=media),
         ):
             sample = MODULE.collect_sample(
