@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 import unittest
@@ -229,7 +230,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
     def test_jitter_profile_cli_parser_is_fail_closed(self) -> None:
         self.assertEqual(MATRIX.parse_jitter_profile("100:20"), (100, 20))
         for value in ("100", "100:20:3", "abc:20", "75:10", "100:101"):
-            with self.assertRaises(Exception):
+            with self.assertRaises(argparse.ArgumentTypeError):
                 MATRIX.parse_jitter_profile(value)
 
     def test_namespace_and_interface_safety_validation_is_reused(self) -> None:
