@@ -85,7 +85,8 @@ def _validate_repo_evidence(path_text: object) -> str:
 def validate_checklist(payload: dict[str, Any]) -> None:
     if set(payload) != TOP_LEVEL_FIELDS:
         raise ChecklistValidationError("checklist has an unexpected top-level shape")
-    if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool):
+    schema_version = payload["schema_version"]
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
         raise ChecklistValidationError("unsupported checklist schema_version")
     if not isinstance(payload["qa_acceptance_ready"], bool):
         raise ChecklistValidationError("qa_acceptance_ready must be boolean")
