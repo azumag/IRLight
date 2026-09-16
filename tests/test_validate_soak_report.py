@@ -67,7 +67,7 @@ class ValidateSoakReportTest(unittest.TestCase):
     def test_valid_pass_report_produces_deterministic_deltas(self) -> None:
         value = report()
         value["samples"] = [
-            sample(5, rss=100, fds=10),
+            sample(0, rss=100, fds=10),
             sample(30, rss=120, fds=11),
             sample(60, rss=115, fds=10),
         ]
@@ -96,6 +96,28 @@ class ValidateSoakReportTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(SoakReportError):
                     validate_report(value)
+
+    def test_pass_requires_zero_elapsed_and_counter_baselines(self) -> None:
+        delayed_start = report()
+        delayed_start["samples"] = [sample(1), sample(60)]
+        with self.assertRaisesRegex(SoakReportError, "elapsed_seconds 0"):
+            validate_report(delayed_start)
+
+        timestamp_baseline = report()
+        timestamp_baseline["samples"] = [
+            sample(0, timestamp_errors=1),
+            sample(60, timestamp_errors=1),
+        ]
+        with self.assertRaisesRegex(SoakReportError, "baseline timestamp_errors"):
+            validate_report(timestamp_baseline)
+
+        reconnect_baseline = report()
+        reconnect_baseline["samples"] = [
+            sample(0, reconnects=1),
+            sample(60, reconnects=1),
+        ]
+        with self.assertRaisesRegex(SoakReportError, "baseline unexpected_reconnects"):
+            validate_report(reconnect_baseline)
 
     def test_fail_or_aborted_report_may_be_short_but_still_must_be_well_formed(self) -> None:
         for outcome in ("fail", "aborted"):
