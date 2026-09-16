@@ -179,6 +179,45 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
                 runner.execute_case(case)
         run_command.assert_not_called()
 
+    def test_tampered_apply_argv_is_rejected_before_command(self) -> None:
+        case = self._select("rtmp-loss-1pct-30s")
+        case["plan"]["apply_argv"] = ["echo", "not-a-generated-command"]
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "does not match generated matrix"
+            ):
+                runner.execute_case(case)
+        run_command.assert_not_called()
+
+    def test_extra_case_fields_are_rejected_before_command(self) -> None:
+        case = self._select("rtmp-loss-1pct-30s")
+        case["unexpected"] = "not part of the matrix schema"
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "does not match generated matrix"
+            ):
+                runner.execute_case(case)
+        run_command.assert_not_called()
+
+    def test_loopback_execution_requires_programmatic_acknowledgement(self) -> None:
+        case = runner.select_case(
+            case_id="rtmp-loss-1pct-30s",
+            namespace="irlight-qa",
+            interface="lo",
+            allow_loopback=True,
+        )
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "could not be regenerated safely"
+            ):
+                runner.execute_case(case)
+        run_command.assert_not_called()
+
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with mock.patch.object(runner.time, "sleep"):
+                self.assertEqual(runner.execute_case(case, allow_loopback=True), 0)
+        self.assertEqual(run_command.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
