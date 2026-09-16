@@ -1,6 +1,6 @@
 # Catalog authority record validation
 
-`catalog.json` is authoritative state for Destination and standby Asset records. Reads fail closed with `CatalogStateError` when the persisted record shape cannot have been emitted safely by the current writer.
+`catalog.json` is authoritative state for Destination and standby Asset records. Reads fail closed with `CatalogStateError` when the persisted record shape is unsafe or incompatible with the supported catalog history.
 
 ## Enforced record invariants
 
@@ -8,12 +8,14 @@ For every Destination and Asset, the dictionary key and persisted `id` must be t
 
 Destination records additionally require non-empty string values for `type`, `display_name`, `server_url`, and `secret_ref`. `server_url` continues to pass through the existing credential-material safety validator. A malformed or non-string URL therefore cannot bypass the URL safety check, and a malformed `secret_ref` cannot reach the destination secret-store boundary through string coercion.
 
-Asset records require a non-empty string `source_object_key` in addition to the shared identity fields.
+Destination operational metadata is structurally checked without invalidating records written by earlier supported versions. `verification_status` remains a required non-empty string and `last_verified_at` remains required as either null or a finite numeric timestamp. When present, the later-added `enabled` field must be a boolean, `last_verification_error` must be null or a string, and `verification_transport` must be null or an object. Historical destinations that predate those later-added fields remain readable until an explicit migration policy exists. These checks deliberately validate representation only: they do not introduce a new verification-state vocabulary or a closed transport schema.
 
-Both Destination and Asset records require finite numeric `created_at` and `updated_at` values matching the shape emitted by the existing writers. Missing timestamps, booleans, strings, nulls, non-finite values, and integers that overflow finite float normalization are rejected as `CatalogStateError`. The same validator runs before persistence, so invalid in-memory timestamps cannot replace the last readable catalog.
+Asset records require non-empty string values for both `source_object_key` and `processing_status` in addition to the shared identity fields. `processing_status` has been part of the Asset writer shape since the catalog feature's early persisted format; its vocabulary remains unchanged.
+
+Both Destination and Asset records require finite numeric `created_at` and `updated_at` values matching the supported persisted shape. Missing timestamps, booleans, strings, nulls, non-finite values, and integers that overflow finite float normalization are rejected as `CatalogStateError`. The same validator runs before persistence, so invalid in-memory timestamps or operational metadata cannot replace the last readable catalog.
 
 Validation is read-only. A rejected `catalog.json` is not repaired, rewritten, normalized, or replaced with an empty catalog. The public `/v1/destinations*` and `/v1/assets*` API boundary maps the resulting `CatalogStateError` to the stable `503` reason `CATALOG_STATE_UNAVAILABLE`.
 
 ## Deliberately unchanged
 
-This validation does not define new product policy. Destination protocol vocabulary, verification-state vocabulary, Asset processing-state vocabulary, timestamp ordering or semantic range, retention, provider behavior, billing, secret values, and migration/repair policy are unchanged. Further tightening of those fields requires compatibility review against persisted production state before it is made authoritative.
+This validation does not define new product policy. Destination protocol vocabulary, the allowed values of verification and Asset processing states, detailed verification transport semantics, timestamp ordering or semantic range, retention, provider behavior, billing, secret values, and migration/repair policy are unchanged. Further tightening of those semantics requires compatibility review against persisted production state before it is made authoritative.

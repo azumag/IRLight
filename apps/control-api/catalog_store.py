@@ -130,6 +130,17 @@ def _require_catalog_string(
     return value
 
 
+def _validate_catalog_optional_bool(
+    item: dict[str, Any], field: str, *, context: str
+) -> bool | None:
+    if field not in item:
+        return None
+    value = item[field]
+    if not isinstance(value, bool):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
+
+
 def _require_catalog_timestamp(
     item: dict[str, Any], field: str, *, context: str
 ) -> float:
@@ -143,6 +154,38 @@ def _require_catalog_timestamp(
     if not math.isfinite(normalized):
         raise CatalogStateError(f"{context} has invalid {field}")
     return normalized
+
+
+def _require_catalog_optional_timestamp(
+    item: dict[str, Any], field: str, *, context: str
+) -> float | None:
+    if field not in item:
+        raise CatalogStateError(f"{context} has invalid {field}")
+    if item[field] is None:
+        return None
+    return _require_catalog_timestamp(item, field, context=context)
+
+
+def _validate_catalog_optional_string(
+    item: dict[str, Any], field: str, *, context: str
+) -> str | None:
+    if field not in item:
+        return None
+    value = item[field]
+    if value is not None and not isinstance(value, str):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _validate_catalog_optional_dict(
+    item: dict[str, Any], field: str, *, context: str
+) -> dict[str, Any] | None:
+    if field not in item:
+        return None
+    value = item[field]
+    if value is not None and not isinstance(value, dict):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
 
 
 def _validate_catalog_identity(
@@ -181,6 +224,16 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
             ) from exc
         _require_catalog_timestamp(item, "created_at", context=context)
         _require_catalog_timestamp(item, "updated_at", context=context)
+        # Older persisted destinations predate `enabled`, verification error,
+        # and transport metadata. Validate those fields when present without
+        # making historical records unreadable in the absence of a migration.
+        _validate_catalog_optional_bool(item, "enabled", context=context)
+        _require_catalog_string(item, "verification_status", context=context)
+        _require_catalog_optional_timestamp(item, "last_verified_at", context=context)
+        _validate_catalog_optional_string(
+            item, "last_verification_error", context=context
+        )
+        _validate_catalog_optional_dict(item, "verification_transport", context=context)
 
     for asset_id, item in assets.items():
         if not isinstance(asset_id, str) or not asset_id or not isinstance(item, dict):
@@ -188,6 +241,7 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
         context = "catalog asset record"
         _validate_catalog_identity(asset_id, item, context=context)
         _require_catalog_string(item, "source_object_key", context=context)
+        _require_catalog_string(item, "processing_status", context=context)
         _require_catalog_timestamp(item, "created_at", context=context)
         _require_catalog_timestamp(item, "updated_at", context=context)
 
