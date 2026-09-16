@@ -20,11 +20,12 @@ SPEC.loader.exec_module(runner)
 
 
 class NetworkFaultCaseRunnerTest(unittest.TestCase):
-    def _select(self, case_id: str) -> dict[str, object]:
+    def _select(self, case_id: str, **kwargs: object) -> dict[str, object]:
         return runner.select_case(
             case_id=case_id,
             namespace="irlight-qa",
             interface="eth0",
+            **kwargs,
         )
 
     def _execute(self, case: dict[str, object], **kwargs: object) -> int:
@@ -44,6 +45,17 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             ["ip", "netns", "exec", "irlight-qa"],
         )
 
+    def test_select_explicit_bandwidth_case_requires_declared_matrix_value(self) -> None:
+        with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
+            self._select("rtmp-bandwidth-2500kbit-30s")
+
+        case = self._select(
+            "rtmp-bandwidth-2500kbit-30s",
+            bandwidth_kbits=(2500,),
+        )
+        self.assertEqual(case["fault"]["bandwidth_kbit"], 2500)
+        self.assertIn("2500kbit", case["plan"]["apply_argv"])
+
     def test_unknown_case_is_rejected_without_execution(self) -> None:
         with mock.patch.object(runner, "_run_command") as run_command:
             with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
@@ -52,6 +64,23 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
 
     def test_execute_case_applies_waits_and_cleans_up(self) -> None:
         case = self._select("srt-latency-100ms-30s")
+        plan = case["plan"]
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with mock.patch.object(runner.time, "sleep") as sleep:
+                result = self._execute(case)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run_command.call_args_list,
+            [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
+        )
+        sleep.assert_called_once_with(30)
+
+    def test_execute_explicit_bandwidth_case_regenerates_and_cleans_up(self) -> None:
+        case = self._select(
+            "srt-bandwidth-2500kbit-30s",
+            bandwidth_kbits=(2500,),
+        )
         plan = case["plan"]
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
@@ -160,6 +189,29 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["id"], "rtmp-loss-3pct-30s")
 
+    def test_bandwidth_plan_mode_is_read_only(self) -> None:
+        stdout = io.StringIO()
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with contextlib.redirect_stdout(stdout):
+                result = runner.main(
+                    [
+                        "plan",
+                        "--case",
+                        "rtmp-bandwidth-2500kbit-30s",
+                        "--namespace",
+                        "irlight-qa",
+                        "--interface",
+                        "eth0",
+                        "--bandwidth-kbit",
+                        "2500",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        run_command.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["fault"]["bandwidth_kbit"], 2500)
+
     def test_apply_mode_requires_disposable_namespace_acknowledgement(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             runner.main(
@@ -198,6 +250,19 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         with mock.patch.object(runner, "_run_command") as run_command:
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "does not match generated matrix"
+            ):
+                self._execute(case)
+        run_command.assert_not_called()
+
+    def test_tampered_bandwidth_metadata_is_rejected_before_command(self) -> None:
+        case = self._select(
+            "rtmp-bandwidth-2500kbit-30s",
+            bandwidth_kbits=(2500,),
+        )
+        case["fault"]["bandwidth_kbit"] = 4000
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "could not be regenerated safely"
             ):
                 self._execute(case)
         run_command.assert_not_called()
