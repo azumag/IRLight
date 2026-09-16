@@ -238,6 +238,11 @@ class NetworkFaultInjectorTests(unittest.TestCase):
             )
         )
 
+    def test_plan_parser_requires_namespace(self) -> None:
+        parser = network_fault_injector._parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["plan", "--interface", "eth0", "--loss", "1"])
+
     def test_apply_parser_requires_namespace_duration_and_acknowledgement(self) -> None:
         parser = network_fault_injector._parser()
         with self.assertRaises(SystemExit):
