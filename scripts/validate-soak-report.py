@@ -64,7 +64,7 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_report(path: Path) -> dict[str, Any]:
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise SoakReportError(f"cannot read report: {exc}") from exc
     try:
         value = json.loads(
@@ -134,7 +134,11 @@ def _optional_finite_number(value: Any, label: str) -> float | None:
 def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     _require_exact_fields(report, TOP_LEVEL_FIELDS, "report")
 
-    if isinstance(report["schema_version"], bool) or report["schema_version"] != 1:
+    if (
+        isinstance(report["schema_version"], bool)
+        or not isinstance(report["schema_version"], int)
+        or report["schema_version"] != 1
+    ):
         raise SoakReportError("schema_version must be integer 1")
     if not isinstance(report["run_id"], str):
         raise SoakReportError("run_id must be a UUID string")
@@ -159,8 +163,12 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     _require_exact_fields(cleanup, CLEANUP_FIELDS, "cleanup")
     if not isinstance(cleanup["verified"], bool):
         raise SoakReportError("cleanup.verified must be boolean")
-    if not isinstance(cleanup["details"], str) or len(cleanup["details"]) > 1000:
-        raise SoakReportError("cleanup.details must be a string up to 1000 characters")
+    if (
+        not isinstance(cleanup["details"], str)
+        or not cleanup["details"].strip()
+        or len(cleanup["details"]) > 1000
+    ):
+        raise SoakReportError("cleanup.details must be a non-empty string up to 1000 characters")
 
     samples = report["samples"]
     if not isinstance(samples, list) or not samples:
@@ -220,7 +228,7 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
         "scenario": scenario,
         "outcome": outcome,
         "target_duration_seconds": target,
-        "observed_duration_seconds": last["elapsed_seconds"] - first["elapsed_seconds"],
+        "observed_duration_seconds": last["elapsed_seconds"],
         "sample_count": len(normalized),
         "memory_rss_start_bytes": first["memory_rss_bytes"],
         "memory_rss_end_bytes": last["memory_rss_bytes"],
