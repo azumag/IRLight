@@ -101,7 +101,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
 
     def test_plan_command_is_read_only(self) -> None:
         output = io.StringIO()
-        with patch.object(MODULE, "_run") as run, redirect_stdout(output):
+        with patch.object(MODULE.subprocess, "run") as run, redirect_stdout(output):
             result = MODULE.main(
                 [
                     "plan",
@@ -123,7 +123,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
         self.assertIn('"duration_seconds": 30', output.getvalue())
 
     def test_programmatic_apply_requires_disposable_namespace_acknowledgement(self) -> None:
-        with patch.object(MODULE, "_run") as run:
+        with patch.object(MODULE.subprocess, "run") as run:
             with self.assertRaisesRegex(
                 MODULE.DnsFaultPlanError, "acknowledgement is required"
             ):
@@ -134,6 +134,23 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
                     duration_seconds=30,
                     confirm_disposable_namespace=False,
                 )
+        run.assert_not_called()
+
+    def test_preflight_command_error_does_not_mutate_firewall(self) -> None:
+        with (
+            patch.object(MODULE, "_run_status", return_value=2) as run_status,
+            patch.object(MODULE, "_run") as run,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "preflight check"):
+                MODULE.apply_dns_fault(
+                    namespace="irlight-qa",
+                    resolver="192.0.2.53",
+                    rule_id="case-1",
+                    duration_seconds=30,
+                    confirm_disposable_namespace=True,
+                )
+
+        run_status.assert_called_once()
         run.assert_not_called()
 
     def test_apply_blocks_both_protocols_then_cleans_up_in_reverse_order(self) -> None:
