@@ -66,6 +66,89 @@ class NetworkFaultInjectorTests(unittest.TestCase):
         )
         self.assertEqual(plan.duration_seconds, 30)
 
+    def test_correlated_burst_loss_plan_is_namespaced(self) -> None:
+        plan = network_fault_injector.build_fault_plan(
+            interface="eth0",
+            namespace="irlight-qa",
+            loss_percent=None,
+            burst_loss_percent=5,
+            burst_correlation_percent=75,
+            latency_ms=None,
+            jitter_ms=None,
+            disconnect=False,
+            duration_seconds=30,
+        )
+
+        self.assertEqual(
+            plan.apply_argv[-4:],
+            ("loss", "random", "5%", "75%"),
+        )
+
+    def test_burst_loss_reuses_loss_bounds_and_requires_bounded_correlation(self) -> None:
+        with self.assertRaisesRegex(
+            network_fault_injector.FaultPlanError, "burst_loss_percent"
+        ):
+            network_fault_injector.build_fault_plan(
+                interface="eth0",
+                namespace="irlight-qa",
+                loss_percent=None,
+                burst_loss_percent=2,
+                burst_correlation_percent=50,
+                latency_ms=None,
+                jitter_ms=None,
+                disconnect=False,
+                duration_seconds=30,
+            )
+
+        for correlation in (True, 0, 100):
+            with self.subTest(correlation=correlation):
+                with self.assertRaisesRegex(
+                    network_fault_injector.FaultPlanError,
+                    "burst_correlation_percent",
+                ):
+                    network_fault_injector.build_fault_plan(
+                        interface="eth0",
+                        namespace="irlight-qa",
+                        loss_percent=None,
+                        burst_loss_percent=5,
+                        burst_correlation_percent=correlation,
+                        latency_ms=None,
+                        jitter_ms=None,
+                        disconnect=False,
+                        duration_seconds=30,
+                    )
+
+    def test_burst_correlation_requires_burst_loss(self) -> None:
+        with self.assertRaisesRegex(
+            network_fault_injector.FaultPlanError, "requires burst loss"
+        ):
+            network_fault_injector.build_fault_plan(
+                interface="eth0",
+                namespace="irlight-qa",
+                loss_percent=1,
+                burst_correlation_percent=50,
+                latency_ms=None,
+                jitter_ms=None,
+                disconnect=False,
+                duration_seconds=30,
+            )
+
+    def test_burst_loss_cannot_combine_with_ordinary_loss(self) -> None:
+        with self.assertRaisesRegex(
+            network_fault_injector.FaultPlanError, "ordinary packet loss"
+        ):
+            network_fault_injector.build_fault_plan(
+                interface="eth0",
+                namespace="irlight-qa",
+                loss_percent=1,
+                burst_loss_percent=5,
+                burst_correlation_percent=50,
+                latency_ms=None,
+                jitter_ms=None,
+                disconnect=False,
+                duration_seconds=30,
+            )
+
     def test_bandwidth_plan_is_namespaced_and_bounded(self) -> None:
         plan = network_fault_injector.build_fault_plan(
             interface="eth0",
@@ -195,6 +278,20 @@ class NetworkFaultInjectorTests(unittest.TestCase):
                 duration_seconds=10,
                 bandwidth_kbit=2500,
             )
+        with self.assertRaisesRegex(
+            network_fault_injector.FaultPlanError, "cannot be combined"
+        ):
+            network_fault_injector.build_fault_plan(
+                interface="eth0",
+                namespace="irlight-qa",
+                loss_percent=None,
+                burst_loss_percent=5,
+                burst_correlation_percent=75,
+                latency_ms=None,
+                jitter_ms=None,
+                disconnect=True,
+                duration_seconds=10,
+            )
 
     def test_loopback_requires_explicit_acknowledgement(self) -> None:
         with self.assertRaisesRegex(
@@ -274,6 +371,25 @@ class NetworkFaultInjectorTests(unittest.TestCase):
                 "root",
             ),
         )
+
+    def test_burst_loss_cli_requires_correlation_before_execution(self) -> None:
+        with mock.patch.object(network_fault_injector, "_run") as run:
+            result = network_fault_injector.main(
+                [
+                    "apply",
+                    "--interface",
+                    "eth0",
+                    "--namespace",
+                    "irlight-qa",
+                    "--burst-loss",
+                    "5",
+                    "--duration",
+                    "30",
+                    "--confirm-disposable-namespace",
+                ]
+            )
+        self.assertEqual(result, 2)
+        run.assert_not_called()
 
     def test_apply_failure_still_attempts_cleanup(self) -> None:
         with (
