@@ -31,8 +31,9 @@ if [[ -n "$samples_jsonl" ]]; then
   fi
 fi
 
-# A soak run owns a disposable Compose project. Never allow callers to point
-# this cleanup-capable script at a shared or production project.
+# A soak run owns a disposable Compose project. Do not allow callers to point
+# cleanup at an existing developer/operator project through COMPOSE_PROJECT_NAME
+# or an IRLight-specific project override.
 soak_project="irlight-poc-soak-$$-$RANDOM"
 compose=(docker compose -p "$soak_project" -f "$repo_root/docker-compose.poc.yml")
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
@@ -79,27 +80,28 @@ trap cleanup EXIT
 
 wait_http() {
   local url="$1"
-  for _ in $(seq 1 60); do
-    if curl --fail --silent --show-error --max-time 3 "$url" >/dev/null; then
-      return 0
+  local deadline=$((SECONDS + 90))
+  until curl -fsS --max-time 5 "$url" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      echo "HTTP endpoint did not become ready: $url" >&2
+      return 1
     fi
     sleep 1
   done
-  echo "timed out waiting for $url" >&2
-  return 1
 }
 
 wait_node() {
-  for _ in $(seq 1 60); do
-    if node_admin_curl --fail --silent --show-error --max-time 3 \
-      "$base_url/internal/nodes" \
-      | python3 -c 'import json,sys; data=json.load(sys.stdin); raise SystemExit(0 if data else 1)' \
-      >/dev/null 2>&1; then
+  local deadline=$((SECONDS + 90))
+  local payload
+  while (( SECONDS < deadline )); do
+    payload="$(node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" 2>/dev/null || true)"
+    if python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("nodes") else 1)' \
+      <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "timed out waiting for node registration" >&2
+  echo "Node Agent did not register before the soak" >&2
   return 1
 }
 
@@ -149,6 +151,8 @@ wait_evidence_collector() {
   return 1
 }
 
+# Validate the generated project without tearing down anything that may already
+# be running on the fixed PoC ports. `up` will fail cleanly on a port collision.
 "${compose[@]}" config >/dev/null
 "${compose[@]}" up -d --build
 wait_http "$base_url/api/status"
@@ -159,20 +163,19 @@ start_evidence_collector
 deadline=$((SECONDS + soak_seconds))
 checks=0
 while (( SECONDS < deadline )); do
-  curl --fail --silent --show-error --max-time 5 "$base_url/api/status" >/dev/null
-  curl --fail --silent --show-error --max-time 5 "$hls_url" >/dev/null
-  node_admin_curl --fail --silent --show-error --max-time 5 \
-    "$base_url/internal/nodes" \
-    | python3 -c 'import json,sys; data=json.load(sys.stdin); raise SystemExit(0 if data else 1)' \
-    >/dev/null
+  curl -fsS --max-time 5 "$base_url/api/status" >/dev/null
+  curl -fsS --max-time 5 "$hls_url" >/dev/null
+  node_admin_curl -fsS --max-time 5 "$base_url/internal/nodes" |
+    python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("nodes") else 1)'
 
   running_services="$("${compose[@]}" ps --status running --services | wc -l | tr -d ' ')"
   if [[ "$running_services" != "4" ]]; then
     echo "expected 4 running services, got $running_services" >&2
+    "${compose[@]}" ps >&2
     exit 1
   fi
-
   checks=$((checks + 1))
+
   remaining=$((deadline - SECONDS))
   if (( remaining <= 0 )); then
     break
