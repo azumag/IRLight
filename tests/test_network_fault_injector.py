@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 import unittest
 from unittest import mock
 
@@ -11,6 +12,7 @@ SCRIPT = ROOT / "scripts" / "network-fault-injector.py"
 SPEC = importlib.util.spec_from_file_location("network_fault_injector", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 network_fault_injector = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = network_fault_injector
 SPEC.loader.exec_module(network_fault_injector)
 
 
