@@ -178,7 +178,11 @@ def run(args: argparse.Namespace) -> int:
         if not media_metrics.is_file():
             raise MeasuredSoakError("media metrics path must be a regular file")
 
-    paths = _prepare_paths(args.output_dir)
+    try:
+        output_dir = args.output_dir.resolve()
+    except OSError as exc:
+        raise MeasuredSoakError(f"cannot resolve output directory: {exc}") from exc
+    paths = _prepare_paths(output_dir)
     repo_root = _repo_root()
     run_id = str(uuid.uuid4())
     env = os.environ.copy()
