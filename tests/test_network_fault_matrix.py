@@ -29,11 +29,12 @@ class NetworkFaultMatrixTest(unittest.TestCase):
     def test_default_matrix_covers_rtmp_and_srt_baseline(self) -> None:
         payload = MATRIX.build_matrix(namespace="irlight-qa", interface="eth0")
 
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(payload["protocols"], ["rtmp", "srt"])
         self.assertEqual(payload["profile_duration_seconds"], 30)
         self.assertEqual(payload["bandwidth_kbits"], [])
         self.assertEqual(payload["jitter_profiles"], [])
+        self.assertEqual(payload["burst_loss_profiles"], [])
         self.assertEqual(payload["case_count"], 24)
 
         cases = payload["cases"]
@@ -79,6 +80,58 @@ class NetworkFaultMatrixTest(unittest.TestCase):
             self.assertTrue(
                 all(case["fault"]["jitter_ms"] is None for case in protocol_cases)
             )
+            self.assertTrue(
+                all(case["fault"]["burst_loss_percent"] is None for case in protocol_cases)
+            )
+            self.assertTrue(
+                all(
+                    case["fault"]["burst_correlation_percent"] is None
+                    for case in protocol_cases
+                )
+            )
+
+    def test_explicit_burst_loss_cases_are_additive_and_deduplicated(self) -> None:
+        payload = MATRIX.build_matrix(
+            namespace="irlight-qa",
+            interface="eth0",
+            protocols=("rtmp",),
+            burst_loss_profiles=((5, 75), (5, 75), (10, 50)),
+        )
+
+        self.assertEqual(
+            payload["burst_loss_profiles"],
+            [
+                {"loss_percent": 5, "correlation_percent": 75},
+                {"loss_percent": 10, "correlation_percent": 50},
+            ],
+        )
+        self.assertEqual(payload["case_count"], 14)
+        burst_cases = [
+            case
+            for case in payload["cases"]
+            if case["fault"]["burst_loss_percent"] is not None
+        ]
+        self.assertEqual(
+            [case["id"] for case in burst_cases],
+            [
+                "rtmp-burst-loss-5pct-corr-75pct-30s",
+                "rtmp-burst-loss-10pct-corr-50pct-30s",
+            ],
+        )
+        self.assertEqual(
+            [
+                (
+                    case["fault"]["burst_loss_percent"],
+                    case["fault"]["burst_correlation_percent"],
+                )
+                for case in burst_cases
+            ],
+            [(5, 75), (10, 50)],
+        )
+        self.assertEqual(
+            burst_cases[0]["plan"]["apply_argv"][-4:],
+            ["loss", "random", "5%", "75%"],
+        )
 
     def test_explicit_jitter_cases_are_additive_and_deduplicated(self) -> None:
         payload = MATRIX.build_matrix(
@@ -156,6 +209,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                 interface="eth0",
                 bandwidth_kbits=(2500,),
                 jitter_profiles=((100, 20),),
+                burst_loss_profiles=((5, 75),),
             )
 
         run.assert_not_called()
@@ -179,7 +233,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
         self.assertEqual(payload["case_count"], 12)
         self.assertTrue(all(case["protocol"] == "srt" for case in payload["cases"]))
 
-    def test_profile_duration_changes_loss_latency_jitter_and_bandwidth_cases(self) -> None:
+    def test_profile_duration_changes_loss_burst_latency_jitter_and_bandwidth_cases(self) -> None:
         payload = MATRIX.build_matrix(
             namespace="irlight-qa",
             interface="eth0",
@@ -187,11 +241,13 @@ class NetworkFaultMatrixTest(unittest.TestCase):
             profile_duration_seconds=120,
             bandwidth_kbits=(2500,),
             jitter_profiles=((100, 20),),
+            burst_loss_profiles=((5, 75),),
         )
 
         regular = [case for case in payload["cases"] if not case["fault"]["disconnect"]]
         disconnects = [case for case in payload["cases"] if case["fault"]["disconnect"]]
         self.assertTrue(all(case["fault"]["duration_seconds"] == 120 for case in regular))
+        self.assertIn("rtmp-burst-loss-5pct-corr-75pct-120s", [case["id"] for case in regular])
         self.assertIn("rtmp-jitter-100ms-20ms-120s", [case["id"] for case in regular])
         self.assertIn("rtmp-bandwidth-2500kbit-120s", [case["id"] for case in regular])
         self.assertEqual(
@@ -199,7 +255,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
             {10, 30, 120, 600},
         )
 
-    def test_programmatic_input_rejects_unsupported_protocol_duration_bandwidth_and_jitter(self) -> None:
+    def test_programmatic_input_rejects_unsupported_protocol_duration_bandwidth_jitter_and_burst(self) -> None:
         with self.assertRaises(MATRIX.MatrixError):
             MATRIX.build_matrix(
                 namespace="irlight-qa",
@@ -226,12 +282,25 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                     interface="eth0",
                     jitter_profiles=jitter_profiles,
                 )
+        for burst_loss_profiles in (((2, 50),), ((5, 0),), ((5, 100),), ((5, True),)):
+            with self.assertRaises(MATRIX.MatrixError):
+                MATRIX.build_matrix(
+                    namespace="irlight-qa",
+                    interface="eth0",
+                    burst_loss_profiles=burst_loss_profiles,
+                )
 
     def test_jitter_profile_cli_parser_is_fail_closed(self) -> None:
         self.assertEqual(MATRIX.parse_jitter_profile("100:20"), (100, 20))
         for value in ("100", "100:20:3", "abc:20", "75:10", "100:101"):
             with self.assertRaises(argparse.ArgumentTypeError):
                 MATRIX.parse_jitter_profile(value)
+
+    def test_burst_loss_profile_cli_parser_is_fail_closed(self) -> None:
+        self.assertEqual(MATRIX.parse_burst_loss_profile("5:75"), (5, 75))
+        for value in ("5", "5:75:1", "abc:75", "2:50", "5:0", "5:100"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                MATRIX.parse_burst_loss_profile(value)
 
     def test_namespace_and_interface_safety_validation_is_reused(self) -> None:
         with self.assertRaises(MATRIX.INJECTOR.FaultPlanError):
