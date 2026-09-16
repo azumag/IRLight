@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "policy": "qa_acceptance_ready may be true only when every required Issue #13 QA item is satisfied and each satisfied item has repository evidence.",
+  "items": [
+    {
+      "id": "major-transport-flows",
+      "title": "RTMP/RTMPS/SRT major flows are automated",
+      "required": true,
+      "status": "partial",
+      "evidence": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/rtmps-ingest-recovery.yml",
+        ".github/workflows/srt-ingest-recovery.yml"
+      ],
+      "notes": "Automated coverage exists, but this checklist does not infer full release acceptance from transport-specific CI alone."
+    },
+    {
+      "id": "disconnect-recovery",
+      "title": "Major disconnect and recovery scenarios are reproducible",
+      "required": true,
+      "status": "partial",
+      "evidence": [
+        ".github/workflows/disconnect-recovery.yml",
+        ".github/workflows/netem-harness-smoke.yml",
+        ".github/workflows/rtmp-netem-degradation-matrix.yml",
+        ".github/workflows/srt-netem-degradation-matrix.yml"
+      ],
+      "notes": "Deterministic recovery and network-degradation coverage exists; remaining Issue #13 fault and evidence slices must be closed before satisfaction."
+    },
+    {
+      "id": "obs-compatibility",
+      "title": "OBS compatibility evidence is recorded",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": "Requires sanitized manual evidence in the compatibility matrix; automated FFmpeg evidence is not a substitute."
+    },
+    {
+      "id": "mobile-publisher-compatibility",
+      "title": "At least two mobile publisher applications are verified",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": "Requires reproducible device/app/network evidence. Do not infer mobile support from desktop software."
+    },
+    {
+      "id": "hardware-encoder-compatibility",
+      "title": "Hardware encoder compatibility is recorded",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": "If hardware is unavailable, keep this pending or blocked rather than claiming compatibility."
+    },
+    {
+      "id": "six-hour-soak",
+      "title": "A six-hour-or-longer soak test passes",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": "Normal PR validation remains bounded; a dedicated long-running acceptance run must provide evidence."
+    },
+    {
+      "id": "node-capacity-load",
+      "title": "Node capacity is derived from load-test evidence",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target."
+    },
+    {
+      "id": "beta-release-checklist",
+      "title": "Pre-beta release acceptance checklist exists",
+      "required": true,
+      "status": "satisfied",
+      "evidence": [
+        "docs/release-acceptance-checklist.md",
+        "docs/release-acceptance-checklist.json",
+        "scripts/validate-release-acceptance-checklist.py",
+        "tests/test_release_acceptance_checklist.py"
+      ],
+      "notes": "This fail-closed checklist is machine-validated and remains not ready until every other required item is satisfied."
+    }
+  ],
+  "qa_acceptance_ready": false
+}
