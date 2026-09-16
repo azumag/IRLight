@@ -47,6 +47,7 @@ def select_case(
     interface: str,
     profile_duration_seconds: int = MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
     bandwidth_kbits: Sequence[int] = (),
+    jitter_profiles: Sequence[tuple[int, int]] = (),
     allow_loopback: bool = False,
 ) -> dict[str, object]:
     """Return one exact case from the deterministic matrix."""
@@ -57,6 +58,7 @@ def select_case(
         protocols=MATRIX.PROTOCOL_CHOICES,
         profile_duration_seconds=profile_duration_seconds,
         bandwidth_kbits=bandwidth_kbits,
+        jitter_profiles=jitter_profiles,
         allow_loopback=allow_loopback,
     )
     for case in matrix["cases"]:
@@ -94,6 +96,8 @@ def _validated_generated_case(
     duration_seconds = fault.get("duration_seconds")
     disconnect = fault.get("disconnect")
     bandwidth_kbit = fault.get("bandwidth_kbit")
+    latency_ms = fault.get("latency_ms")
+    jitter_ms = fault.get("jitter_ms")
     if (
         not isinstance(namespace, str)
         or not namespace
@@ -112,6 +116,24 @@ def _validated_generated_case(
                 or bandwidth_kbit > MATRIX.INJECTOR.BANDWIDTH_KBIT_MAX
             )
         )
+        or (
+            latency_ms is not None
+            and (
+                isinstance(latency_ms, bool)
+                or not isinstance(latency_ms, int)
+                or latency_ms not in MATRIX.INJECTOR.LATENCY_MS_CHOICES
+            )
+        )
+        or (
+            jitter_ms is not None
+            and (
+                latency_ms is None
+                or isinstance(jitter_ms, bool)
+                or not isinstance(jitter_ms, int)
+                or jitter_ms <= 0
+                or jitter_ms > latency_ms
+            )
+        )
     ):
         raise CaseRunnerError("network fault case has invalid execution data")
 
@@ -119,6 +141,7 @@ def _validated_generated_case(
         MATRIX.DEFAULT_PROFILE_DURATION_SECONDS if disconnect else duration_seconds
     )
     bandwidth_kbits = () if bandwidth_kbit is None else (bandwidth_kbit,)
+    jitter_profiles = () if jitter_ms is None else ((latency_ms, jitter_ms),)
     try:
         expected = select_case(
             case_id=case_id,
@@ -126,6 +149,7 @@ def _validated_generated_case(
             interface=interface,
             profile_duration_seconds=profile_duration_seconds,
             bandwidth_kbits=bandwidth_kbits,
+            jitter_profiles=jitter_profiles,
             allow_loopback=allow_loopback,
         )
     except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
@@ -230,7 +254,15 @@ def _add_case_arguments(parser: argparse.ArgumentParser) -> None:
         choices=MATRIX.INJECTOR.DURATION_SECONDS_CHOICES,
         default=MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
         dest="profile_duration_seconds",
-        help="duration used by loss, latency, and explicit bandwidth case IDs",
+        help="duration used by loss, latency, jitter, and explicit bandwidth case IDs",
+    )
+    parser.add_argument(
+        "--jitter-profile",
+        type=MATRIX.parse_jitter_profile,
+        action="append",
+        dest="jitter_profiles",
+        metavar="LATENCY_MS:JITTER_MS",
+        help="explicit latency+jitter value used to generate/select jitter case IDs",
     )
     parser.add_argument(
         "--bandwidth-kbit",
@@ -273,6 +305,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             interface=args.interface,
             profile_duration_seconds=args.profile_duration_seconds,
             bandwidth_kbits=args.bandwidth_kbits or (),
+            jitter_profiles=args.jitter_profiles or (),
             allow_loopback=args.allow_loopback,
         )
         if args.command == "plan":
