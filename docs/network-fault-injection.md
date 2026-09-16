@@ -1,6 +1,6 @@
 # Bounded network fault injection
 
-Issue #13 requires repeatable network-failure testing for RTMP/RTMPS/SRT recovery. `scripts/network-fault-injector.py` provides the first reusable Linux `tc netem` slice for packet loss, latency/jitter, and complete packet blackholes.
+Issue #13 requires repeatable network-failure testing for RTMP/RTMPS/SRT recovery. `scripts/network-fault-injector.py` provides a reusable Linux `tc netem` slice for packet loss, latency/jitter, bounded bandwidth shaping, and complete packet blackholes.
 
 ## Safety boundary
 
@@ -12,9 +12,11 @@ The helper does **not** create network namespaces and does not discover or choos
 
 The tool executes argv directly without a shell. Interface and namespace names are syntax-checked, option-like names are rejected, and loopback needs the additional `--allow-loopback` acknowledgement.
 
-## Supported matrix
+Once `apply` has attempted to change the qdisc, the helper also attempts cleanup even if the apply command itself raises or the operation is interrupted. Cleanup failure is reported instead of being hidden. This is a fail-closed safety boundary, not a promise that arbitrary pre-existing qdisc state can be restored.
 
-The initial bounded matrix intentionally matches the discrete values already listed in #13:
+## Supported fault bounds
+
+The bounded values already defined by #13 are:
 
 - packet loss: 1%, 3%, 5%, 10%
 - one-way netem delay setting: 50 ms, 100 ms, 300 ms, 1000 ms
@@ -22,11 +24,13 @@ The initial bounded matrix intentionally matches the discrete values already lis
 - complete packet blackhole: netem loss 100%
 - executing duration: 10 s, 30 s, 120 s, 600 s
 
-Bandwidth shaping, burst-loss models, TCP reset, DNS failure, and route mutation are deliberately not mixed into this helper yet. They have different state/cleanup semantics and remain tracked by #13.
+The injector also accepts an explicit bandwidth cap with `--bandwidth-kbit`, bounded to 64 through 100000 kbit/s. #13 does not define discrete bandwidth values, so the deterministic RTMP/SRT baseline matrix does not invent them. Operators select the bandwidth appropriate for the profile under test and record it as evidence.
+
+Burst-loss models, TCP reset, DNS failure, and route mutation are deliberately not mixed into this helper yet. They have different state/cleanup semantics and remain tracked by #13.
 
 ## Read-only planning
 
-Print the exact loss/latency/jitter commands without executing them:
+Print exact loss/latency/jitter commands without executing them:
 
 ```bash
 python scripts/network-fault-injector.py plan \
@@ -40,6 +44,16 @@ python scripts/network-fault-injector.py plan \
 
 For machine-readable orchestration, add `--json`. The JSON contains `apply_argv`, `cleanup_argv`, the namespace/interface, and the optional duration; callers do not need to parse shell text.
 
+A bandwidth-limited plan can be generated independently or combined with loss/latency:
+
+```bash
+python scripts/network-fault-injector.py plan \
+  --namespace irlight-qa \
+  --interface eth0 \
+  --bandwidth-kbit 2500 \
+  --duration 30
+```
+
 A complete-disconnect plan is:
 
 ```bash
@@ -50,9 +64,11 @@ python scripts/network-fault-injector.py plan \
   --duration 120
 ```
 
+A complete disconnect is mutually exclusive with loss, latency/jitter, and bandwidth shaping so a case cannot silently describe contradictory fault semantics.
+
 ## Deterministic matrix manifest
 
-For the reproducible baseline used to compare RTMP and SRT, `scripts/network-fault-matrix.py` expands the bounded injector profiles into stable, machine-readable case IDs without executing `tc` or creating a namespace:
+For the reproducible baseline used to compare RTMP and SRT, `scripts/network-fault-matrix.py` expands the discrete injector profiles into stable, machine-readable case IDs without executing `tc` or creating a namespace:
 
 ```bash
 python scripts/network-fault-matrix.py \
@@ -65,22 +81,46 @@ The default manifest contains 24 cases: for each of RTMP and SRT, four packet-lo
 
 Use repeated `--protocol rtmp` / `--protocol srt` arguments to select a subset, and `--duration` to choose one of the existing bounded durations for the loss/latency profiles. Complete-disconnect cases always retain the full duration matrix required by #13.
 
-The baseline manifest deliberately does not invent a discrete jitter value because #13 specifies jitter as a condition but not a numeric matrix. Explicit jitter cases remain available through `network-fault-injector.py plan`. Bandwidth, burst loss, TCP reset, DNS failure, and route mutation remain separate follow-up slices with their own cleanup semantics.
+The baseline manifest deliberately does not invent discrete jitter or bandwidth values because #13 names those fault classes without defining numeric matrices for them. Explicit jitter and bandwidth cases remain available through `network-fault-injector.py plan`. Burst loss, TCP reset, DNS failure, and route mutation remain separate follow-up slices with their own cleanup semantics.
+
+## Deterministic case runner
+
+`scripts/network-fault-case-runner.py` selects one stable case ID from the manifest. `plan` remains read-only:
+
+```bash
+python scripts/network-fault-case-runner.py plan \
+  --case rtmp-loss-3pct-30s \
+  --namespace irlight-qa \
+  --interface eth0 \
+  --pretty
+```
+
+Execution requires the same disposable-namespace acknowledgement:
+
+```bash
+sudo python scripts/network-fault-case-runner.py apply \
+  --case srt-disconnect-30s \
+  --namespace irlight-qa \
+  --interface eth0 \
+  --confirm-disposable-namespace
+```
+
+The case runner executes only commands generated by the validated matrix, bounds each `ip`/`tc` command, and attempts cleanup after every apply attempt, including apply errors and interrupts. The protocol component of the case ID is an evidence/workload label; `netem` acts on the selected namespace interface, so the surrounding test harness is responsible for running the matching RTMP or SRT workload.
 
 ## Bounded execution
 
-After creating and verifying a **disposable** test namespace, apply the fault for an allowed duration:
+After creating and verifying a **disposable** test namespace, apply a fault for an allowed duration:
 
 ```bash
 sudo python scripts/network-fault-injector.py apply \
   --namespace irlight-qa \
   --interface eth0 \
-  --loss 5 \
+  --bandwidth-kbit 2500 \
   --duration 30 \
   --confirm-disposable-namespace
 ```
 
-`apply` requires a duration. After the sleep, and also after `KeyboardInterrupt`, the helper attempts `tc qdisc del ... root` in `finally`. A cleanup failure is returned as an error instead of being hidden. SIGKILL, host crash, or kernel failure cannot run Python cleanup, so the namespace must remain disposable rather than relying on cleanup as restoration.
+`apply` requires a duration. Once the apply command is attempted, cleanup is also attempted after normal completion, apply failure, or `KeyboardInterrupt`. A cleanup failure is returned as an error instead of being hidden. SIGKILL, host crash, or kernel failure cannot run Python cleanup, so the namespace must remain disposable rather than relying on cleanup as restoration.
 
 If an interrupted external runner needs explicit cleanup, use:
 
@@ -95,15 +135,18 @@ sudo python scripts/network-fault-injector.py clear \
 
 ## Test coverage
 
-The injector unit regression covers command construction, the #13 loss/latency/duration matrix boundary, jitter validation, complete disconnects, unsafe interface/namespace syntax, loopback acknowledgement, namespaced execution, normal cleanup, and cleanup after `KeyboardInterrupt`.
+The injector unit regression covers command construction, the #13 loss/latency/duration boundaries, bounded bandwidth shaping, jitter validation, complete disconnects, unsafe interface/namespace syntax, loopback acknowledgement, namespaced execution, normal cleanup, cleanup after apply failure, and cleanup after `KeyboardInterrupt`.
 
 The matrix regression verifies the RTMP/SRT case inventory, stable unique IDs, bounded duration behavior, namespace/interface safety reuse, protocol filtering, and that manifest generation never invokes a subprocess.
+
+The case-runner regression verifies stable case selection, read-only planning, namespaced execution, command cleanup after normal operation/apply failure/interrupt, cleanup-failure visibility, and invalid-case rejection.
 
 Run them with:
 
 ```bash
 python -m unittest discover -s tests -p 'test_network_fault_injector.py' -v
 python -m unittest discover -s tests -p 'test_network_fault_matrix.py' -v
+python -m unittest discover -s tests -p 'test_network_fault_case_runner.py' -v
 ```
 
-No unit test applies a real qdisc. End-to-end use of `apply` belongs in an isolated Linux namespace runner where `iproute2` and `CAP_NET_ADMIN` are intentionally available.
+No unit test applies a real qdisc. End-to-end use of executing modes belongs in an isolated Linux namespace runner where `iproute2` and `CAP_NET_ADMIN` are intentionally available.
