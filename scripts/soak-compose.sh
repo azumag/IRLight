@@ -132,13 +132,21 @@ wait_evidence_collector() {
   fi
 
   local pid="$evidence_pid"
-  # Clear ownership before waiting so the EXIT trap cannot signal a PID that
-  # has already been reaped if this wait reports failure.
-  evidence_pid=""
-  if ! wait "$pid"; then
-    echo "soak evidence collection failed" >&2
-    return 1
+  if wait "$pid"; then
+    evidence_pid=""
+    return 0
   fi
+
+  # A signal can interrupt wait while leaving the child alive. Terminate and
+  # reap it before returning failure so cleanup never tears down Compose under
+  # a collector that still believes the project exists.
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  evidence_pid=""
+  echo "soak evidence collection failed" >&2
+  return 1
 }
 
 "${compose[@]}" config >/dev/null
