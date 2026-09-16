@@ -89,6 +89,12 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         with self.assertRaisesRegex(module.ChecklistValidationError, "unsupported status"):
             module.validate_checklist(payload)
 
+    def test_float_schema_version_is_rejected(self) -> None:
+        payload = self._canonical()
+        payload["schema_version"] = 1.0
+        with self.assertRaisesRegex(module.ChecklistValidationError, "schema_version"):
+            module.validate_checklist(payload)
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         fd, name = tempfile.mkstemp(suffix=".json")
         os.close(fd)
