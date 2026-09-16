@@ -63,6 +63,67 @@ def select_case(
     raise CaseRunnerError("requested network fault case is not in the matrix")
 
 
+def _validated_generated_case(
+    case: dict[str, object], *, allow_loopback: bool
+) -> dict[str, object]:
+    """Regenerate and compare a case before any command is executed.
+
+    ``execute_case`` is intentionally usable by Python test harnesses as well as
+    the CLI, so it must not trust argv copied from an arbitrary/deserialized
+    mapping. Only the exact closed-shape case emitted by the deterministic matrix
+    is executable.
+    """
+
+    case_id = case.get("id")
+    protocol = case.get("protocol")
+    plan = case.get("plan")
+    fault = case.get("fault")
+    if (
+        not isinstance(case_id, str)
+        or not case_id
+        or protocol not in MATRIX.PROTOCOL_CHOICES
+        or not isinstance(plan, dict)
+        or not isinstance(fault, dict)
+    ):
+        raise CaseRunnerError("network fault case has invalid execution data")
+
+    namespace = plan.get("namespace")
+    interface = plan.get("interface")
+    duration_seconds = fault.get("duration_seconds")
+    disconnect = fault.get("disconnect")
+    if (
+        not isinstance(namespace, str)
+        or not namespace
+        or not isinstance(interface, str)
+        or not interface
+        or isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, int)
+        or duration_seconds not in MATRIX.INJECTOR.DURATION_SECONDS_CHOICES
+        or not isinstance(disconnect, bool)
+    ):
+        raise CaseRunnerError("network fault case has invalid execution data")
+
+    profile_duration_seconds = (
+        MATRIX.DEFAULT_PROFILE_DURATION_SECONDS if disconnect else duration_seconds
+    )
+    try:
+        expected = select_case(
+            case_id=case_id,
+            namespace=namespace,
+            interface=interface,
+            profile_duration_seconds=profile_duration_seconds,
+            allow_loopback=allow_loopback,
+        )
+    except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
+        raise CaseRunnerError(
+            "network fault case could not be regenerated safely"
+        ) from exc
+
+    if case != expected:
+        raise CaseRunnerError("network fault case does not match generated matrix")
+    return expected
+
+
 def _run_command(argv: Sequence[str]) -> None:
     try:
         completed = subprocess.run(
@@ -82,9 +143,18 @@ def _run_command(argv: Sequence[str]) -> None:
         )
 
 
-def execute_case(case: dict[str, object]) -> int:
+def execute_case(
+    case: dict[str, object],
+    *,
+    confirm_disposable_namespace: bool = False,
+    allow_loopback: bool = False,
+) -> int:
     """Apply one generated matrix case, wait its bounded duration, then clean up."""
 
+    if confirm_disposable_namespace is not True:
+        raise CaseRunnerError("disposable namespace acknowledgement is required")
+
+    case = _validated_generated_case(case, allow_loopback=allow_loopback)
     plan = case.get("plan")
     fault = case.get("fault")
     if not isinstance(plan, dict) or not isinstance(fault, dict):
@@ -192,7 +262,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        return execute_case(case)
+        return execute_case(
+            case,
+            confirm_disposable_namespace=args.confirm_disposable_namespace,
+            allow_loopback=args.allow_loopback,
+        )
     except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
         print(f"network-fault-case-runner: {exc}", file=sys.stderr)
         return 2
