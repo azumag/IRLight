@@ -75,7 +75,7 @@ def _validate_repo_evidence(path_text: object) -> str:
     try:
         resolved = candidate.resolve(strict=True)
         resolved.relative_to(ROOT.resolve())
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         raise ChecklistValidationError(f"evidence path is missing or unsafe: {path_text}") from exc
     if not resolved.is_file():
         raise ChecklistValidationError(f"evidence path must be a file: {path_text}")
@@ -129,7 +129,7 @@ def validate_checklist(payload: dict[str, Any]) -> None:
         if not isinstance(item["required"], bool):
             raise ChecklistValidationError(f"{item_id}: required must be boolean")
         status = item["status"]
-        if status not in ALLOWED_STATUSES:
+        if not isinstance(status, str) or status not in ALLOWED_STATUSES:
             raise ChecklistValidationError(f"{item_id}: unsupported status")
 
         evidence = item["evidence"]
