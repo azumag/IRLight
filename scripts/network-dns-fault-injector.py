@@ -40,6 +40,7 @@ class DnsFaultPlan:
     namespace: str
     resolver: str
     rule_id: str
+    check_argvs: tuple[tuple[str, ...], ...]
     apply_argvs: tuple[tuple[str, ...], ...]
     cleanup_argvs: tuple[tuple[str, ...], ...]
     duration_seconds: int | None
@@ -49,6 +50,7 @@ class DnsFaultPlan:
             "namespace": self.namespace,
             "resolver": self.resolver,
             "rule_id": self.rule_id,
+            "check_argvs": [list(argv) for argv in self.check_argvs],
             "apply_argvs": [list(argv) for argv in self.apply_argvs],
             "cleanup_argvs": [list(argv) for argv in self.cleanup_argvs],
             "duration_seconds": self.duration_seconds,
@@ -123,6 +125,7 @@ def build_dns_fault_plan(
         "-w",
         str(IPTABLES_WAIT_SECONDS),
     )
+    check_argvs: list[tuple[str, ...]] = []
     apply_argvs: list[tuple[str, ...]] = []
     cleanup_argvs: list[tuple[str, ...]] = []
     for protocol in ("udp", "tcp"):
@@ -141,6 +144,7 @@ def build_dns_fault_plan(
             "-j",
             "REJECT",
         )
+        check_argvs.append(prefix + ("-C",) + rule)
         apply_argvs.append(prefix + ("-I",) + rule[:1] + ("1",) + rule[1:])
         cleanup_argvs.append(prefix + ("-D",) + rule)
 
@@ -148,13 +152,14 @@ def build_dns_fault_plan(
         namespace=namespace,
         resolver=resolver,
         rule_id=rule_id,
+        check_argvs=tuple(check_argvs),
         apply_argvs=tuple(apply_argvs),
         cleanup_argvs=tuple(cleanup_argvs),
         duration_seconds=duration_seconds,
     )
 
 
-def _run(argv: Sequence[str]) -> None:
+def _run_status(argv: Sequence[str]) -> int:
     try:
         completed = subprocess.run(
             list(argv),
@@ -167,10 +172,26 @@ def _run(argv: Sequence[str]) -> None:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("DNS fault command could not complete safely") from exc
-    if completed.returncode != 0:
+    return completed.returncode
+
+
+def _run(argv: Sequence[str]) -> None:
+    returncode = _run_status(argv)
+    if returncode != 0:
         raise RuntimeError(
-            f"DNS fault command exited with status {completed.returncode}"
+            f"DNS fault command exited with status {returncode}"
         )
+
+
+def _rule_exists(argv: Sequence[str]) -> bool:
+    returncode = _run_status(argv)
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise RuntimeError(
+        f"DNS fault preflight check exited with status {returncode}"
+    )
 
 
 def _cleanup_applied(
@@ -194,7 +215,7 @@ def apply_dns_fault(
     duration_seconds: int,
     confirm_disposable_namespace: bool,
 ) -> int:
-    """Apply bounded UDP+TCP DNS rejection and clean up exact attempted rules."""
+    """Apply bounded UDP+TCP DNS rejection and clean up exactly applied rules."""
 
     if confirm_disposable_namespace is not True:
         raise DnsFaultPlanError("disposable namespace acknowledgement is required")
@@ -205,6 +226,12 @@ def apply_dns_fault(
         duration_seconds=duration_seconds,
     )
     assert plan.duration_seconds is not None
+
+    for check_argv in plan.check_argvs:
+        if _rule_exists(check_argv):
+            raise DnsFaultPlanError(
+                "exact DNS fault rule already exists; clear it before reusing rule_id"
+            )
 
     attempted_cleanup_argvs: list[tuple[str, ...]] = []
     interrupted = False
