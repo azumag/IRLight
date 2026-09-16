@@ -82,6 +82,6 @@ loopback route の変更は namespace 内の test harness 自体を壊しやす�
 
 ## E2Eでの使い方
 
-RTMP/SRT の同一 fault 条件比較では、対象 destination の literal IP を test harness 側で確定した後にこの helper を使います。DNS 障害は `network-dns-fault-injector.py`、TCP reset は `network-tcp-reset-fault-injector.py` と責務を分離します。
+RTMP/SRT の同一 fault 条件比較では、対象 destination の literal IP を test harness 側で確定した後にこの helper を使います。DNS 障害は `network-dns-fault-injector.py`、TCP reset は `network-tcp-reset-injector.py` と責務を分離します。
 
 この helper 自体は namespace の作成、veth 設定、publisher/destination の起動、外部配信先への接続を行いません。実 routing mutation は disposable QA namespace が用意された環境でのみ実施します。
