@@ -65,7 +65,7 @@ def _validate_control(value: Any) -> dict[str, object]:
     command_id = value.get("command_id")
     idempotency_key = value.get("idempotency_key")
     updated_at = value.get("updated_at")
-    if mode not in {"LIVE", "MUTED"}:
+    if not isinstance(mode, str) or mode not in {"LIVE", "MUTED"}:
         raise ControlStateError("control state has invalid audio mode")
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         raise ControlStateError("control state has invalid version")
@@ -191,7 +191,7 @@ class ControlStore:
         expected_version: int | None = None,
         now: float | None = None,
     ) -> dict[str, object]:
-        if mode not in {"LIVE", "MUTED"}:
+        if not isinstance(mode, str) or mode not in {"LIVE", "MUTED"}:
             raise ValueError("unsupported audio mode")
         if (
             not isinstance(idempotency_key, str)
