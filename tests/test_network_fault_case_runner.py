@@ -73,6 +73,42 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
         )
 
+    def test_apply_failure_still_attempts_cleanup(self) -> None:
+        case = self._select("rtmp-loss-1pct-30s")
+        plan = case["plan"]
+        with mock.patch.object(
+            runner,
+            "_run_command",
+            side_effect=[runner.CaseRunnerError("apply command failed"), None],
+        ) as run_command:
+            with mock.patch.object(runner.time, "sleep") as sleep:
+                with self.assertRaisesRegex(runner.CaseRunnerError, "apply failed"):
+                    runner.execute_case(case)
+
+        self.assertEqual(
+            run_command.call_args_list,
+            [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
+        )
+        sleep.assert_not_called()
+
+    def test_interrupt_during_apply_still_attempts_cleanup(self) -> None:
+        case = self._select("rtmp-loss-1pct-30s")
+        plan = case["plan"]
+        with mock.patch.object(
+            runner,
+            "_run_command",
+            side_effect=[KeyboardInterrupt(), None],
+        ) as run_command:
+            with mock.patch.object(runner.time, "sleep") as sleep:
+                result = runner.execute_case(case)
+
+        self.assertEqual(result, 130)
+        self.assertEqual(
+            run_command.call_args_list,
+            [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
+        )
+        sleep.assert_not_called()
+
     def test_cleanup_failure_remains_visible(self) -> None:
         case = self._select("rtmp-disconnect-10s")
         with mock.patch.object(
@@ -83,6 +119,21 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             with mock.patch.object(runner.time, "sleep"):
                 with self.assertRaisesRegex(runner.CaseRunnerError, "cleanup failed"):
                     runner.execute_case(case)
+
+    def test_apply_and_cleanup_failure_reports_uncertain_cleanup(self) -> None:
+        case = self._select("rtmp-disconnect-10s")
+        with mock.patch.object(
+            runner,
+            "_run_command",
+            side_effect=[
+                runner.CaseRunnerError("apply command failed"),
+                runner.CaseRunnerError("cleanup command failed"),
+            ],
+        ):
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "cleanup could not be confirmed"
+            ):
+                runner.execute_case(case)
 
     def test_plan_mode_is_read_only(self) -> None:
         stdout = io.StringIO()
