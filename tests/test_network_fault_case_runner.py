@@ -45,6 +45,21 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             ["ip", "netns", "exec", "irlight-qa"],
         )
 
+    def test_select_explicit_burst_loss_case_requires_declared_matrix_profile(self) -> None:
+        with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
+            self._select("rtmp-burst-loss-5pct-corr-75pct-30s")
+
+        case = self._select(
+            "rtmp-burst-loss-5pct-corr-75pct-30s",
+            burst_loss_profiles=((5, 75),),
+        )
+        self.assertEqual(case["fault"]["burst_loss_percent"], 5)
+        self.assertEqual(case["fault"]["burst_correlation_percent"], 75)
+        self.assertEqual(
+            case["plan"]["apply_argv"][-4:],
+            ["loss", "random", "5%", "75%"],
+        )
+
     def test_select_explicit_jitter_case_requires_declared_matrix_profile(self) -> None:
         with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
             self._select("rtmp-jitter-100ms-20ms-30s")
@@ -77,6 +92,23 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
 
     def test_execute_case_applies_waits_and_cleans_up(self) -> None:
         case = self._select("srt-latency-100ms-30s")
+        plan = case["plan"]
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with mock.patch.object(runner.time, "sleep") as sleep:
+                result = self._execute(case)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run_command.call_args_list,
+            [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
+        )
+        sleep.assert_called_once_with(30)
+
+    def test_execute_explicit_burst_loss_case_regenerates_and_cleans_up(self) -> None:
+        case = self._select(
+            "srt-burst-loss-5pct-corr-75pct-30s",
+            burst_loss_profiles=((5, 75),),
+        )
         plan = case["plan"]
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
@@ -219,6 +251,30 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["id"], "rtmp-loss-3pct-30s")
 
+    def test_burst_loss_plan_mode_is_read_only(self) -> None:
+        stdout = io.StringIO()
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with contextlib.redirect_stdout(stdout):
+                result = runner.main(
+                    [
+                        "plan",
+                        "--case",
+                        "rtmp-burst-loss-5pct-corr-75pct-30s",
+                        "--namespace",
+                        "irlight-qa",
+                        "--interface",
+                        "eth0",
+                        "--burst-loss-profile",
+                        "5:75",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        run_command.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["fault"]["burst_loss_percent"], 5)
+        self.assertEqual(payload["fault"]["burst_correlation_percent"], 75)
+
     def test_jitter_plan_mode_is_read_only(self) -> None:
         stdout = io.StringIO()
         with mock.patch.object(runner, "_run_command") as run_command:
@@ -304,6 +360,19 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         with mock.patch.object(runner, "_run_command") as run_command:
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "does not match generated matrix"
+            ):
+                self._execute(case)
+        run_command.assert_not_called()
+
+    def test_tampered_burst_loss_metadata_is_rejected_before_command(self) -> None:
+        case = self._select(
+            "rtmp-burst-loss-5pct-corr-75pct-30s",
+            burst_loss_profiles=((5, 75),),
+        )
+        case["fault"]["burst_correlation_percent"] = 50
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "could not be regenerated safely"
             ):
                 self._execute(case)
         run_command.assert_not_called()

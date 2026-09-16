@@ -19,7 +19,7 @@ from typing import Sequence
 
 PROTOCOL_CHOICES = ("rtmp", "srt")
 DEFAULT_PROFILE_DURATION_SECONDS = 30
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 class MatrixError(ValueError):
@@ -93,6 +93,38 @@ def _validated_jitter_profiles(
     return tuple(normalized)
 
 
+def _validated_burst_loss_profiles(
+    burst_loss_profiles: Sequence[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    normalized: list[tuple[int, int]] = []
+    for profile in burst_loss_profiles:
+        if (
+            not isinstance(profile, tuple)
+            or len(profile) != 2
+            or isinstance(profile[0], bool)
+            or isinstance(profile[1], bool)
+            or not isinstance(profile[0], int)
+            or not isinstance(profile[1], int)
+        ):
+            raise MatrixError(
+                "burst loss profile must be a (loss_percent, correlation_percent) integer pair"
+            )
+        loss_percent, correlation_percent = profile
+        if loss_percent not in INJECTOR.LOSS_PERCENT_CHOICES:
+            raise MatrixError("burst loss percentage is outside the supported QA matrix")
+        if (
+            correlation_percent < INJECTOR.BURST_CORRELATION_PERCENT_MIN
+            or correlation_percent > INJECTOR.BURST_CORRELATION_PERCENT_MAX
+        ):
+            raise MatrixError(
+                "burst correlation is outside the supported QA safety bound"
+            )
+        pair = (loss_percent, correlation_percent)
+        if pair not in normalized:
+            normalized.append(pair)
+    return tuple(normalized)
+
+
 def parse_jitter_profile(value: str) -> tuple[int, int]:
     """Parse ``LATENCY_MS:JITTER_MS`` for the repeatable CLI option."""
 
@@ -111,6 +143,26 @@ def parse_jitter_profile(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def parse_burst_loss_profile(value: str) -> tuple[int, int]:
+    """Parse ``LOSS_PERCENT:CORRELATION_PERCENT`` for the repeatable CLI option."""
+
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            "burst loss profile must be LOSS_PERCENT:CORRELATION_PERCENT"
+        )
+    try:
+        loss_percent, correlation_percent = (int(part, 10) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "burst loss profile must contain integer percentages"
+        ) from exc
+    try:
+        return _validated_burst_loss_profiles(((loss_percent, correlation_percent),))[0]
+    except MatrixError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _case(
     *,
     case_id: str,
@@ -118,6 +170,8 @@ def _case(
     namespace: str,
     interface: str,
     loss_percent: int | None = None,
+    burst_loss_percent: int | None = None,
+    burst_correlation_percent: int | None = None,
     latency_ms: int | None = None,
     jitter_ms: int | None = None,
     bandwidth_kbit: int | None = None,
@@ -129,6 +183,8 @@ def _case(
         interface=interface,
         namespace=namespace,
         loss_percent=loss_percent,
+        burst_loss_percent=burst_loss_percent,
+        burst_correlation_percent=burst_correlation_percent,
         latency_ms=latency_ms,
         jitter_ms=jitter_ms,
         disconnect=disconnect,
@@ -141,6 +197,8 @@ def _case(
         "protocol": protocol,
         "fault": {
             "loss_percent": loss_percent,
+            "burst_loss_percent": burst_loss_percent,
+            "burst_correlation_percent": burst_correlation_percent,
             "latency_ms": latency_ms,
             "jitter_ms": jitter_ms,
             "bandwidth_kbit": bandwidth_kbit,
@@ -159,6 +217,7 @@ def build_matrix(
     profile_duration_seconds: int = DEFAULT_PROFILE_DURATION_SECONDS,
     bandwidth_kbits: Sequence[int] = (),
     jitter_profiles: Sequence[tuple[int, int]] = (),
+    burst_loss_profiles: Sequence[tuple[int, int]] = (),
     allow_loopback: bool = False,
 ) -> dict[str, object]:
     """Build the baseline #13 matrix plus explicitly selected shaping cases.
@@ -166,14 +225,14 @@ def build_matrix(
     Packet-loss and latency profiles use one caller-selected bounded duration
     (30 seconds by default). Complete disconnects expand every duration listed
     by #13: 10, 30, 120, and 600 seconds. #13 does not define canonical
-    bandwidth or jitter values, so those cases are additive only when the caller
-    supplies explicit bounded values. Jitter profiles must name both the base
-    latency and jitter in milliseconds so no product threshold is invented.
+    bandwidth, jitter, or burst-correlation values, so those cases are additive
+    only when the caller supplies explicit bounded values.
     """
 
     protocols = _validated_protocols(protocols)
     bandwidth_kbits = _validated_bandwidths(bandwidth_kbits)
     jitter_profiles = _validated_jitter_profiles(jitter_profiles)
+    burst_loss_profiles = _validated_burst_loss_profiles(burst_loss_profiles)
     if profile_duration_seconds not in INJECTOR.DURATION_SECONDS_CHOICES:
         raise MatrixError("profile duration is outside the supported QA matrix")
 
@@ -190,6 +249,22 @@ def build_matrix(
                     namespace=namespace,
                     interface=interface,
                     loss_percent=loss_percent,
+                    duration_seconds=profile_duration_seconds,
+                    allow_loopback=allow_loopback,
+                )
+            )
+        for loss_percent, correlation_percent in burst_loss_profiles:
+            cases.append(
+                _case(
+                    case_id=(
+                        f"{protocol}-burst-loss-{loss_percent}pct-"
+                        f"corr-{correlation_percent}pct-{profile_duration_seconds}s"
+                    ),
+                    protocol=protocol,
+                    namespace=namespace,
+                    interface=interface,
+                    burst_loss_percent=loss_percent,
+                    burst_correlation_percent=correlation_percent,
                     duration_seconds=profile_duration_seconds,
                     allow_loopback=allow_loopback,
                 )
@@ -264,6 +339,13 @@ def build_matrix(
             {"latency_ms": latency_ms, "jitter_ms": jitter_ms}
             for latency_ms, jitter_ms in jitter_profiles
         ],
+        "burst_loss_profiles": [
+            {
+                "loss_percent": loss_percent,
+                "correlation_percent": correlation_percent,
+            }
+            for loss_percent, correlation_percent in burst_loss_profiles
+        ],
         "case_count": len(cases),
         "cases": cases,
     }
@@ -286,7 +368,18 @@ def _parser() -> argparse.ArgumentParser:
         choices=INJECTOR.DURATION_SECONDS_CHOICES,
         default=DEFAULT_PROFILE_DURATION_SECONDS,
         dest="profile_duration_seconds",
-        help="duration used for loss, latency, jitter, and explicit bandwidth profiles",
+        help="duration used for loss, burst loss, latency, jitter, and bandwidth profiles",
+    )
+    parser.add_argument(
+        "--burst-loss-profile",
+        type=parse_burst_loss_profile,
+        action="append",
+        dest="burst_loss_profiles",
+        metavar="LOSS:CORRELATION",
+        help=(
+            "add an explicit correlated-loss case; loss reuses the bounded packet-loss "
+            "choices and correlation is 1..99 percent"
+        ),
     )
     parser.add_argument(
         "--jitter-profile",
@@ -322,6 +415,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             profile_duration_seconds=args.profile_duration_seconds,
             bandwidth_kbits=args.bandwidth_kbits or (),
             jitter_profiles=args.jitter_profiles or (),
+            burst_loss_profiles=args.burst_loss_profiles or (),
             allow_loopback=args.allow_loopback,
         )
     except (MatrixError, INJECTOR.FaultPlanError) as exc:

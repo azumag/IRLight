@@ -8,10 +8,10 @@ the helper never generates or executes a host-interface ``tc`` command.
 acknowledgement. Once an apply command is attempted, root-qdisc cleanup is also
 attempted even if the apply command itself fails or is interrupted.
 
-This tool intentionally covers only qdisc-local packet loss, latency/jitter,
-bandwidth shaping, and complete packet blackholes. DNS, route, firewall, TCP
-reset, and burst-loss injection remain separate test concerns because their
-cleanup and blast radius differ.
+This tool intentionally covers only qdisc-local packet loss, correlated
+burst-like loss, latency/jitter, bandwidth shaping, and complete packet
+blackholes. DNS, route, firewall, and TCP reset injection remain separate test
+concerns because their cleanup and blast radius differ.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from typing import Sequence
 
 LOSS_PERCENT_CHOICES = (1, 3, 5, 10)
+BURST_CORRELATION_PERCENT_MIN = 1
+BURST_CORRELATION_PERCENT_MAX = 99
 LATENCY_MS_CHOICES = (50, 100, 300, 1000)
 DURATION_SECONDS_CHOICES = (10, 30, 120, 600)
 BANDWIDTH_KBIT_MIN = 64
@@ -82,6 +84,10 @@ def _validate_namespace(namespace: str) -> str:
     return namespace
 
 
+def _is_supported_loss_percent(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in LOSS_PERCENT_CHOICES
+
+
 def build_fault_plan(
     *,
     interface: str,
@@ -92,6 +98,8 @@ def build_fault_plan(
     disconnect: bool,
     duration_seconds: int | None,
     bandwidth_kbit: int | None = None,
+    burst_loss_percent: int | None = None,
+    burst_correlation_percent: int | None = None,
     allow_loopback: bool = False,
 ) -> FaultPlan:
     """Build a namespaced, shell-free ``tc netem`` plan."""
@@ -99,8 +107,26 @@ def build_fault_plan(
     interface = _validate_interface(interface, allow_loopback=allow_loopback)
     namespace = _validate_namespace(namespace)
 
-    if loss_percent is not None and loss_percent not in LOSS_PERCENT_CHOICES:
+    if loss_percent is not None and not _is_supported_loss_percent(loss_percent):
         raise FaultPlanError("loss_percent is outside the supported QA matrix")
+    if burst_loss_percent is not None and not _is_supported_loss_percent(burst_loss_percent):
+        raise FaultPlanError("burst_loss_percent is outside the supported QA matrix")
+    if burst_loss_percent is None:
+        if burst_correlation_percent is not None:
+            raise FaultPlanError("burst correlation requires burst loss")
+    else:
+        if loss_percent is not None:
+            raise FaultPlanError("burst loss cannot be combined with ordinary packet loss")
+        if (
+            isinstance(burst_correlation_percent, bool)
+            or not isinstance(burst_correlation_percent, int)
+            or burst_correlation_percent < BURST_CORRELATION_PERCENT_MIN
+            or burst_correlation_percent > BURST_CORRELATION_PERCENT_MAX
+        ):
+            raise FaultPlanError(
+                "burst_correlation_percent must be an integer between "
+                f"{BURST_CORRELATION_PERCENT_MIN} and {BURST_CORRELATION_PERCENT_MAX}"
+            )
     if latency_ms is not None and latency_ms not in LATENCY_MS_CHOICES:
         raise FaultPlanError("latency_ms is outside the supported QA matrix")
     if jitter_ms is not None:
@@ -121,6 +147,8 @@ def build_fault_plan(
             )
     if disconnect and (
         loss_percent is not None
+        or burst_loss_percent is not None
+        or burst_correlation_percent is not None
         or latency_ms is not None
         or jitter_ms is not None
         or bandwidth_kbit is not None
@@ -129,6 +157,7 @@ def build_fault_plan(
     if (
         not disconnect
         and loss_percent is None
+        and burst_loss_percent is None
         and latency_ms is None
         and bandwidth_kbit is None
     ):
@@ -141,7 +170,17 @@ def build_fault_plan(
     if disconnect:
         argv.extend(("loss", "100%"))
     else:
-        if loss_percent is not None:
+        if burst_loss_percent is not None:
+            assert burst_correlation_percent is not None
+            argv.extend(
+                (
+                    "loss",
+                    "random",
+                    f"{burst_loss_percent}%",
+                    f"{burst_correlation_percent}%",
+                )
+            )
+        elif loss_percent is not None:
             argv.extend(("loss", f"{loss_percent}%"))
         if latency_ms is not None:
             argv.extend(("delay", f"{latency_ms}ms"))
@@ -189,7 +228,24 @@ def _add_profile_arguments(parser: argparse.ArgumentParser, *, duration_required
     group.add_argument(
         "--loss", type=int, choices=LOSS_PERCENT_CHOICES, dest="loss_percent"
     )
+    group.add_argument(
+        "--burst-loss",
+        type=int,
+        choices=LOSS_PERCENT_CHOICES,
+        dest="burst_loss_percent",
+        help="correlated random loss base percentage",
+    )
     group.add_argument("--disconnect", action="store_true")
+    parser.add_argument(
+        "--burst-correlation",
+        type=int,
+        dest="burst_correlation_percent",
+        metavar="PERCENT",
+        help=(
+            "correlation for --burst-loss "
+            f"({BURST_CORRELATION_PERCENT_MIN}..{BURST_CORRELATION_PERCENT_MAX})"
+        ),
+    )
     parser.add_argument(
         "--latency", type=int, choices=LATENCY_MS_CHOICES, dest="latency_ms"
     )
@@ -254,6 +310,8 @@ def _plan_from_args(args: argparse.Namespace) -> FaultPlan:
         interface=args.interface,
         namespace=args.namespace,
         loss_percent=args.loss_percent,
+        burst_loss_percent=args.burst_loss_percent,
+        burst_correlation_percent=args.burst_correlation_percent,
         latency_ms=args.latency_ms,
         jitter_ms=args.jitter_ms,
         disconnect=args.disconnect,

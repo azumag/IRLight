@@ -48,6 +48,7 @@ def select_case(
     profile_duration_seconds: int = MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
     bandwidth_kbits: Sequence[int] = (),
     jitter_profiles: Sequence[tuple[int, int]] = (),
+    burst_loss_profiles: Sequence[tuple[int, int]] = (),
     allow_loopback: bool = False,
 ) -> dict[str, object]:
     """Return one exact case from the deterministic matrix."""
@@ -59,6 +60,7 @@ def select_case(
         profile_duration_seconds=profile_duration_seconds,
         bandwidth_kbits=bandwidth_kbits,
         jitter_profiles=jitter_profiles,
+        burst_loss_profiles=burst_loss_profiles,
         allow_loopback=allow_loopback,
     )
     for case in matrix["cases"]:
@@ -98,6 +100,8 @@ def _validated_generated_case(
     bandwidth_kbit = fault.get("bandwidth_kbit")
     latency_ms = fault.get("latency_ms")
     jitter_ms = fault.get("jitter_ms")
+    burst_loss_percent = fault.get("burst_loss_percent")
+    burst_correlation_percent = fault.get("burst_correlation_percent")
     if (
         not isinstance(namespace, str)
         or not namespace
@@ -134,6 +138,29 @@ def _validated_generated_case(
                 or jitter_ms > latency_ms
             )
         )
+        or (
+            burst_loss_percent is not None
+            and (
+                isinstance(burst_loss_percent, bool)
+                or not isinstance(burst_loss_percent, int)
+                or burst_loss_percent not in MATRIX.INJECTOR.LOSS_PERCENT_CHOICES
+            )
+        )
+        or (
+            burst_loss_percent is None
+            and burst_correlation_percent is not None
+        )
+        or (
+            burst_loss_percent is not None
+            and (
+                isinstance(burst_correlation_percent, bool)
+                or not isinstance(burst_correlation_percent, int)
+                or burst_correlation_percent
+                < MATRIX.INJECTOR.BURST_CORRELATION_PERCENT_MIN
+                or burst_correlation_percent
+                > MATRIX.INJECTOR.BURST_CORRELATION_PERCENT_MAX
+            )
+        )
     ):
         raise CaseRunnerError("network fault case has invalid execution data")
 
@@ -142,6 +169,11 @@ def _validated_generated_case(
     )
     bandwidth_kbits = () if bandwidth_kbit is None else (bandwidth_kbit,)
     jitter_profiles = () if jitter_ms is None else ((latency_ms, jitter_ms),)
+    burst_loss_profiles = (
+        ()
+        if burst_loss_percent is None
+        else ((burst_loss_percent, burst_correlation_percent),)
+    )
     try:
         expected = select_case(
             case_id=case_id,
@@ -150,6 +182,7 @@ def _validated_generated_case(
             profile_duration_seconds=profile_duration_seconds,
             bandwidth_kbits=bandwidth_kbits,
             jitter_profiles=jitter_profiles,
+            burst_loss_profiles=burst_loss_profiles,
             allow_loopback=allow_loopback,
         )
     except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
@@ -254,7 +287,15 @@ def _add_case_arguments(parser: argparse.ArgumentParser) -> None:
         choices=MATRIX.INJECTOR.DURATION_SECONDS_CHOICES,
         default=MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
         dest="profile_duration_seconds",
-        help="duration used by loss, latency, jitter, and explicit bandwidth case IDs",
+        help="duration used by loss, burst loss, latency, jitter, and bandwidth case IDs",
+    )
+    parser.add_argument(
+        "--burst-loss-profile",
+        type=MATRIX.parse_burst_loss_profile,
+        action="append",
+        dest="burst_loss_profiles",
+        metavar="LOSS:CORRELATION",
+        help="explicit correlated-loss pair used to generate/select burst-loss case IDs",
     )
     parser.add_argument(
         "--jitter-profile",
@@ -306,6 +347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             profile_duration_seconds=args.profile_duration_seconds,
             bandwidth_kbits=args.bandwidth_kbits or (),
             jitter_profiles=args.jitter_profiles or (),
+            burst_loss_profiles=args.burst_loss_profiles or (),
             allow_loopback=args.allow_loopback,
         )
         if args.command == "plan":
