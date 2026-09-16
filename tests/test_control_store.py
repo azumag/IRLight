@@ -201,6 +201,15 @@ class ControlStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
             with mock.patch.object(store, "_read") as read:
+                with self.assertRaisesRegex(ValueError, "unsupported audio mode"):
+                    store.update(
+                        mode=[],  # type: ignore[arg-type]
+                        idempotency_key="strict-mode",
+                        now=1,
+                    )
+                read.assert_not_called()
+
+            with mock.patch.object(store, "_read") as read:
                 with self.assertRaisesRegex(ValueError, "invalid idempotency key"):
                     store.update(
                         mode="MUTED",
@@ -222,7 +231,7 @@ class ControlStoreTest(unittest.TestCase):
                             )
                         read.assert_not_called()
 
-    def test_persisted_negative_time_and_empty_idempotency_fail_closed(self) -> None:
+    def test_persisted_negative_time_empty_idempotency_and_mode_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = ControlStore(state_dir)
             store.ensure()
@@ -231,6 +240,8 @@ class ControlStoreTest(unittest.TestCase):
                 '"idempotency_key":null,"updated_at":-1}',
                 '{"audio_mode":"LIVE","version":0,"command_id":null,'
                 '"idempotency_key":"","updated_at":1}',
+                '{"audio_mode":[],"version":0,"command_id":null,'
+                '"idempotency_key":null,"updated_at":1}',
             )
             for payload in invalid_payloads:
                 with self.subTest(payload=payload):
