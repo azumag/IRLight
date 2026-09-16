@@ -31,6 +31,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["protocols"], ["rtmp", "srt"])
         self.assertEqual(payload["profile_duration_seconds"], 30)
+        self.assertEqual(payload["bandwidth_kbits"], [])
         self.assertEqual(payload["case_count"], 24)
 
         cases = payload["cases"]
@@ -70,10 +71,50 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                 {case["fault"]["duration_seconds"] for case in disconnect_cases},
                 {10, 30, 120, 600},
             )
+            self.assertTrue(
+                all(case["fault"]["bandwidth_kbit"] is None for case in protocol_cases)
+            )
+
+    def test_explicit_bandwidth_cases_are_additive_and_deduplicated(self) -> None:
+        payload = MATRIX.build_matrix(
+            namespace="irlight-qa",
+            interface="eth0",
+            protocols=("rtmp",),
+            bandwidth_kbits=(2500, 2500, 4000),
+        )
+
+        self.assertEqual(payload["bandwidth_kbits"], [2500, 4000])
+        self.assertEqual(payload["case_count"], 14)
+        bandwidth_cases = [
+            case for case in payload["cases"] if case["fault"]["bandwidth_kbit"] is not None
+        ]
+        self.assertEqual(
+            [case["id"] for case in bandwidth_cases],
+            ["rtmp-bandwidth-2500kbit-30s", "rtmp-bandwidth-4000kbit-30s"],
+        )
+        self.assertEqual(
+            [case["fault"]["bandwidth_kbit"] for case in bandwidth_cases],
+            [2500, 4000],
+        )
+        self.assertTrue(
+            all(case["fault"]["duration_seconds"] == 30 for case in bandwidth_cases)
+        )
+        self.assertIn(
+            "2500kbit",
+            bandwidth_cases[0]["plan"]["apply_argv"],
+        )
+        self.assertIn(
+            "4000kbit",
+            bandwidth_cases[1]["plan"]["apply_argv"],
+        )
 
     def test_every_case_is_namespaced_and_read_only_generation_runs_no_commands(self) -> None:
         with patch.object(MATRIX.INJECTOR.subprocess, "run") as run:
-            payload = MATRIX.build_matrix(namespace="irlight-qa", interface="eth0")
+            payload = MATRIX.build_matrix(
+                namespace="irlight-qa",
+                interface="eth0",
+                bandwidth_kbits=(2500,),
+            )
 
         run.assert_not_called()
         for case in payload["cases"]:
@@ -96,23 +137,25 @@ class NetworkFaultMatrixTest(unittest.TestCase):
         self.assertEqual(payload["case_count"], 12)
         self.assertTrue(all(case["protocol"] == "srt" for case in payload["cases"]))
 
-    def test_profile_duration_changes_only_loss_and_latency_cases(self) -> None:
+    def test_profile_duration_changes_loss_latency_and_bandwidth_cases(self) -> None:
         payload = MATRIX.build_matrix(
             namespace="irlight-qa",
             interface="eth0",
             protocols=("rtmp",),
             profile_duration_seconds=120,
+            bandwidth_kbits=(2500,),
         )
 
         regular = [case for case in payload["cases"] if not case["fault"]["disconnect"]]
         disconnects = [case for case in payload["cases"] if case["fault"]["disconnect"]]
         self.assertTrue(all(case["fault"]["duration_seconds"] == 120 for case in regular))
+        self.assertIn("rtmp-bandwidth-2500kbit-120s", [case["id"] for case in regular])
         self.assertEqual(
             {case["fault"]["duration_seconds"] for case in disconnects},
             {10, 30, 120, 600},
         )
 
-    def test_programmatic_input_rejects_unsupported_protocol_and_duration(self) -> None:
+    def test_programmatic_input_rejects_unsupported_protocol_duration_and_bandwidth(self) -> None:
         with self.assertRaises(MATRIX.MatrixError):
             MATRIX.build_matrix(
                 namespace="irlight-qa",
@@ -125,6 +168,13 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                 interface="eth0",
                 profile_duration_seconds=999,
             )
+        for bandwidth_kbits in ((63,), (100001,), (True,)):
+            with self.assertRaises(MATRIX.MatrixError):
+                MATRIX.build_matrix(
+                    namespace="irlight-qa",
+                    interface="eth0",
+                    bandwidth_kbits=bandwidth_kbits,
+                )
 
     def test_namespace_and_interface_safety_validation_is_reused(self) -> None:
         with self.assertRaises(MATRIX.INJECTOR.FaultPlanError):
