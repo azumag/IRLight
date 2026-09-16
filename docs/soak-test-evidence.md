@@ -18,7 +18,7 @@ Each report is a single JSON object with exactly these fields:
 - `target_duration_seconds`: positive integer chosen by the run operator.
 - `outcome`: `pass`, `fail`, or `aborted`.
 - `samples`: ordered observations. `elapsed_seconds` must increase strictly.
-- `cleanup`: `{ "verified": boolean, "details": string }`. A passing run requires `verified: true`.
+- `cleanup`: `{ "verified": boolean, "details": string }`. `details` must be non-empty, and a passing run requires `verified: true`.
 - `notes`: bounded free text; do not put stream keys, tokens, destination URLs containing credentials, or other secrets here.
 
 Every sample contains exactly:
