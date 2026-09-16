@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -35,18 +36,6 @@ MEDIA_FIELDS = {
     "timestamp_errors",
     "unexpected_reconnects",
 }
-SIZE_FACTORS = {
-    "B": 1,
-    "kB": 1000,
-    "MB": 1000**2,
-    "GB": 1000**3,
-    "TB": 1000**4,
-    "KiB": 1024,
-    "MiB": 1024**2,
-    "GiB": 1024**3,
-    "TiB": 1024**4,
-}
-SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*(B|kB|MB|GB|TB|KiB|MiB|GiB|TiB)$")
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -88,17 +77,6 @@ def validate_project_name(project: str) -> str:
             "project must be a disposable IRLight soak project named irlight-poc-soak-*"
         )
     return project
-
-
-def parse_size(value: str) -> int:
-    match = SIZE_RE.fullmatch(value.strip())
-    if match is None:
-        raise SampleCollectionError(f"unsupported Docker memory size: {value!r}")
-    number = float(match.group(1))
-    result = number * SIZE_FACTORS[match.group(2)]
-    if not math.isfinite(result) or result < 0:
-        raise SampleCollectionError(f"invalid Docker memory size: {value!r}")
-    return int(round(result))
 
 
 def parse_cpu_percent(value: str) -> float:
@@ -167,13 +145,12 @@ def compose_service_ids(project: str, compose_file: Path) -> dict[str, str]:
     return result
 
 
-def parse_stats_output(output: str, expected_count: int) -> tuple[int, float]:
+def parse_stats_output(output: str, expected_count: int) -> float:
     lines = [line for line in output.splitlines() if line.strip()]
     if len(lines) != expected_count:
         raise SampleCollectionError(
             f"expected {expected_count} Docker stats rows, found {len(lines)}"
         )
-    memory_total = 0
     cpu_total = 0.0
     for index, line in enumerate(lines):
         try:
@@ -186,19 +163,16 @@ def parse_stats_output(output: str, expected_count: int) -> tuple[int, float]:
             raise SampleCollectionError(f"invalid Docker stats JSON row {index}: {exc}") from exc
         if not isinstance(value, dict):
             raise SampleCollectionError(f"Docker stats row {index} must be an object")
-        mem_usage = value.get("MemUsage")
         cpu_perc = value.get("CPUPerc")
-        if not isinstance(mem_usage, str) or not isinstance(cpu_perc, str):
+        if not isinstance(cpu_perc, str):
             raise SampleCollectionError(
-                f"Docker stats row {index} is missing string MemUsage/CPUPerc fields"
+                f"Docker stats row {index} is missing string CPUPerc field"
             )
-        used = mem_usage.split("/", 1)[0].strip()
-        memory_total += parse_size(used)
         cpu_total += parse_cpu_percent(cpu_perc)
-    return memory_total, cpu_total
+    return cpu_total
 
 
-def collect_stats(container_ids: list[str]) -> tuple[int, float]:
+def collect_cpu_percent(container_ids: list[str]) -> float:
     output = run_checked(
         [
             "docker",
@@ -231,41 +205,60 @@ def parse_top_output(output: str) -> list[tuple[int, str]]:
     return result
 
 
-def _count_proc_fds(pid: int) -> int:
-    path = Path("/proc") / str(pid) / "fd"
+def _read_proc_observation(pid: int) -> tuple[int, int]:
+    proc = Path("/proc") / str(pid)
     try:
-        return sum(1 for _ in path.iterdir())
+        statm_fields = (proc / "statm").read_text(encoding="ascii").split()
+        if len(statm_fields) < 2 or not statm_fields[1].isdigit():
+            raise SampleCollectionError(f"invalid /proc/{pid}/statm resident page count")
+        resident_pages = int(statm_fields[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size <= 0:
+            raise SampleCollectionError("host page size is invalid")
+        rss_bytes = resident_pages * page_size
+        open_fds = sum(1 for _ in (proc / "fd").iterdir())
+        return rss_bytes, open_fds
+    except SampleCollectionError:
+        raise
     except (FileNotFoundError, ProcessLookupError) as exc:
-        raise SampleCollectionError(f"process {pid} disappeared while reading file descriptors") from exc
+        raise SampleCollectionError(
+            f"process {pid} disappeared while reading /proc observations"
+        ) from exc
     except PermissionError as exc:
         raise SampleCollectionError(
-            f"permission denied reading file descriptors for host PID {pid}"
+            f"permission denied reading /proc observations for host PID {pid}"
         ) from exc
     except OSError as exc:
-        raise SampleCollectionError(f"cannot read file descriptors for host PID {pid}: {exc}") from exc
+        raise SampleCollectionError(
+            f"cannot read /proc observations for host PID {pid}: {exc}"
+        ) from exc
 
 
 def aggregate_processes(
     top_rows: list[tuple[int, str]],
-    fd_counter: Callable[[int], int] = _count_proc_fds,
-) -> tuple[int, int, int]:
+    observer: Callable[[int], tuple[int, int]] = _read_proc_observation,
+) -> tuple[int, int, int, int]:
     seen: set[int] = set()
+    memory_rss_bytes = 0
     zombies = 0
-    fds = 0
+    open_fds = 0
     for pid, state in top_rows:
         if pid in seen:
             raise SampleCollectionError(f"duplicate PID in docker top output: {pid}")
         seen.add(pid)
         if state.startswith("Z"):
             zombies += 1
-        count = fd_counter(pid)
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        rss, fds = observer(pid)
+        if isinstance(rss, bool) or not isinstance(rss, int) or rss < 0:
+            raise SampleCollectionError(f"invalid RSS byte count for PID {pid}")
+        if isinstance(fds, bool) or not isinstance(fds, int) or fds < 0:
             raise SampleCollectionError(f"invalid file-descriptor count for PID {pid}")
-        fds += count
-    return len(seen), zombies, fds
+        memory_rss_bytes += rss
+        open_fds += fds
+    return memory_rss_bytes, len(seen), zombies, open_fds
 
 
-def collect_process_observations(container_ids: list[str]) -> tuple[int, int, int]:
+def collect_process_observations(container_ids: list[str]) -> tuple[int, int, int, int]:
     all_rows: list[tuple[int, str]] = []
     for container_id in container_ids:
         output = run_checked(["docker", "top", container_id, "-eo", "pid=,stat="])
@@ -368,8 +361,8 @@ def collect_sample(
 ) -> dict[str, Any]:
     service_ids = compose_service_ids(project, compose_file)
     ids = [service_ids[service] for service in EXPECTED_SERVICES]
-    memory, cpu = collect_stats(ids)
-    processes, zombies, fds = collect_process_observations(ids)
+    cpu = collect_cpu_percent(ids)
+    memory, processes, zombies, fds = collect_process_observations(ids)
     media = load_media_metrics(media_metrics_file, allow_unmeasured=allow_unmeasured_media)
     return build_sample(
         elapsed_seconds=elapsed_seconds,
