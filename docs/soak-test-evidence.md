@@ -36,6 +36,38 @@ Every sample contains exactly:
 
 Counters must not decrease. For a `pass` report, the first sample is the run baseline: `elapsed_seconds`, `timestamp_errors`, and `unexpected_reconnects` must all start at zero. Numeric booleans, negative counters, `NaN`, `Infinity`, duplicate JSON keys, unknown fields, and missing fields fail closed. A `pass` report must contain at least two samples and its final `elapsed_seconds` must be at least `target_duration_seconds`; failed or aborted runs may intentionally be shorter so failure evidence can still be preserved.
 
+## Read-only resource sample collector
+
+`scripts/collect-soak-resource-sample.py` collects one schema-compatible sample from an already-running disposable PoC Compose project. The collector is intentionally read-only: it only uses `docker compose ps`, `docker inspect`, `docker stats`, `docker top`, and host `/proc/<pid>/fd`. It never starts, stops, restarts, or removes containers.
+
+The project name must match `irlight-poc-soak-*`, and the collector requires exactly one running container for each of `mediamtx`, `continuity`, `control-ui`, and `node-agent`. This protects operators from accidentally pointing the helper at an unrelated Compose project. The `/proc` file-descriptor measurement makes this collector Linux-host oriented; if the host does not expose the container process PIDs or denies access, collection fails closed instead of silently writing incomplete evidence.
+
+Media continuity metrics are supplied by a separate probe snapshot so that resource collection does not pretend to measure media properties it cannot observe. The metrics file must contain exactly:
+
+```json
+{
+  "bitrate_bps": 3500000,
+  "av_sync_drift_ms": 4.0,
+  "timestamp_errors": 0,
+  "unexpected_reconnects": 0
+}
+```
+
+A normal evidence run should provide that file:
+
+```bash
+python3 scripts/collect-soak-resource-sample.py \
+  --project irlight-poc-soak-1234-5678 \
+  --elapsed-seconds 30 \
+  --media-metrics-file /tmp/irlight-media-metrics.json
+```
+
+The command prints a single JSON sample to stdout. Repeat it at the run baseline and at each configured interval, then place the samples in the report in order. A follow-up runner can automate that orchestration and cleanup verification without changing the schema.
+
+For diagnostics that intentionally measure resources only, `--allow-unmeasured-media` may be supplied. That explicit opt-in emits `null` for bitrate/A/V drift and zero for the two counters because schema v1 has no nullable counter representation. **Do not use that mode as proof that timestamp/reconnect errors were actually measured or absent.** A release-acceptance report should use a real media metrics source.
+
+The media metrics loader rejects duplicate keys, unknown/missing fields, non-standard `NaN`/`Infinity`, booleans masquerading as numbers, and negative counters. Docker stats/process observations similarly fail closed on malformed or incomplete output.
+
 ## Validation and summary
 
 Run:
@@ -92,4 +124,4 @@ For a release-candidate report, keep the raw report in a dedicated evidence loca
 }
 ```
 
-This format deliberately separates evidence integrity from acceptance policy. Follow-up work can add a collector that produces these samples automatically and a separately approved policy layer for the Node capacity and 6h release criteria without changing the evidence schema silently.
+This format deliberately separates evidence integrity from acceptance policy. The resource collector is the first automation layer; a later orchestration step can schedule samples, attach media-probe output, verify cleanup, and assemble the final report while keeping acceptance thresholds separately reviewable.
