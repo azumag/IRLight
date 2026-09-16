@@ -17,7 +17,8 @@ The helper:
   firewall, or contact any provider API;
 - uses shell-free argv execution with a 10 second command timeout;
 - limits bounded runs to 10, 30, 120, or 600 seconds;
-- records a case-specific firewall comment so cleanup targets the exact generated rules.
+- records a case-specific firewall comment so cleanup targets the exact generated rules;
+- refuses `apply` when an exact rule already exists, avoiding a repeated case silently stacking duplicate rules.
 
 Use a disposable QA namespace. Do not point this helper at a production namespace.
 
@@ -45,9 +46,11 @@ sudo python scripts/network-dns-fault-injector.py apply \
   --confirm-disposable-namespace
 ```
 
-The script inserts one UDP/53 and one TCP/53 reject rule. Cleanup is registered
-before each insert attempt, so an apply failure or `KeyboardInterrupt` cannot
-skip cleanup merely because the command outcome is uncertain. Exact cleanup is
+Before mutating firewall state, the script checks that neither exact rule already
+exists. Reusing a stale `rule-id` therefore fails before insertion instead of
+stacking duplicate rules. The script then inserts one UDP/53 and one TCP/53 reject
+rule. Cleanup is registered before each insert attempt, so an apply failure or
+`KeyboardInterrupt` cannot skip cleanup merely because the command outcome is uncertain. Exact cleanup is
 attempted in reverse order on normal completion and failure. Cleanup failure is
 reported as failure rather than as a successful QA run.
 
