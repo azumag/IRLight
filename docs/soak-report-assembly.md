@@ -16,6 +16,17 @@ python3 scripts/collect-soak-resource-sample.py \
 
 Repeat collection at the configured interval. The assembler treats this JSONL file as raw evidence: blank lines, duplicate JSON keys, non-object lines, invalid UTF-8, `NaN`, and `Infinity` fail closed. The final ordering, counters, schema fields, target-duration coverage, and passing-run baseline are checked by the canonical soak report validator.
 
+## Verify cleanup
+
+A passing soak must not rely on an unchecked `docker compose down`. After cleanup, verify that the exact disposable Compose project has no remaining project-labelled containers, networks, volumes, or images:
+
+```bash
+python3 scripts/verify-soak-cleanup.py \
+  --project irlight-poc-soak-1234-5678
+```
+
+The verifier is read-only and only accepts the `irlight-poc-soak-*` project namespace. Exit code `0` means all four resource classes are empty, `1` means labelled leftovers remain, and `2` means verification itself could not be completed reliably. `scripts/soak-compose.sh` runs this verifier automatically after its project-scoped `docker compose down`; a cleanup command failure or an unverifiable/non-empty result turns an otherwise successful soak into a failure. An already-failing soak keeps its original failure status while cleanup is still attempted and checked.
+
 ## Assemble a report
 
 After the run and cleanup verification, assemble the evidence:
@@ -28,7 +39,7 @@ python3 scripts/assemble-soak-report.py \
   --target-duration-seconds 21600 \
   --outcome pass \
   --cleanup-verified \
-  --cleanup-details "disposable compose project removed; no test containers remain" \
+  --cleanup-details "verify-soak-cleanup.py: no project-labelled containers/networks/volumes/images" \
   --notes "local mock destination; commit/config recorded in QA issue" \
   --output /tmp/irlight-soak-report.json
 ```
@@ -45,4 +56,4 @@ python3 scripts/validate-soak-report.py --json /tmp/irlight-soak-report.json
 
 ## Safety boundary
 
-The assembler performs local file reads and an optional new-file write only. It does not start, stop, restart, remove, or inspect containers; contact Twitch, YouTube, Kick, or another provider; alter routes/firewalls; or use credentials. Cleanup verification remains an operator/runner responsibility and must describe what was actually checked. Resource and media acceptance thresholds remain a separate policy decision based on measured PoC results.
+The assembler performs local file reads and an optional new-file write only. It does not start, stop, restart, remove, or inspect containers; contact Twitch, YouTube, Kick, or another provider; alter routes/firewalls; or use credentials. Cleanup verification is performed separately by `verify-soak-cleanup.py`, which only reads exact Docker Compose project labels and never removes resources. Resource and media acceptance thresholds remain a separate policy decision based on measured PoC results.

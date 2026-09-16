@@ -24,8 +24,22 @@ hls_url="${HLS_URL:-http://127.0.0.1:8888/output/relay/index.m3u8}"
 
 cleanup() {
   local status=$?
-  "${compose[@]}" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
-  exit "$status"
+  local cleanup_status=0
+  trap - EXIT
+
+  if ! "${compose[@]}" down --rmi local --volumes --remove-orphans; then
+    echo "soak cleanup command failed for $soak_project" >&2
+    cleanup_status=1
+  fi
+  if ! python3 "$repo_root/scripts/verify-soak-cleanup.py" --project "$soak_project"; then
+    echo "soak cleanup could not be verified for $soak_project" >&2
+    cleanup_status=1
+  fi
+
+  if (( status != 0 )); then
+    exit "$status"
+  fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
 
