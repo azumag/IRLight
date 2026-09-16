@@ -31,6 +31,7 @@ LATENCY_MS_CHOICES = (50, 100, 300, 1000)
 DURATION_SECONDS_CHOICES = (10, 30, 120, 600)
 BANDWIDTH_KBIT_MIN = 64
 BANDWIDTH_KBIT_MAX = 100_000
+COMMAND_TIMEOUT_SECONDS = 10.0
 _INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.:@-]+$")
 _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -160,14 +161,18 @@ def build_fault_plan(
 
 
 def _run(argv: Sequence[str]) -> None:
-    completed = subprocess.run(
-        list(argv),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("network fault command could not complete safely") from exc
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "command failed"
         raise RuntimeError(f"{argv[0]} exited {completed.returncode}: {detail}")
