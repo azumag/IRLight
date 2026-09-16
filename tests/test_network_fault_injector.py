@@ -110,7 +110,7 @@ class NetworkFaultInjectorTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            plan.apply_argv[-8:],
+            plan.apply_argv[-7:],
             (
                 "loss",
                 "1%",
