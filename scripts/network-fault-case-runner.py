@@ -46,15 +46,17 @@ def select_case(
     namespace: str,
     interface: str,
     profile_duration_seconds: int = MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
+    bandwidth_kbits: Sequence[int] = (),
     allow_loopback: bool = False,
 ) -> dict[str, object]:
-    """Return one exact case from the deterministic baseline matrix."""
+    """Return one exact case from the deterministic matrix."""
 
     matrix = MATRIX.build_matrix(
         namespace=namespace,
         interface=interface,
         protocols=MATRIX.PROTOCOL_CHOICES,
         profile_duration_seconds=profile_duration_seconds,
+        bandwidth_kbits=bandwidth_kbits,
         allow_loopback=allow_loopback,
     )
     for case in matrix["cases"]:
@@ -91,6 +93,7 @@ def _validated_generated_case(
     interface = plan.get("interface")
     duration_seconds = fault.get("duration_seconds")
     disconnect = fault.get("disconnect")
+    bandwidth_kbit = fault.get("bandwidth_kbit")
     if (
         not isinstance(namespace, str)
         or not namespace
@@ -100,18 +103,29 @@ def _validated_generated_case(
         or not isinstance(duration_seconds, int)
         or duration_seconds not in MATRIX.INJECTOR.DURATION_SECONDS_CHOICES
         or not isinstance(disconnect, bool)
+        or (
+            bandwidth_kbit is not None
+            and (
+                isinstance(bandwidth_kbit, bool)
+                or not isinstance(bandwidth_kbit, int)
+                or bandwidth_kbit < MATRIX.INJECTOR.BANDWIDTH_KBIT_MIN
+                or bandwidth_kbit > MATRIX.INJECTOR.BANDWIDTH_KBIT_MAX
+            )
+        )
     ):
         raise CaseRunnerError("network fault case has invalid execution data")
 
     profile_duration_seconds = (
         MATRIX.DEFAULT_PROFILE_DURATION_SECONDS if disconnect else duration_seconds
     )
+    bandwidth_kbits = () if bandwidth_kbit is None else (bandwidth_kbit,)
     try:
         expected = select_case(
             case_id=case_id,
             namespace=namespace,
             interface=interface,
             profile_duration_seconds=profile_duration_seconds,
+            bandwidth_kbits=bandwidth_kbits,
             allow_loopback=allow_loopback,
         )
     except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
@@ -216,7 +230,15 @@ def _add_case_arguments(parser: argparse.ArgumentParser) -> None:
         choices=MATRIX.INJECTOR.DURATION_SECONDS_CHOICES,
         default=MATRIX.DEFAULT_PROFILE_DURATION_SECONDS,
         dest="profile_duration_seconds",
-        help="duration used by loss and latency case IDs",
+        help="duration used by loss, latency, and explicit bandwidth case IDs",
+    )
+    parser.add_argument(
+        "--bandwidth-kbit",
+        type=int,
+        action="append",
+        dest="bandwidth_kbits",
+        metavar="KBIT",
+        help="explicit bandwidth value used to generate/select bandwidth case IDs",
     )
     parser.add_argument("--allow-loopback", action="store_true")
 
@@ -250,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             namespace=args.namespace,
             interface=args.interface,
             profile_duration_seconds=args.profile_duration_seconds,
+            bandwidth_kbits=args.bandwidth_kbits or (),
             allow_loopback=args.allow_loopback,
         )
         if args.command == "plan":
