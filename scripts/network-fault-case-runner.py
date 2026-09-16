@@ -144,9 +144,15 @@ def _run_command(argv: Sequence[str]) -> None:
 
 
 def execute_case(
-    case: dict[str, object], *, allow_loopback: bool = False
+    case: dict[str, object],
+    *,
+    confirm_disposable_namespace: bool = False,
+    allow_loopback: bool = False,
 ) -> int:
     """Apply one generated matrix case, wait its bounded duration, then clean up."""
+
+    if confirm_disposable_namespace is not True:
+        raise CaseRunnerError("disposable namespace acknowledgement is required")
 
     case = _validated_generated_case(case, allow_loopback=allow_loopback)
     plan = case.get("plan")
@@ -256,7 +262,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        return execute_case(case, allow_loopback=args.allow_loopback)
+        return execute_case(
+            case,
+            confirm_disposable_namespace=args.confirm_disposable_namespace,
+            allow_loopback=args.allow_loopback,
+        )
     except (CaseRunnerError, MATRIX.MatrixError, MATRIX.INJECTOR.FaultPlanError) as exc:
         print(f"network-fault-case-runner: {exc}", file=sys.stderr)
         return 2
