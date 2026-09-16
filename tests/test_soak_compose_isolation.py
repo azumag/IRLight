@@ -27,6 +27,18 @@ class ComposeSoakIsolationTest(unittest.TestCase):
             cleanup,
         )
         self.assertNotIn("docker compose down", cleanup)
+        self.assertIn(
+            'python3 "$repo_root/scripts/verify-soak-cleanup.py" --project "$soak_project"',
+            cleanup,
+        )
+
+    def test_cleanup_failure_cannot_turn_a_successful_soak_green(self) -> None:
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn("local cleanup_status=0", cleanup)
+        self.assertGreaterEqual(cleanup.count("cleanup_status=1"), 2)
+        self.assertIn('if (( status != 0 )); then\n    exit "$status"', cleanup)
+        self.assertIn('exit "$cleanup_status"', cleanup)
+        self.assertIn("trap - EXIT", cleanup)
 
     def test_script_does_not_preemptively_stop_existing_stack(self) -> None:
         before_up = self.source.split('"${compose[@]}" up -d --build', 1)[0]
