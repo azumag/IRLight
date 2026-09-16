@@ -46,7 +46,7 @@ class ControlStateReader:
         command_id = value.get("command_id")
         idempotency_key = value.get("idempotency_key")
         updated_at = value.get("updated_at")
-        if mode not in {"LIVE", "MUTED"}:
+        if not isinstance(mode, str) or mode not in {"LIVE", "MUTED"}:
             raise ValueError("invalid audio mode")
         if isinstance(version, bool) or not isinstance(version, int) or version < 0:
             raise ValueError("invalid control version")
@@ -58,7 +58,9 @@ class ControlStateReader:
             except ValueError as exc:
                 raise ValueError("invalid command id") from exc
         if idempotency_key is not None and (
-            not isinstance(idempotency_key, str) or len(idempotency_key) > 200
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 200
         ):
             raise ValueError("invalid idempotency key")
         if (
@@ -70,7 +72,7 @@ class ControlStateReader:
             normalized_updated_at = float(updated_at)
         except (OverflowError, ValueError):
             raise ValueError("invalid control update time") from None
-        if not math.isfinite(normalized_updated_at):
+        if not math.isfinite(normalized_updated_at) or normalized_updated_at < 0:
             raise ValueError("invalid control update time")
         return ControlCommandState(mode, version, command_id)
 
