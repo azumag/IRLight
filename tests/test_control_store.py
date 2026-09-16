@@ -108,6 +108,12 @@ class ControlStoreTest(unittest.TestCase):
                 '"idempotency_key":"key","updated_at":1}',
                 '{"audio_mode":"MUTED","version":1,"command_id":null,'
                 '"idempotency_key":[],"updated_at":1}',
+                '{"audio_mode":[],"version":0,"command_id":null,'
+                '"idempotency_key":null,"updated_at":1}',
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":"","updated_at":1}',
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":null,"updated_at":-1}',
             )
             for payload in invalid_payloads:
                 with self.subTest(payload=payload[:80]):
