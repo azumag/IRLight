@@ -213,6 +213,12 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     if outcome == "pass":
         if len(normalized) < 2:
             raise SoakReportError("a passing report requires at least two samples")
+        if normalized[0]["elapsed_seconds"] != 0.0:
+            raise SoakReportError("a passing report must start with elapsed_seconds 0")
+        if normalized[0]["timestamp_errors"] != 0:
+            raise SoakReportError("a passing report must baseline timestamp_errors at 0")
+        if normalized[0]["unexpected_reconnects"] != 0:
+            raise SoakReportError("a passing report must baseline unexpected_reconnects at 0")
         if normalized[-1]["elapsed_seconds"] < target:
             raise SoakReportError("a passing report must cover target_duration_seconds")
         if not cleanup["verified"]:
