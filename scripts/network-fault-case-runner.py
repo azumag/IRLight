@@ -4,7 +4,7 @@
 ``plan`` is read-only. ``apply`` executes exactly one case produced by
 ``network-fault-matrix.py`` inside an explicitly named disposable Linux network
 namespace. The runner never creates a namespace, never targets a host interface,
-and always attempts qdisc cleanup after a successfully applied fault.
+and always attempts qdisc cleanup after an apply attempt.
 """
 
 from __future__ import annotations
@@ -106,21 +106,33 @@ def execute_case(case: dict[str, object]) -> int:
     ):
         raise CaseRunnerError("network fault case has invalid execution data")
 
-    _run_command(apply_argv)
     interrupted = False
-    cleanup_error: Exception | None = None
+    apply_error: Exception | None = None
+    cleanup_error: BaseException | None = None
     try:
-        time.sleep(duration_seconds)
+        _run_command(apply_argv)
+        try:
+            time.sleep(duration_seconds)
+        except KeyboardInterrupt:
+            interrupted = True
     except KeyboardInterrupt:
         interrupted = True
+    except Exception as exc:
+        apply_error = exc
     finally:
         try:
             _run_command(cleanup_argv)
-        except Exception as exc:  # cleanup failure must remain visible
+        except (Exception, KeyboardInterrupt) as exc:  # cleanup failure must remain visible
             cleanup_error = exc
 
     if cleanup_error is not None:
+        if apply_error is not None:
+            raise CaseRunnerError(
+                "network fault apply failed and cleanup could not be confirmed"
+            ) from cleanup_error
         raise CaseRunnerError("network fault cleanup failed") from cleanup_error
+    if apply_error is not None:
+        raise CaseRunnerError("network fault apply failed") from apply_error
     return 130 if interrupted else 0
 
 
