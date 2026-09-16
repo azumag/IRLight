@@ -66,6 +66,83 @@ class NetworkFaultInjectorTests(unittest.TestCase):
         )
         self.assertEqual(plan.duration_seconds, 30)
 
+    def test_bandwidth_plan_is_namespaced_and_bounded(self) -> None:
+        plan = network_fault_injector.build_fault_plan(
+            interface="eth0",
+            namespace="irlight-qa",
+            loss_percent=None,
+            latency_ms=None,
+            jitter_ms=None,
+            disconnect=False,
+            duration_seconds=30,
+            bandwidth_kbit=2500,
+        )
+
+        self.assertEqual(
+            plan.apply_argv,
+            (
+                "ip",
+                "netns",
+                "exec",
+                "irlight-qa",
+                "tc",
+                "qdisc",
+                "replace",
+                "dev",
+                "eth0",
+                "root",
+                "netem",
+                "rate",
+                "2500kbit",
+            ),
+        )
+
+    def test_bandwidth_can_be_combined_with_loss_and_latency(self) -> None:
+        plan = network_fault_injector.build_fault_plan(
+            interface="eth0",
+            namespace="irlight-qa",
+            loss_percent=1,
+            latency_ms=50,
+            jitter_ms=10,
+            disconnect=False,
+            duration_seconds=10,
+            bandwidth_kbit=4000,
+        )
+
+        self.assertEqual(
+            plan.apply_argv[-8:],
+            (
+                "loss",
+                "1%",
+                "delay",
+                "50ms",
+                "10ms",
+                "rate",
+                "4000kbit",
+            ),
+        )
+
+    def test_bandwidth_rejects_out_of_range_and_bool_values(self) -> None:
+        for value in (
+            True,
+            network_fault_injector.BANDWIDTH_KBIT_MIN - 1,
+            network_fault_injector.BANDWIDTH_KBIT_MAX + 1,
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    network_fault_injector.FaultPlanError, "bandwidth_kbit"
+                ):
+                    network_fault_injector.build_fault_plan(
+                        interface="eth0",
+                        namespace="irlight-qa",
+                        loss_percent=None,
+                        latency_ms=None,
+                        jitter_ms=None,
+                        disconnect=False,
+                        duration_seconds=10,
+                        bandwidth_kbit=value,
+                    )
+
     def test_disconnect_is_a_complete_packet_blackhole(self) -> None:
         plan = network_fault_injector.build_fault_plan(
             interface="veth0",
@@ -104,6 +181,19 @@ class NetworkFaultInjectorTests(unittest.TestCase):
                 jitter_ms=None,
                 disconnect=True,
                 duration_seconds=10,
+            )
+        with self.assertRaisesRegex(
+            network_fault_injector.FaultPlanError, "cannot be combined"
+        ):
+            network_fault_injector.build_fault_plan(
+                interface="eth0",
+                namespace="irlight-qa",
+                loss_percent=None,
+                latency_ms=None,
+                jitter_ms=None,
+                disconnect=True,
+                duration_seconds=10,
+                bandwidth_kbit=2500,
             )
 
     def test_loopback_requires_explicit_acknowledgement(self) -> None:
@@ -184,6 +274,62 @@ class NetworkFaultInjectorTests(unittest.TestCase):
                 "root",
             ),
         )
+
+    def test_apply_failure_still_attempts_cleanup(self) -> None:
+        with (
+            mock.patch.object(
+                network_fault_injector,
+                "_run",
+                side_effect=[RuntimeError("apply failed"), None],
+            ) as run,
+            mock.patch.object(network_fault_injector.time, "sleep") as sleep,
+        ):
+            result = network_fault_injector.main(
+                [
+                    "apply",
+                    "--interface",
+                    "eth0",
+                    "--namespace",
+                    "irlight-qa",
+                    "--bandwidth-kbit",
+                    "2500",
+                    "--duration",
+                    "30",
+                    "--confirm-disposable-namespace",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_not_called()
+
+    def test_apply_and_cleanup_failure_reports_failure(self) -> None:
+        with (
+            mock.patch.object(
+                network_fault_injector,
+                "_run",
+                side_effect=[RuntimeError("apply failed"), RuntimeError("cleanup failed")],
+            ) as run,
+            mock.patch.object(network_fault_injector.time, "sleep") as sleep,
+        ):
+            result = network_fault_injector.main(
+                [
+                    "apply",
+                    "--interface",
+                    "eth0",
+                    "--namespace",
+                    "irlight-qa",
+                    "--loss",
+                    "1",
+                    "--duration",
+                    "10",
+                    "--confirm-disposable-namespace",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_not_called()
 
     def test_keyboard_interrupt_still_cleans_up(self) -> None:
         with (
