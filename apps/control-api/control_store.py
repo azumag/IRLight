@@ -34,13 +34,26 @@ class ControlVersionConflict(ControlStateError):
         self.current = current
 
 
+def _normalize_update_time(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ControlStateError("control state has invalid update time")
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError):
+        raise ControlStateError("control state has invalid update time") from None
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ControlStateError("control state has invalid update time")
+    return normalized
+
+
 def default_control(*, now: float | None = None) -> dict[str, object]:
+    effective_now = time.time() if now is None else now
     return {
         "audio_mode": "LIVE",
         "version": 0,
         "command_id": None,
         "idempotency_key": None,
-        "updated_at": time.time() if now is None else now,
+        "updated_at": _normalize_update_time(effective_now),
     }
 
 
@@ -64,20 +77,12 @@ def _validate_control(value: Any) -> dict[str, object]:
         except ValueError as exc:
             raise ControlStateError("control state has invalid command id") from exc
     if idempotency_key is not None and (
-        not isinstance(idempotency_key, str) or len(idempotency_key) > 200
+        not isinstance(idempotency_key, str)
+        or not idempotency_key
+        or len(idempotency_key) > 200
     ):
         raise ControlStateError("control state has invalid idempotency key")
-    if (
-        isinstance(updated_at, bool)
-        or not isinstance(updated_at, (int, float))
-    ):
-        raise ControlStateError("control state has invalid update time")
-    try:
-        normalized_updated_at = float(updated_at)
-    except (OverflowError, ValueError):
-        raise ControlStateError("control state has invalid update time") from None
-    if not math.isfinite(normalized_updated_at):
-        raise ControlStateError("control state has invalid update time")
+    normalized_updated_at = _normalize_update_time(updated_at)
     return {
         "audio_mode": mode,
         "version": version,
@@ -188,8 +193,19 @@ class ControlStore:
     ) -> dict[str, object]:
         if mode not in {"LIVE", "MUTED"}:
             raise ValueError("unsupported audio mode")
-        if not idempotency_key or len(idempotency_key) > 200:
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 200
+        ):
             raise ValueError("invalid idempotency key")
+        if expected_version is not None and (
+            isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version < 0
+        ):
+            raise ValueError("invalid expected version")
+        effective_now = _normalize_update_time(time.time() if now is None else now)
         with self._lock(exclusive=True):
             current = self._read()
             current_version = int(current["version"])
@@ -206,7 +222,7 @@ class ControlStore:
                 "version": current_version + 1,
                 "command_id": str(uuid.uuid4()),
                 "idempotency_key": idempotency_key,
-                "updated_at": time.time() if now is None else now,
+                "updated_at": effective_now,
             }
             self._write(next_control)
             return next_control
