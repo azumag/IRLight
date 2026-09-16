@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Plan or apply bounded Linux netem fault profiles for IRLight QA.
 
-The default ``plan`` mode is read-only: it prints the exact argv that would be
-executed. Executing modes are deliberately restricted to an explicitly named,
-disposable Linux network namespace so this helper cannot mutate a host
-interface by accident. ``apply`` also requires a bounded duration and an
-explicit disruption acknowledgement. Applied qdiscs are removed in ``finally``
-so an interrupted test does not intentionally leave the requested fault behind.
+``plan`` is read-only: it prints the exact argv that would be executed. Every
+mode still requires an explicitly named, disposable Linux network namespace so
+the helper never generates or executes a host-interface ``tc`` command.
+``apply`` additionally requires a bounded duration and an explicit disruption
+acknowledgement. Applied qdiscs are removed in ``finally`` so an interrupted
+test does not intentionally leave the requested fault behind.
 
 This tool intentionally covers only qdisc-local packet loss, latency/jitter,
 and complete packet blackholes. DNS, route, firewall, TCP reset, bandwidth,
@@ -40,7 +40,7 @@ class FaultPlanError(ValueError):
 @dataclass(frozen=True)
 class FaultPlan:
     interface: str
-    namespace: str | None
+    namespace: str
     apply_argv: tuple[str, ...]
     cleanup_argv: tuple[str, ...]
     duration_seconds: int | None
@@ -68,9 +68,7 @@ def _validate_interface(interface: str, *, allow_loopback: bool) -> str:
     return interface
 
 
-def _validate_namespace(namespace: str | None) -> str | None:
-    if namespace is None:
-        return None
+def _validate_namespace(namespace: str) -> str:
     if (
         not namespace
         or len(namespace.encode("utf-8")) > 63
@@ -84,7 +82,7 @@ def _validate_namespace(namespace: str | None) -> str | None:
 def build_fault_plan(
     *,
     interface: str,
-    namespace: str | None,
+    namespace: str,
     loss_percent: int | None,
     latency_ms: int | None,
     jitter_ms: int | None,
@@ -92,7 +90,7 @@ def build_fault_plan(
     duration_seconds: int | None,
     allow_loopback: bool = False,
 ) -> FaultPlan:
-    """Build a shell-free ``tc netem`` plan after validating its boundaries."""
+    """Build a namespaced, shell-free ``tc netem`` plan."""
 
     interface = _validate_interface(interface, allow_loopback=allow_loopback)
     namespace = _validate_namespace(namespace)
@@ -115,9 +113,7 @@ def build_fault_plan(
     if duration_seconds is not None and duration_seconds not in DURATION_SECONDS_CHOICES:
         raise FaultPlanError("duration is outside the supported QA matrix")
 
-    prefix: list[str] = []
-    if namespace is not None:
-        prefix = ["ip", "netns", "exec", namespace]
+    prefix = ["ip", "netns", "exec", namespace]
     argv = prefix + ["tc", "qdisc", "replace", "dev", interface, "root", "netem"]
     if disconnect:
         argv.extend(("loss", "100%"))
@@ -153,17 +149,12 @@ def _run(argv: Sequence[str]) -> None:
         raise RuntimeError(f"{argv[0]} exited {completed.returncode}: {detail}")
 
 
-def _add_profile_arguments(
-    parser: argparse.ArgumentParser,
-    *,
-    duration_required: bool,
-    namespace_required: bool,
-) -> None:
+def _add_profile_arguments(parser: argparse.ArgumentParser, *, duration_required: bool) -> None:
     parser.add_argument("--interface", required=True)
     parser.add_argument(
         "--namespace",
-        required=namespace_required,
-        help="named ip-netns; mandatory for executing modes",
+        required=True,
+        help="named disposable ip-netns",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -199,18 +190,14 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     plan = subparsers.add_parser("plan", help="print a read-only fault plan")
-    _add_profile_arguments(
-        plan, duration_required=False, namespace_required=False
-    )
+    _add_profile_arguments(plan, duration_required=False)
     plan.add_argument("--json", action="store_true", dest="json_output")
 
     apply_parser = subparsers.add_parser(
         "apply",
         help="apply a bounded fault inside a disposable named network namespace",
     )
-    _add_profile_arguments(
-        apply_parser, duration_required=True, namespace_required=True
-    )
+    _add_profile_arguments(apply_parser, duration_required=True)
     _add_execution_acknowledgement(apply_parser)
 
     clear = subparsers.add_parser(
@@ -246,7 +233,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.interface, allow_loopback=args.allow_loopback
             )
             namespace = _validate_namespace(args.namespace)
-            assert namespace is not None
             _run(
                 (
                     "ip",
@@ -275,7 +261,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         assert args.command == "apply"
-        assert plan.namespace is not None
         assert plan.duration_seconds is not None
         _run(plan.apply_argv)
         cleanup_error: Exception | None = None
