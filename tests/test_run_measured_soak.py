@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ SCRIPT = ROOT / "scripts" / "run-measured-soak.py"
 SPEC = importlib.util.spec_from_file_location("run_measured_soak", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = runner
 SPEC.loader.exec_module(runner)
 
 
