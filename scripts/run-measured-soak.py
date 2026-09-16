@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -101,6 +102,51 @@ def _write_json_exclusive(path: Path, value: dict[str, Any]) -> None:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _signal_process_group(process: subprocess.Popen[Any], sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def _run_soak(*, repo_root: Path, env: dict[str, str]) -> int:
+    """Run the soak in its own process group so Ctrl-C can trigger shell cleanup.
+
+    ``subprocess.run`` kills its direct child when ``KeyboardInterrupt`` escapes,
+    which can prevent the shell's EXIT trap from running.  Keep ownership of the
+    process instead: forward SIGINT to the whole child group, allow the shell a
+    bounded cleanup window, and always return a non-zero interrupted status.
+    """
+    try:
+        process = subprocess.Popen(
+            ["bash", str(repo_root / "scripts" / "soak-compose.sh")],
+            cwd=repo_root,
+            env=env,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise MeasuredSoakError(f"cannot start soak runner: {exc}") from exc
+
+    try:
+        return int(process.wait())
+    except KeyboardInterrupt:
+        _signal_process_group(process, signal.SIGINT)
+        try:
+            process.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(process, signal.SIGTERM)
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                _signal_process_group(process, signal.SIGKILL)
+                process.wait()
+        except KeyboardInterrupt:
+            _signal_process_group(process, signal.SIGKILL)
+            process.wait()
+        return 130
 
 
 def _run_assembler(
@@ -202,14 +248,7 @@ def run(args: argparse.Namespace) -> int:
         env["SOAK_ALLOW_UNMEASURED_MEDIA"] = "1"
         media_mode = "diagnostic-unmeasured"
 
-    soak = subprocess.run(
-        ["bash", str(repo_root / "scripts" / "soak-compose.sh")],
-        cwd=repo_root,
-        env=env,
-        text=True,
-        check=False,
-    )
-    soak_exit_code = int(soak.returncode)
+    soak_exit_code = _run_soak(repo_root=repo_root, env=env)
     cleanup_verified = soak_exit_code == 0
     report_created = False
     summary_created = False
