@@ -28,7 +28,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
     def test_default_matrix_covers_rtmp_and_srt_baseline(self) -> None:
         payload = MATRIX.build_matrix(namespace="irlight-qa", interface="eth0")
 
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["protocols"], ["rtmp", "srt"])
         self.assertEqual(payload["profile_duration_seconds"], 30)
         self.assertEqual(payload["bandwidth_kbits"], [])
