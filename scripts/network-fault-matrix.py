@@ -19,7 +19,7 @@ from typing import Sequence
 
 PROTOCOL_CHOICES = ("rtmp", "srt")
 DEFAULT_PROFILE_DURATION_SECONDS = 30
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class MatrixError(ValueError):
@@ -68,6 +68,49 @@ def _validated_bandwidths(bandwidth_kbits: Sequence[int]) -> tuple[int, ...]:
     return tuple(normalized)
 
 
+def _validated_jitter_profiles(
+    jitter_profiles: Sequence[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    normalized: list[tuple[int, int]] = []
+    for profile in jitter_profiles:
+        if (
+            not isinstance(profile, tuple)
+            or len(profile) != 2
+            or isinstance(profile[0], bool)
+            or isinstance(profile[1], bool)
+            or not isinstance(profile[0], int)
+            or not isinstance(profile[1], int)
+        ):
+            raise MatrixError("jitter profile must be a (latency_ms, jitter_ms) integer pair")
+        latency_ms, jitter_ms = profile
+        if latency_ms not in INJECTOR.LATENCY_MS_CHOICES:
+            raise MatrixError("jitter profile latency is outside the supported QA matrix")
+        if jitter_ms <= 0 or jitter_ms > latency_ms:
+            raise MatrixError("jitter_ms must be positive and no greater than latency_ms")
+        pair = (latency_ms, jitter_ms)
+        if pair not in normalized:
+            normalized.append(pair)
+    return tuple(normalized)
+
+
+def parse_jitter_profile(value: str) -> tuple[int, int]:
+    """Parse ``LATENCY_MS:JITTER_MS`` for the repeatable CLI option."""
+
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("jitter profile must be LATENCY_MS:JITTER_MS")
+    try:
+        latency_ms, jitter_ms = (int(part, 10) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "jitter profile must contain integer milliseconds"
+        ) from exc
+    try:
+        return _validated_jitter_profiles(((latency_ms, jitter_ms),))[0]
+    except MatrixError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _case(
     *,
     case_id: str,
@@ -76,6 +119,7 @@ def _case(
     interface: str,
     loss_percent: int | None = None,
     latency_ms: int | None = None,
+    jitter_ms: int | None = None,
     bandwidth_kbit: int | None = None,
     disconnect: bool = False,
     duration_seconds: int,
@@ -86,7 +130,7 @@ def _case(
         namespace=namespace,
         loss_percent=loss_percent,
         latency_ms=latency_ms,
-        jitter_ms=None,
+        jitter_ms=jitter_ms,
         disconnect=disconnect,
         duration_seconds=duration_seconds,
         bandwidth_kbit=bandwidth_kbit,
@@ -98,6 +142,7 @@ def _case(
         "fault": {
             "loss_percent": loss_percent,
             "latency_ms": latency_ms,
+            "jitter_ms": jitter_ms,
             "bandwidth_kbit": bandwidth_kbit,
             "disconnect": disconnect,
             "duration_seconds": duration_seconds,
@@ -113,21 +158,22 @@ def build_matrix(
     protocols: Sequence[str] = PROTOCOL_CHOICES,
     profile_duration_seconds: int = DEFAULT_PROFILE_DURATION_SECONDS,
     bandwidth_kbits: Sequence[int] = (),
+    jitter_profiles: Sequence[tuple[int, int]] = (),
     allow_loopback: bool = False,
 ) -> dict[str, object]:
-    """Build the baseline #13 matrix plus explicitly selected bandwidth cases.
+    """Build the baseline #13 matrix plus explicitly selected shaping cases.
 
     Packet-loss and latency profiles use one caller-selected bounded duration
     (30 seconds by default). Complete disconnects expand every duration listed
     by #13: 10, 30, 120, and 600 seconds. #13 does not define canonical
-    bandwidth values, so bandwidth cases are additive only when the caller
-    supplies explicit bounded kbit/s values. Jitter is intentionally not
-    invented here because #13 does not define discrete jitter values; operators
-    can plan explicit jitter cases with ``network-fault-injector.py``.
+    bandwidth or jitter values, so those cases are additive only when the caller
+    supplies explicit bounded values. Jitter profiles must name both the base
+    latency and jitter in milliseconds so no product threshold is invented.
     """
 
     protocols = _validated_protocols(protocols)
     bandwidth_kbits = _validated_bandwidths(bandwidth_kbits)
+    jitter_profiles = _validated_jitter_profiles(jitter_profiles)
     if profile_duration_seconds not in INJECTOR.DURATION_SECONDS_CHOICES:
         raise MatrixError("profile duration is outside the supported QA matrix")
 
@@ -159,6 +205,22 @@ def build_matrix(
                     namespace=namespace,
                     interface=interface,
                     latency_ms=latency_ms,
+                    duration_seconds=profile_duration_seconds,
+                    allow_loopback=allow_loopback,
+                )
+            )
+        for latency_ms, jitter_ms in jitter_profiles:
+            cases.append(
+                _case(
+                    case_id=(
+                        f"{protocol}-jitter-{latency_ms}ms-{jitter_ms}ms-"
+                        f"{profile_duration_seconds}s"
+                    ),
+                    protocol=protocol,
+                    namespace=namespace,
+                    interface=interface,
+                    latency_ms=latency_ms,
+                    jitter_ms=jitter_ms,
                     duration_seconds=profile_duration_seconds,
                     allow_loopback=allow_loopback,
                 )
@@ -198,6 +260,10 @@ def build_matrix(
         "protocols": list(protocols),
         "profile_duration_seconds": profile_duration_seconds,
         "bandwidth_kbits": list(bandwidth_kbits),
+        "jitter_profiles": [
+            {"latency_ms": latency_ms, "jitter_ms": jitter_ms}
+            for latency_ms, jitter_ms in jitter_profiles
+        ],
         "case_count": len(cases),
         "cases": cases,
     }
@@ -220,7 +286,15 @@ def _parser() -> argparse.ArgumentParser:
         choices=INJECTOR.DURATION_SECONDS_CHOICES,
         default=DEFAULT_PROFILE_DURATION_SECONDS,
         dest="profile_duration_seconds",
-        help="duration used for loss, latency, and explicit bandwidth profiles",
+        help="duration used for loss, latency, jitter, and explicit bandwidth profiles",
+    )
+    parser.add_argument(
+        "--jitter-profile",
+        type=parse_jitter_profile,
+        action="append",
+        dest="jitter_profiles",
+        metavar="LATENCY_MS:JITTER_MS",
+        help="add an explicit latency+jitter case; repeatable",
     )
     parser.add_argument(
         "--bandwidth-kbit",
@@ -247,6 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             protocols=args.protocols or PROTOCOL_CHOICES,
             profile_duration_seconds=args.profile_duration_seconds,
             bandwidth_kbits=args.bandwidth_kbits or (),
+            jitter_profiles=args.jitter_profiles or (),
             allow_loopback=args.allow_loopback,
         )
     except (MatrixError, INJECTOR.FaultPlanError) as exc:

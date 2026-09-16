@@ -45,6 +45,19 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             ["ip", "netns", "exec", "irlight-qa"],
         )
 
+    def test_select_explicit_jitter_case_requires_declared_matrix_profile(self) -> None:
+        with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
+            self._select("rtmp-jitter-100ms-20ms-30s")
+
+        case = self._select(
+            "rtmp-jitter-100ms-20ms-30s",
+            jitter_profiles=((100, 20),),
+        )
+        self.assertEqual(case["fault"]["latency_ms"], 100)
+        self.assertEqual(case["fault"]["jitter_ms"], 20)
+        self.assertIn("100ms", case["plan"]["apply_argv"])
+        self.assertIn("20ms", case["plan"]["apply_argv"])
+
     def test_select_explicit_bandwidth_case_requires_declared_matrix_value(self) -> None:
         with self.assertRaisesRegex(runner.CaseRunnerError, "not in the matrix"):
             self._select("rtmp-bandwidth-2500kbit-30s")
@@ -64,6 +77,23 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
 
     def test_execute_case_applies_waits_and_cleans_up(self) -> None:
         case = self._select("srt-latency-100ms-30s")
+        plan = case["plan"]
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with mock.patch.object(runner.time, "sleep") as sleep:
+                result = self._execute(case)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run_command.call_args_list,
+            [mock.call(plan["apply_argv"]), mock.call(plan["cleanup_argv"])],
+        )
+        sleep.assert_called_once_with(30)
+
+    def test_execute_explicit_jitter_case_regenerates_and_cleans_up(self) -> None:
+        case = self._select(
+            "srt-jitter-100ms-20ms-30s",
+            jitter_profiles=((100, 20),),
+        )
         plan = case["plan"]
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
@@ -189,6 +219,30 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["id"], "rtmp-loss-3pct-30s")
 
+    def test_jitter_plan_mode_is_read_only(self) -> None:
+        stdout = io.StringIO()
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with contextlib.redirect_stdout(stdout):
+                result = runner.main(
+                    [
+                        "plan",
+                        "--case",
+                        "rtmp-jitter-100ms-20ms-30s",
+                        "--namespace",
+                        "irlight-qa",
+                        "--interface",
+                        "eth0",
+                        "--jitter-profile",
+                        "100:20",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        run_command.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["fault"]["latency_ms"], 100)
+        self.assertEqual(payload["fault"]["jitter_ms"], 20)
+
     def test_bandwidth_plan_mode_is_read_only(self) -> None:
         stdout = io.StringIO()
         with mock.patch.object(runner, "_run_command") as run_command:
@@ -250,6 +304,19 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         with mock.patch.object(runner, "_run_command") as run_command:
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "does not match generated matrix"
+            ):
+                self._execute(case)
+        run_command.assert_not_called()
+
+    def test_tampered_jitter_metadata_is_rejected_before_command(self) -> None:
+        case = self._select(
+            "rtmp-jitter-100ms-20ms-30s",
+            jitter_profiles=((100, 20),),
+        )
+        case["fault"]["jitter_ms"] = 30
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "could not be regenerated safely"
             ):
                 self._execute(case)
         run_command.assert_not_called()

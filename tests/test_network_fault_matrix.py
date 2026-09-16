@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 import unittest
@@ -28,10 +29,11 @@ class NetworkFaultMatrixTest(unittest.TestCase):
     def test_default_matrix_covers_rtmp_and_srt_baseline(self) -> None:
         payload = MATRIX.build_matrix(namespace="irlight-qa", interface="eth0")
 
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["protocols"], ["rtmp", "srt"])
         self.assertEqual(payload["profile_duration_seconds"], 30)
         self.assertEqual(payload["bandwidth_kbits"], [])
+        self.assertEqual(payload["jitter_profiles"], [])
         self.assertEqual(payload["case_count"], 24)
 
         cases = payload["cases"]
@@ -74,6 +76,45 @@ class NetworkFaultMatrixTest(unittest.TestCase):
             self.assertTrue(
                 all(case["fault"]["bandwidth_kbit"] is None for case in protocol_cases)
             )
+            self.assertTrue(
+                all(case["fault"]["jitter_ms"] is None for case in protocol_cases)
+            )
+
+    def test_explicit_jitter_cases_are_additive_and_deduplicated(self) -> None:
+        payload = MATRIX.build_matrix(
+            namespace="irlight-qa",
+            interface="eth0",
+            protocols=("rtmp",),
+            jitter_profiles=((100, 20), (100, 20), (300, 50)),
+        )
+
+        self.assertEqual(
+            payload["jitter_profiles"],
+            [
+                {"latency_ms": 100, "jitter_ms": 20},
+                {"latency_ms": 300, "jitter_ms": 50},
+            ],
+        )
+        self.assertEqual(payload["case_count"], 14)
+        jitter_cases = [
+            case for case in payload["cases"] if case["fault"]["jitter_ms"] is not None
+        ]
+        self.assertEqual(
+            [case["id"] for case in jitter_cases],
+            [
+                "rtmp-jitter-100ms-20ms-30s",
+                "rtmp-jitter-300ms-50ms-30s",
+            ],
+        )
+        self.assertEqual(
+            [
+                (case["fault"]["latency_ms"], case["fault"]["jitter_ms"])
+                for case in jitter_cases
+            ],
+            [(100, 20), (300, 50)],
+        )
+        self.assertIn("100ms", jitter_cases[0]["plan"]["apply_argv"])
+        self.assertIn("20ms", jitter_cases[0]["plan"]["apply_argv"])
 
     def test_explicit_bandwidth_cases_are_additive_and_deduplicated(self) -> None:
         payload = MATRIX.build_matrix(
@@ -114,6 +155,7 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                 namespace="irlight-qa",
                 interface="eth0",
                 bandwidth_kbits=(2500,),
+                jitter_profiles=((100, 20),),
             )
 
         run.assert_not_called()
@@ -137,25 +179,27 @@ class NetworkFaultMatrixTest(unittest.TestCase):
         self.assertEqual(payload["case_count"], 12)
         self.assertTrue(all(case["protocol"] == "srt" for case in payload["cases"]))
 
-    def test_profile_duration_changes_loss_latency_and_bandwidth_cases(self) -> None:
+    def test_profile_duration_changes_loss_latency_jitter_and_bandwidth_cases(self) -> None:
         payload = MATRIX.build_matrix(
             namespace="irlight-qa",
             interface="eth0",
             protocols=("rtmp",),
             profile_duration_seconds=120,
             bandwidth_kbits=(2500,),
+            jitter_profiles=((100, 20),),
         )
 
         regular = [case for case in payload["cases"] if not case["fault"]["disconnect"]]
         disconnects = [case for case in payload["cases"] if case["fault"]["disconnect"]]
         self.assertTrue(all(case["fault"]["duration_seconds"] == 120 for case in regular))
+        self.assertIn("rtmp-jitter-100ms-20ms-120s", [case["id"] for case in regular])
         self.assertIn("rtmp-bandwidth-2500kbit-120s", [case["id"] for case in regular])
         self.assertEqual(
             {case["fault"]["duration_seconds"] for case in disconnects},
             {10, 30, 120, 600},
         )
 
-    def test_programmatic_input_rejects_unsupported_protocol_duration_and_bandwidth(self) -> None:
+    def test_programmatic_input_rejects_unsupported_protocol_duration_bandwidth_and_jitter(self) -> None:
         with self.assertRaises(MATRIX.MatrixError):
             MATRIX.build_matrix(
                 namespace="irlight-qa",
@@ -175,6 +219,19 @@ class NetworkFaultMatrixTest(unittest.TestCase):
                     interface="eth0",
                     bandwidth_kbits=bandwidth_kbits,
                 )
+        for jitter_profiles in (((75, 10),), ((100, 0),), ((100, 101),), ((100, True),)):
+            with self.assertRaises(MATRIX.MatrixError):
+                MATRIX.build_matrix(
+                    namespace="irlight-qa",
+                    interface="eth0",
+                    jitter_profiles=jitter_profiles,
+                )
+
+    def test_jitter_profile_cli_parser_is_fail_closed(self) -> None:
+        self.assertEqual(MATRIX.parse_jitter_profile("100:20"), (100, 20))
+        for value in ("100", "100:20:3", "abc:20", "75:10", "100:101"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                MATRIX.parse_jitter_profile(value)
 
     def test_namespace_and_interface_safety_validation_is_reused(self) -> None:
         with self.assertRaises(MATRIX.INJECTOR.FaultPlanError):
