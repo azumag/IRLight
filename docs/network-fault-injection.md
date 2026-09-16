@@ -83,7 +83,7 @@ The unit regression covers command construction, the #13 loss/latency/duration m
 Run it with:
 
 ```bash
-python -m unittest tests.test_network_fault_injector -v
+python -m unittest discover -s tests -p 'test_network_fault_injector.py' -v
 ```
 
 No unit test applies a real qdisc. End-to-end use of `apply` belongs in an isolated Linux namespace runner where `iproute2` and `CAP_NET_ADMIN` are intentionally available.
