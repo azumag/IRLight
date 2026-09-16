@@ -96,6 +96,8 @@ jobs:
           echo "::endgroup::"
       - name: Exercise Docker integration smoke suite
         run: bash ./scripts/ci-docker-smoke-suite.sh
+      - name: Exercise measured soak evidence chain
+        run: bash ./scripts/smoke-measured-soak-evidence.sh
 
   # Compatibility gates retain the previous check names for repositories that
   # may require them in branch protection. The actual scenarios run once in the
