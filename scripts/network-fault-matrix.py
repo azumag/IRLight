@@ -19,7 +19,7 @@ from typing import Sequence
 
 PROTOCOL_CHOICES = ("rtmp", "srt")
 DEFAULT_PROFILE_DURATION_SECONDS = 30
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 class MatrixError(ValueError):
