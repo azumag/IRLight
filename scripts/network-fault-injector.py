@@ -84,6 +84,10 @@ def _validate_namespace(namespace: str) -> str:
     return namespace
 
 
+def _is_supported_loss_percent(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in LOSS_PERCENT_CHOICES
+
+
 def build_fault_plan(
     *,
     interface: str,
@@ -103,9 +107,9 @@ def build_fault_plan(
     interface = _validate_interface(interface, allow_loopback=allow_loopback)
     namespace = _validate_namespace(namespace)
 
-    if loss_percent is not None and loss_percent not in LOSS_PERCENT_CHOICES:
+    if loss_percent is not None and not _is_supported_loss_percent(loss_percent):
         raise FaultPlanError("loss_percent is outside the supported QA matrix")
-    if burst_loss_percent is not None and burst_loss_percent not in LOSS_PERCENT_CHOICES:
+    if burst_loss_percent is not None and not _is_supported_loss_percent(burst_loss_percent):
         raise FaultPlanError("burst_loss_percent is outside the supported QA matrix")
     if burst_loss_percent is None:
         if burst_correlation_percent is not None:
