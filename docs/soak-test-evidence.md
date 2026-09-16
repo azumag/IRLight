@@ -34,7 +34,7 @@ Every sample contains exactly:
 - `timestamp_errors`: cumulative timestamp-error counter.
 - `unexpected_reconnects`: cumulative unexpected-reconnect counter.
 
-Counters must not decrease. Numeric booleans, negative counters, `NaN`, `Infinity`, duplicate JSON keys, unknown fields, and missing fields fail closed. A `pass` report must contain at least two samples and its final `elapsed_seconds` must be at least `target_duration_seconds`; failed or aborted runs may intentionally be shorter so failure evidence can still be preserved.
+Counters must not decrease. For a `pass` report, the first sample is the run baseline: `elapsed_seconds`, `timestamp_errors`, and `unexpected_reconnects` must all start at zero. Numeric booleans, negative counters, `NaN`, `Infinity`, duplicate JSON keys, unknown fields, and missing fields fail closed. A `pass` report must contain at least two samples and its final `elapsed_seconds` must be at least `target_duration_seconds`; failed or aborted runs may intentionally be shorter so failure evidence can still be preserved.
 
 ## Validation and summary
 
