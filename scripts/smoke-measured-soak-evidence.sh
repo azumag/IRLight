@@ -7,24 +7,57 @@ evidence_dir="$work_dir/evidence"
 canonical_summary="$work_dir/canonical-summary.json"
 trap 'rm -rf "$work_dir"' EXIT
 
+dump_failure_diagnostics() {
+  echo "::group::Measured soak failure diagnostics" >&2
+
+  if [[ -d "$evidence_dir" ]]; then
+    echo "Evidence files:" >&2
+    find "$evidence_dir" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort >&2 || true
+
+    for name in run-result.json summary.json; do
+      if [[ -f "$evidence_dir/$name" ]]; then
+        echo "--- $name ---" >&2
+        cat "$evidence_dir/$name" >&2 || true
+      fi
+    done
+
+    if [[ -f "$evidence_dir/samples.jsonl" ]]; then
+      echo "--- samples.jsonl (last 20 lines) ---" >&2
+      tail -n 20 "$evidence_dir/samples.jsonl" >&2 || true
+    fi
+  else
+    echo "Evidence directory was not created." >&2
+  fi
+
+  echo "--- Docker container state (names/status/images only) ---" >&2
+  docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' >&2 || true
+  echo "::endgroup::" >&2
+}
+
 fail_stage() {
   local stage="$1"
   local message="$2"
-  printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
+  local status="${3:-1}"
+  printf '::error title=IRLight docker smoke failure::stage=%s status=%s\n' "$stage" "$status" >&2
   echo "$message" >&2
-  exit 1
+  dump_failure_diagnostics
+  exit "$status"
 }
 
 # Keep this deliberately short: the purpose is to execute the complete evidence
 # chain on the same Linux/Docker environment used by the integration suite, not
 # to replace the multi-hour media-quality acceptance run from Issue #13.
-if ! python3 "$repo_root/scripts/run-measured-soak.py" \
+set +e
+python3 "$repo_root/scripts/run-measured-soak.py" \
   --output-dir "$evidence_dir" \
   --scenario "CI measured soak evidence-chain smoke" \
   --duration-seconds 8 \
   --interval-seconds 2 \
-  --allow-unmeasured-media; then
-  fail_stage "measured_soak_runner" "measured soak evidence runner failed"
+  --allow-unmeasured-media
+runner_status=$?
+set -e
+if (( runner_status != 0 )); then
+  fail_stage "measured_soak_runner" "measured soak evidence runner failed" "$runner_status"
 fi
 
 # Re-run the canonical validator outside the wrapper and compare its semantic
