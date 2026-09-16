@@ -29,6 +29,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
 
         self.assertEqual(plan.resolver, "192.0.2.53")
         self.assertEqual(plan.duration_seconds, 30)
+        self.assertEqual(len(plan.check_argvs), 2)
         self.assertEqual(len(plan.apply_argvs), 2)
         self.assertEqual(len(plan.cleanup_argvs), 2)
         self.assertEqual(
@@ -58,6 +59,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
                 "REJECT",
             ),
         )
+        self.assertIn("-C", plan.check_argvs[0])
         self.assertIn("tcp", plan.apply_argvs[1])
         self.assertIn("-D", plan.cleanup_argvs[0])
         self.assertNotIn("-I", plan.cleanup_argvs[0])
@@ -142,6 +144,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
             duration_seconds=30,
         )
         with (
+            patch.object(MODULE, "_rule_exists", return_value=False),
             patch.object(MODULE, "_run") as run,
             patch.object(MODULE.time, "sleep") as sleep,
         ):
@@ -172,11 +175,14 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
             rule_id="case-1",
             duration_seconds=30,
         )
-        with patch.object(
-            MODULE,
-            "_run",
-            side_effect=(None, RuntimeError("tcp apply failed"), None, None),
-        ) as run:
+        with (
+            patch.object(MODULE, "_rule_exists", return_value=False),
+            patch.object(
+                MODULE,
+                "_run",
+                side_effect=(None, RuntimeError("tcp apply failed"), None, None),
+            ) as run,
+        ):
             with self.assertRaisesRegex(RuntimeError, "DNS fault apply failed"):
                 MODULE.apply_dns_fault(
                     namespace="irlight-qa",
@@ -198,6 +204,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
 
     def test_cleanup_failure_is_not_reported_as_success(self) -> None:
         with (
+            patch.object(MODULE, "_rule_exists", return_value=False),
             patch.object(
                 MODULE,
                 "_run",
@@ -222,6 +229,7 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
             duration_seconds=30,
         )
         with (
+            patch.object(MODULE, "_rule_exists", return_value=False),
             patch.object(MODULE, "_run") as run,
             patch.object(MODULE.time, "sleep", side_effect=KeyboardInterrupt),
         ):
@@ -244,18 +252,21 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
             ],
         )
 
-    def test_interrupt_during_second_apply_cleans_attempted_rules(self) -> None:
+    def test_interrupt_during_second_apply_cleans_first_rule(self) -> None:
         plan = MODULE.build_dns_fault_plan(
             namespace="irlight-qa",
             resolver="192.0.2.53",
             rule_id="case-1",
             duration_seconds=30,
         )
-        with patch.object(
-            MODULE,
-            "_run",
-            side_effect=(None, KeyboardInterrupt, None, None),
-        ) as run:
+        with (
+            patch.object(MODULE, "_rule_exists", return_value=False),
+            patch.object(
+                MODULE,
+                "_run",
+                side_effect=(None, KeyboardInterrupt, None, None),
+            ) as run,
+        ):
             result = MODULE.apply_dns_fault(
                 namespace="irlight-qa",
                 resolver="192.0.2.53",
@@ -274,6 +285,34 @@ class NetworkDnsFaultInjectorTest(unittest.TestCase):
                 call(plan.cleanup_argvs[0]),
             ],
         )
+
+    def test_apply_refuses_preexisting_exact_rule_before_mutation(self) -> None:
+        plan = MODULE.build_dns_fault_plan(
+            namespace="irlight-qa",
+            resolver="192.0.2.53",
+            rule_id="case-1",
+            duration_seconds=30,
+        )
+        with (
+            patch.object(MODULE, "_rule_exists", side_effect=(False, True)) as exists,
+            patch.object(MODULE, "_run") as run,
+        ):
+            with self.assertRaisesRegex(
+                MODULE.DnsFaultPlanError, "already exists"
+            ):
+                MODULE.apply_dns_fault(
+                    namespace="irlight-qa",
+                    resolver="192.0.2.53",
+                    rule_id="case-1",
+                    duration_seconds=30,
+                    confirm_disposable_namespace=True,
+                )
+
+        self.assertEqual(
+            exists.call_args_list,
+            [call(plan.check_argvs[0]), call(plan.check_argvs[1])],
+        )
+        run.assert_not_called()
 
     def test_clear_attempts_both_rules_even_if_first_cleanup_fails(self) -> None:
         plan = MODULE.build_dns_fault_plan(
