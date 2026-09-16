@@ -30,7 +30,7 @@ sudo python scripts/network-fault-case-runner.py apply \
   --confirm-disposable-namespace
 ```
 
-The runner executes only the matrix-generated namespaced argv. The qdisc command itself has a 10-second process timeout, the injected fault duration is restricted to the injector's bounded QA durations, and cleanup is attempted after the wait even when the runner receives `KeyboardInterrupt`. A cleanup failure is reported as failure rather than silently claiming the case completed safely.
+The runner executes only the matrix-generated namespaced argv. Each qdisc command has a 10-second process timeout and the injected fault duration is restricted to the injector's bounded QA durations. Once an apply command is attempted, cleanup is attempted even if apply itself errors, times out, or is interrupted, as well as after the normal fault wait. A cleanup failure is reported as failure rather than silently claiming the case completed safely.
 
 The protocol component of a case ID is a workload label for QA evidence; `tc netem` affects traffic on the selected namespace interface and does not filter packets by RTMP or SRT protocol.
 
