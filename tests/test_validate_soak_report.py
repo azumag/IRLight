@@ -65,7 +65,13 @@ def report() -> dict[str, object]:
 
 class ValidateSoakReportTest(unittest.TestCase):
     def test_valid_pass_report_produces_deterministic_deltas(self) -> None:
-        summary = validate_report(report())
+        value = report()
+        value["samples"] = [
+            sample(5, rss=100, fds=10),
+            sample(30, rss=120, fds=11),
+            sample(60, rss=115, fds=10),
+        ]
+        summary = validate_report(value)
         self.assertEqual(summary["observed_duration_seconds"], 60.0)
         self.assertEqual(summary["sample_count"], 3)
         self.assertEqual(summary["memory_rss_delta_bytes"], 15)
@@ -124,6 +130,7 @@ class ValidateSoakReportTest(unittest.TestCase):
 
     def test_rejects_boolean_negative_nonfinite_and_overflowing_numbers(self) -> None:
         mutations = (
+            ("schema_version", 1.0),
             ("target_duration_seconds", True),
             ("target_duration_seconds", 0),
         )
@@ -168,6 +175,9 @@ class ValidateSoakReportTest(unittest.TestCase):
             path.write_text('{"schema_version":NaN}', encoding="utf-8")
             with self.assertRaisesRegex(SoakReportError, "non-standard JSON numeric constant"):
                 load_report(path)
+            path.write_bytes(b"{\xff}")
+            with self.assertRaisesRegex(SoakReportError, "cannot read report"):
+                load_report(path)
 
     def test_run_id_and_strings_are_bounded(self) -> None:
         value = report()
@@ -181,6 +191,10 @@ class ValidateSoakReportTest(unittest.TestCase):
         value = report()
         value["notes"] = "x" * 4001
         with self.assertRaisesRegex(SoakReportError, "notes"):
+            validate_report(value)
+        value = report()
+        value["cleanup"] = {"verified": True, "details": "   "}
+        with self.assertRaisesRegex(SoakReportError, "cleanup.details"):
             validate_report(value)
 
 
