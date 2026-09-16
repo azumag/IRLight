@@ -27,6 +27,10 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             interface="eth0",
         )
 
+    def _execute(self, case: dict[str, object], **kwargs: object) -> int:
+        kwargs.setdefault("confirm_disposable_namespace", True)
+        return runner.execute_case(case, **kwargs)
+
     def test_select_case_uses_stable_matrix_id_and_namespaced_commands(self) -> None:
         case = self._select("rtmp-loss-1pct-30s")
         self.assertEqual(case["id"], "rtmp-loss-1pct-30s")
@@ -51,7 +55,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         plan = case["plan"]
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
-                result = runner.execute_case(case)
+                result = self._execute(case)
 
         self.assertEqual(result, 0)
         self.assertEqual(
@@ -65,7 +69,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         plan = case["plan"]
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep", side_effect=KeyboardInterrupt):
-                result = runner.execute_case(case)
+                result = self._execute(case)
 
         self.assertEqual(result, 130)
         self.assertEqual(
@@ -83,7 +87,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         ) as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
                 with self.assertRaisesRegex(runner.CaseRunnerError, "apply failed"):
-                    runner.execute_case(case)
+                    self._execute(case)
 
         self.assertEqual(
             run_command.call_args_list,
@@ -100,7 +104,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             side_effect=[KeyboardInterrupt(), None],
         ) as run_command:
             with mock.patch.object(runner.time, "sleep") as sleep:
-                result = runner.execute_case(case)
+                result = self._execute(case)
 
         self.assertEqual(result, 130)
         self.assertEqual(
@@ -118,7 +122,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
         ):
             with mock.patch.object(runner.time, "sleep"):
                 with self.assertRaisesRegex(runner.CaseRunnerError, "cleanup failed"):
-                    runner.execute_case(case)
+                    self._execute(case)
 
     def test_apply_and_cleanup_failure_reports_uncertain_cleanup(self) -> None:
         case = self._select("rtmp-disconnect-10s")
@@ -133,7 +137,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "cleanup could not be confirmed"
             ):
-                runner.execute_case(case)
+                self._execute(case)
 
     def test_plan_mode_is_read_only(self) -> None:
         stdout = io.StringIO()
@@ -171,12 +175,21 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, 2)
 
+    def test_programmatic_execution_requires_disposable_namespace_acknowledgement(self) -> None:
+        case = self._select("rtmp-loss-1pct-30s")
+        with mock.patch.object(runner, "_run_command") as run_command:
+            with self.assertRaisesRegex(
+                runner.CaseRunnerError, "acknowledgement is required"
+            ):
+                runner.execute_case(case)
+        run_command.assert_not_called()
+
     def test_invalid_execution_shape_is_rejected_before_command(self) -> None:
         case = self._select("rtmp-loss-1pct-30s")
         case["fault"] = {"duration_seconds": True}
         with mock.patch.object(runner, "_run_command") as run_command:
             with self.assertRaisesRegex(runner.CaseRunnerError, "invalid execution data"):
-                runner.execute_case(case)
+                self._execute(case)
         run_command.assert_not_called()
 
     def test_tampered_apply_argv_is_rejected_before_command(self) -> None:
@@ -186,7 +199,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "does not match generated matrix"
             ):
-                runner.execute_case(case)
+                self._execute(case)
         run_command.assert_not_called()
 
     def test_extra_case_fields_are_rejected_before_command(self) -> None:
@@ -196,7 +209,7 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "does not match generated matrix"
             ):
-                runner.execute_case(case)
+                self._execute(case)
         run_command.assert_not_called()
 
     def test_loopback_execution_requires_programmatic_acknowledgement(self) -> None:
@@ -210,12 +223,12 @@ class NetworkFaultCaseRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 runner.CaseRunnerError, "could not be regenerated safely"
             ):
-                runner.execute_case(case)
+                self._execute(case)
         run_command.assert_not_called()
 
         with mock.patch.object(runner, "_run_command") as run_command:
             with mock.patch.object(runner.time, "sleep"):
-                self.assertEqual(runner.execute_case(case, allow_loopback=True), 0)
+                self.assertEqual(self._execute(case, allow_loopback=True), 0)
         self.assertEqual(run_command.call_count, 2)
 
 
