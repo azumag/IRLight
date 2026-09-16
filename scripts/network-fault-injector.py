@@ -5,13 +5,13 @@
 mode still requires an explicitly named, disposable Linux network namespace so
 the helper never generates or executes a host-interface ``tc`` command.
 ``apply`` additionally requires a bounded duration and an explicit disruption
-acknowledgement. Applied qdiscs are removed in ``finally`` so an interrupted
-test does not intentionally leave the requested fault behind.
+acknowledgement. Once an apply command is attempted, root-qdisc cleanup is also
+attempted even if the apply command itself fails or is interrupted.
 
 This tool intentionally covers only qdisc-local packet loss, latency/jitter,
-and complete packet blackholes. DNS, route, firewall, TCP reset, bandwidth,
-and burst-loss injection remain separate test concerns because their cleanup
-and blast radius differ.
+bandwidth shaping, and complete packet blackholes. DNS, route, firewall, TCP
+reset, and burst-loss injection remain separate test concerns because their
+cleanup and blast radius differ.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ from typing import Sequence
 LOSS_PERCENT_CHOICES = (1, 3, 5, 10)
 LATENCY_MS_CHOICES = (50, 100, 300, 1000)
 DURATION_SECONDS_CHOICES = (10, 30, 120, 600)
+BANDWIDTH_KBIT_MIN = 64
+BANDWIDTH_KBIT_MAX = 100_000
 _INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.:@-]+$")
 _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -88,6 +90,7 @@ def build_fault_plan(
     jitter_ms: int | None,
     disconnect: bool,
     duration_seconds: int | None,
+    bandwidth_kbit: int | None = None,
     allow_loopback: bool = False,
 ) -> FaultPlan:
     """Build a namespaced, shell-free ``tc netem`` plan."""
@@ -104,11 +107,30 @@ def build_fault_plan(
             raise FaultPlanError("jitter requires latency")
         if isinstance(jitter_ms, bool) or jitter_ms <= 0 or jitter_ms > latency_ms:
             raise FaultPlanError("jitter must be positive and no greater than latency")
+    if bandwidth_kbit is not None:
+        if (
+            isinstance(bandwidth_kbit, bool)
+            or not isinstance(bandwidth_kbit, int)
+            or bandwidth_kbit < BANDWIDTH_KBIT_MIN
+            or bandwidth_kbit > BANDWIDTH_KBIT_MAX
+        ):
+            raise FaultPlanError(
+                "bandwidth_kbit must be an integer between "
+                f"{BANDWIDTH_KBIT_MIN} and {BANDWIDTH_KBIT_MAX}"
+            )
     if disconnect and (
-        loss_percent is not None or latency_ms is not None or jitter_ms is not None
+        loss_percent is not None
+        or latency_ms is not None
+        or jitter_ms is not None
+        or bandwidth_kbit is not None
     ):
         raise FaultPlanError("disconnect cannot be combined with other netem faults")
-    if not disconnect and loss_percent is None and latency_ms is None:
+    if (
+        not disconnect
+        and loss_percent is None
+        and latency_ms is None
+        and bandwidth_kbit is None
+    ):
         raise FaultPlanError("at least one fault must be selected")
     if duration_seconds is not None and duration_seconds not in DURATION_SECONDS_CHOICES:
         raise FaultPlanError("duration is outside the supported QA matrix")
@@ -124,6 +146,8 @@ def build_fault_plan(
             argv.extend(("delay", f"{latency_ms}ms"))
             if jitter_ms is not None:
                 argv.append(f"{jitter_ms}ms")
+        if bandwidth_kbit is not None:
+            argv.extend(("rate", f"{bandwidth_kbit}kbit"))
 
     cleanup = tuple(prefix + ["tc", "qdisc", "del", "dev", interface, "root"])
     return FaultPlan(
@@ -165,6 +189,16 @@ def _add_profile_arguments(parser: argparse.ArgumentParser, *, duration_required
         "--latency", type=int, choices=LATENCY_MS_CHOICES, dest="latency_ms"
     )
     parser.add_argument("--jitter", type=int, dest="jitter_ms")
+    parser.add_argument(
+        "--bandwidth-kbit",
+        type=int,
+        dest="bandwidth_kbit",
+        metavar="KBIT",
+        help=(
+            "netem rate limit in kbit/s "
+            f"({BANDWIDTH_KBIT_MIN}..{BANDWIDTH_KBIT_MAX})"
+        ),
+    )
     parser.add_argument("--allow-loopback", action="store_true")
     parser.add_argument(
         "--duration",
@@ -219,6 +253,7 @@ def _plan_from_args(args: argparse.Namespace) -> FaultPlan:
         jitter_ms=args.jitter_ms,
         disconnect=args.disconnect,
         duration_seconds=args.duration_seconds,
+        bandwidth_kbit=args.bandwidth_kbit,
         allow_loopback=args.allow_loopback,
     )
 
@@ -262,22 +297,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         assert args.command == "apply"
         assert plan.duration_seconds is not None
-        _run(plan.apply_argv)
-        cleanup_error: Exception | None = None
         interrupted = False
+        apply_error: Exception | None = None
+        cleanup_error: BaseException | None = None
         try:
-            time.sleep(plan.duration_seconds)
+            _run(plan.apply_argv)
+            try:
+                time.sleep(plan.duration_seconds)
+            except KeyboardInterrupt:
+                interrupted = True
         except KeyboardInterrupt:
             interrupted = True
+        except Exception as exc:
+            apply_error = exc
         finally:
             try:
                 _run(plan.cleanup_argv)
-            except Exception as exc:  # cleanup failure must remain visible
+            except (Exception, KeyboardInterrupt) as exc:
                 cleanup_error = exc
+
         if cleanup_error is not None:
-            raise RuntimeError(
-                f"network fault cleanup failed: {cleanup_error}"
-            ) from cleanup_error
+            if apply_error is not None:
+                raise RuntimeError(
+                    "network fault apply failed and cleanup could not be confirmed"
+                ) from cleanup_error
+            raise RuntimeError("network fault cleanup failed") from cleanup_error
+        if apply_error is not None:
+            raise RuntimeError("network fault apply failed") from apply_error
         return 130 if interrupted else 0
     except (FaultPlanError, RuntimeError) as exc:
         print(f"network-fault-injector: {exc}", file=sys.stderr)
