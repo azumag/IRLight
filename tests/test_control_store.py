@@ -13,7 +13,11 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 sys.path.insert(0, str(ROOT / "apps" / "continuity"))
 
 from control_state import ControlStateReader  # noqa: E402
-from control_store import ControlStateError, ControlStore  # noqa: E402
+from control_store import (  # noqa: E402
+    ControlStateError,
+    ControlStore,
+    default_control,
+)
 
 
 def _concurrent_update(state_dir: str, mode: str, key: str) -> None:
@@ -153,6 +157,87 @@ class ControlStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(ControlStateError, "invalid update time"):
                 store.get()
             self.assertEqual(store.path.read_text(encoding="utf-8"), corrupt)
+
+    def test_update_rejects_invalid_clock_before_authority_read(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            invalid_times = (
+                True,
+                -1,
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                10**400,
+                "1",
+            )
+            for index, invalid_time in enumerate(invalid_times):
+                with self.subTest(now=repr(invalid_time)):
+                    with mock.patch.object(store, "_read") as read:
+                        with self.assertRaisesRegex(
+                            ControlStateError, "invalid update time"
+                        ):
+                            store.update(
+                                mode="MUTED",
+                                idempotency_key=f"clock-{index}",
+                                now=invalid_time,  # type: ignore[arg-type]
+                            )
+                        read.assert_not_called()
+
+            with mock.patch("control_store.time.time", return_value=float("nan")):
+                with mock.patch.object(store, "_read") as read:
+                    with self.assertRaisesRegex(
+                        ControlStateError, "invalid update time"
+                    ):
+                        store.update(mode="MUTED", idempotency_key="system-clock")
+                    read.assert_not_called()
+
+    def test_default_control_rejects_invalid_clock(self) -> None:
+        for invalid_time in (True, -1, float("nan"), float("inf"), 10**400):
+            with self.subTest(now=repr(invalid_time)):
+                with self.assertRaisesRegex(ControlStateError, "invalid update time"):
+                    default_control(now=invalid_time)  # type: ignore[arg-type]
+
+    def test_update_rejects_ambiguous_request_types_before_authority_read(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            with mock.patch.object(store, "_read") as read:
+                with self.assertRaisesRegex(ValueError, "invalid idempotency key"):
+                    store.update(
+                        mode="MUTED",
+                        idempotency_key=1,  # type: ignore[arg-type]
+                        now=1,
+                    )
+                read.assert_not_called()
+
+            invalid_versions = (True, -1, 1.5, "1")
+            for invalid_version in invalid_versions:
+                with self.subTest(expected_version=repr(invalid_version)):
+                    with mock.patch.object(store, "_read") as read:
+                        with self.assertRaisesRegex(ValueError, "invalid expected version"):
+                            store.update(
+                                mode="MUTED",
+                                idempotency_key="strict-version",
+                                expected_version=invalid_version,  # type: ignore[arg-type]
+                                now=1,
+                            )
+                        read.assert_not_called()
+
+    def test_persisted_negative_time_and_empty_idempotency_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = ControlStore(state_dir)
+            store.ensure()
+            invalid_payloads = (
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":null,"updated_at":-1}',
+                '{"audio_mode":"LIVE","version":0,"command_id":null,'
+                '"idempotency_key":"","updated_at":1}',
+            )
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload):
+                    store.path.write_text(payload, encoding="utf-8")
+                    with self.assertRaises(ControlStateError):
+                        store.get()
+                    self.assertEqual(store.path.read_text(encoding="utf-8"), payload)
 
     def test_serialization_failure_is_controlled_and_preserves_authority(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
