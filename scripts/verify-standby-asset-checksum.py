@@ -147,13 +147,13 @@ def verify_asset(
 ) -> dict[str, Any]:
     expected_digest = _validate_expected_sha256(expected_sha256)
     expected_size = _validate_expected_size(expected_size_bytes)
-    if expected_digest is None and expected_size is None:
-        raise AssetChecksumError("verification requires an expected sha256 or size")
+    if expected_digest is None:
+        raise AssetChecksumError("verification requires an expected sha256")
 
     record = inspect_asset(path)
     if expected_size is not None and record["size_bytes"] != expected_size:
         raise AssetChecksumError("asset size does not match expected metadata")
-    if expected_digest is not None and record["sha256"] != expected_digest:
+    if record["sha256"] != expected_digest:
         raise AssetChecksumError("asset sha256 does not match expected metadata")
     return {**record, "verified": True}
 
@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("path", type=Path)
-    verify_parser.add_argument("--expected-sha256")
+    verify_parser.add_argument("--expected-sha256", required=True)
     verify_parser.add_argument("--expected-size-bytes", type=int)
     return parser
 
