@@ -232,13 +232,15 @@ class ValidateSoakReportTest(unittest.TestCase):
 
     def test_loader_rejects_path_replacement_between_inspection_and_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "report.json"
+            root = Path(tmp)
+            path = root / "report.json"
+            replacement = root / "replacement.json"
             path.write_text(json.dumps(report()), encoding="utf-8")
+            replacement.write_text('{"schema_version":1}', encoding="utf-8")
             original_open = MODULE.os.open
 
             def replacing_open(target: object, flags: int) -> int:
-                path.unlink()
-                path.write_text('{"schema_version":1}', encoding="utf-8")
+                os.replace(replacement, path)
                 return original_open(target, flags)
 
             with mock.patch.object(MODULE.os, "open", side_effect=replacing_open):
@@ -250,6 +252,8 @@ class ValidateSoakReportTest(unittest.TestCase):
             path = Path(tmp) / "report.json"
             encoded = json.dumps(report()).encode("utf-8")
             self.assertLess(len(encoded), MODULE.MAX_REPORT_BYTES)
+            encoded += b" " * (MODULE.MAX_REPORT_BYTES - len(encoded))
+            self.assertEqual(len(encoded), MODULE.MAX_REPORT_BYTES)
             path.write_bytes(encoded)
             loaded = load_report(path)
             self.assertEqual(loaded["schema_version"], 1)
