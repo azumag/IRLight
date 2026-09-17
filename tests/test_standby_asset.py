@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "apps" / "continuity"))
 
 from make_default_standby import write_png  # noqa: E402
 from standby_asset import (  # noqa: E402
+    MAX_IMAGE_DIMENSION,
+    MAX_IMAGE_PIXELS,
     gst_standby_source,
     public_standby_status,
     resolve_standby_asset,
@@ -29,9 +31,65 @@ class StandbyAssetTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    @staticmethod
+    def _write_png_header(path: Path, *, width: int, height: int) -> None:
+        path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + b"\x00\x00\x00\rIHDR"
+            + width.to_bytes(4, "big")
+            + height.to_bytes(4, "big")
+            + b"\x08\x02\x00\x00\x00"
+        )
+
+    @staticmethod
+    def _write_jpeg_sof(path: Path, *, width: int, height: int) -> None:
+        segment = (
+            b"\x08"
+            + height.to_bytes(2, "big")
+            + width.to_bytes(2, "big")
+            + b"\x03"
+            + b"\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+        )
+        path.write_bytes(
+            b"\xff\xd8\xff\xc0"
+            + (len(segment) + 2).to_bytes(2, "big")
+            + segment
+        )
+
+    @staticmethod
+    def _write_webp_vp8x(path: Path, *, width: int, height: int) -> None:
+        payload = (
+            b"\x00\x00\x00\x00"
+            + (width - 1).to_bytes(3, "little")
+            + (height - 1).to_bytes(3, "little")
+        )
+        path.write_bytes(
+            b"RIFF"
+            + (4 + 8 + len(payload)).to_bytes(4, "little")
+            + b"WEBPVP8X"
+            + len(payload).to_bytes(4, "little")
+            + payload
+        )
+
     def test_custom_valid_image_wins(self) -> None:
         custom = self.root / "custom.png"
         write_png(custom, width=16, height=9)
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+        self.assertEqual(selection.source, "CUSTOM")
+        self.assertEqual(selection.path, custom)
+        self.assertIsNone(selection.fallback_reason)
+
+    def test_supported_jpeg_dimensions_are_accepted(self) -> None:
+        custom = self.root / "custom.jpg"
+        self._write_jpeg_sof(custom, width=1280, height=720)
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+        self.assertEqual(selection.source, "CUSTOM")
+        self.assertEqual(selection.path, custom)
+        self.assertIsNone(selection.fallback_reason)
+
+    def test_supported_webp_dimensions_are_accepted(self) -> None:
+        custom = self.root / "custom.webp"
+        self._write_webp_vp8x(custom, width=1280, height=720)
         selection = resolve_standby_asset(str(custom), str(self.fallback))
         self.assertEqual(selection.source, "CUSTOM")
         self.assertEqual(selection.path, custom)
@@ -50,6 +108,76 @@ class StandbyAssetTest(unittest.TestCase):
         custom = self.root / "not-an-image.bin"
         custom.write_text("not an image", encoding="utf-8")
         selection = resolve_standby_asset(str(custom), str(self.fallback))
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_truncated_png_header_falls_back_to_node_default(self) -> None:
+        custom = self.root / "truncated.png"
+        custom.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_png_dimension_limit_falls_back_to_node_default(self) -> None:
+        custom = self.root / "oversized.png"
+        self._write_png_header(
+            custom,
+            width=MAX_IMAGE_DIMENSION + 1,
+            height=1,
+        )
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_png_pixel_budget_falls_back_to_node_default(self) -> None:
+        custom = self.root / "too-many-pixels.png"
+        width = 5000
+        height = (MAX_IMAGE_PIXELS // width) + 1
+        self.assertLessEqual(width, MAX_IMAGE_DIMENSION)
+        self.assertLessEqual(height, MAX_IMAGE_DIMENSION)
+        self._write_png_header(custom, width=width, height=height)
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_zero_png_dimension_falls_back_to_node_default(self) -> None:
+        custom = self.root / "zero-width.png"
+        self._write_png_header(custom, width=0, height=9)
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_jpeg_dimension_limit_falls_back_to_node_default(self) -> None:
+        custom = self.root / "oversized.jpg"
+        self._write_jpeg_sof(
+            custom,
+            width=MAX_IMAGE_DIMENSION + 1,
+            height=1,
+        )
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_webp_dimension_limit_falls_back_to_node_default(self) -> None:
+        custom = self.root / "oversized.webp"
+        self._write_webp_vp8x(
+            custom,
+            width=MAX_IMAGE_DIMENSION + 1,
+            height=1,
+        )
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
         self.assertEqual(selection.source, "NODE_DEFAULT")
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
