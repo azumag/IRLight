@@ -52,15 +52,22 @@ class StandbyAwareContinuityPipeline(ContinuityPipeline):
         )
 
     def run(self) -> None:
-        self._write_standby_status()
-        info = public_standby_status(self.standby_selection)
-        LOG.info(
-            "standby source selected source=%s fallback_reason=%s custom_configured=%s",
-            info["source"],
-            info["fallback_reason"],
-            info["custom_configured"],
-        )
-        super().run()
+        try:
+            self._write_standby_status()
+            info = public_standby_status(self.standby_selection)
+            LOG.info(
+                "standby source selected source=%s fallback_reason=%s custom_configured=%s",
+                info["source"],
+                info["fallback_reason"],
+                info["custom_configured"],
+            )
+            super().run()
+        finally:
+            # The decoder receives a /proc/self/fd or /dev/fd alias for the
+            # validated inode. Keep that descriptor alive until the output
+            # pipeline has stopped, then release it even on startup/runtime
+            # failure.
+            self.standby_selection.close()
 
 
 def main() -> None:
