@@ -123,7 +123,11 @@ def _bounded_text(value: Any, label: str, *, maximum: int) -> str:
 def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     _require_exact_fields(report, TOP_LEVEL_FIELDS, "report")
 
-    if isinstance(report["schema_version"], bool) or report["schema_version"] != 1:
+    if (
+        isinstance(report["schema_version"], bool)
+        or not isinstance(report["schema_version"], int)
+        or report["schema_version"] != 1
+    ):
         raise CapacityReportError("schema_version must be integer 1")
     if not isinstance(report["run_id"], str):
         raise CapacityReportError("run_id must be a UUID string")
@@ -142,8 +146,8 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
         raise CapacityReportError("notes must be a string up to 4000 characters")
 
     margin = report["safety_margin_percent"]
-    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 90:
-        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 90")
+    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 99:
+        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 99")
 
     trials = report["trials"]
     if not isinstance(trials, list) or len(trials) < 2:
@@ -229,6 +233,7 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
         "first_failing_sessions": first_fail,
         "safety_margin_percent": margin,
         "recommended_max_sessions": recommended,
+        "highest_pass_duration_seconds": passing[-1]["duration_seconds"],
         "highest_pass_cpu_peak_percent": passing[-1]["cpu_peak_percent"],
         "highest_pass_memory_rss_peak_bytes": passing[-1]["memory_rss_peak_bytes"],
         "highest_pass_egress_peak_bps": passing[-1]["egress_peak_bps"],
