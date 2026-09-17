@@ -197,6 +197,59 @@ def assemble_report(
     return report
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Persist directory-entry changes before reporting publication success."""
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(directory, flags)
+    except OSError as exc:
+        raise CapacityAssemblyError(
+            f"cannot open output directory for sync: {exc}"
+        ) from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise CapacityAssemblyError("output parent must be a directory")
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise CapacityAssemblyError(
+                f"cannot sync output directory: {exc}"
+            ) from exc
+    finally:
+        os.close(fd)
+
+
+def _rollback_published_link(temporary: Path, path: Path, directory: Path) -> None:
+    """Remove our just-published hard link after a failed directory sync."""
+
+    try:
+        source = os.lstat(temporary)
+        published = os.lstat(path)
+    except OSError as exc:
+        raise CapacityAssemblyError(
+            f"cannot inspect output during publication rollback: {exc}"
+        ) from exc
+    if not stat.S_ISREG(source.st_mode) or not stat.S_ISREG(published.st_mode):
+        raise CapacityAssemblyError(
+            "cannot roll back output publication: final path changed type"
+        )
+    if (source.st_dev, source.st_ino) != (published.st_dev, published.st_ino):
+        raise CapacityAssemblyError(
+            "cannot roll back output publication: final path changed identity"
+        )
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        raise CapacityAssemblyError(
+            f"cannot roll back output publication: {exc}"
+        ) from exc
+    _fsync_directory(directory)
+
+
 def _write_exclusive_atomic(path: Path, rendered: str) -> None:
     """Publish a complete report without exposing a partially written final path."""
 
@@ -233,6 +286,20 @@ def _write_exclusive_atomic(path: Path, rendered: str) -> None:
             raise CapacityAssemblyError("output already exists") from exc
         except OSError as exc:
             raise CapacityAssemblyError(f"cannot publish output atomically: {exc}") from exc
+
+        try:
+            _fsync_directory(directory)
+        except CapacityAssemblyError as sync_exc:
+            try:
+                _rollback_published_link(temporary, path, directory)
+            except CapacityAssemblyError as rollback_exc:
+                raise CapacityAssemblyError(
+                    "output publication directory sync failed and rollback failed: "
+                    f"{rollback_exc}"
+                ) from sync_exc
+            raise CapacityAssemblyError(
+                f"cannot make output publication durable: {sync_exc}"
+            ) from sync_exc
     finally:
         try:
             temporary.unlink(missing_ok=True)
