@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -143,6 +144,16 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertIn("invalid JSON", stderr)
             self.assertEqual(path.read_bytes(), before)
 
+    def test_rejects_preexisting_empty_jsonl_without_modifying_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"")
+
+            result, _, stderr = run_main(cli_args(path, sessions=1))
+            self.assertEqual(result, 2)
+            self.assertIn("at least one trial", stderr)
+            self.assertEqual(path.read_bytes(), b"")
+
     def test_refuses_symbolic_link_evidence_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -158,6 +169,51 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertIn("symbolic link", stderr)
             self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_pinned_fd_refuses_replaced_path_without_touching_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "trials.jsonl"
+            path.write_bytes(b"")
+            fd, created = MODULE._open_trials_for_update(path)
+            self.assertFalse(created)
+            moved = directory / "opened-inode.jsonl"
+            os.replace(path, moved)
+            path.write_text("replacement\n", encoding="utf-8")
+
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.CapacityTrialRecordError, "changed while recording"
+                ):
+                    MODULE._append_line_fd(fd, path, "candidate\n")
+            finally:
+                os.close(fd)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "replacement\n")
+            self.assertEqual(moved.read_bytes(), b"")
+
+    def test_pinned_fd_refuses_stale_snapshot_size_before_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"")
+            fd, created = MODULE._open_trials_for_update(path)
+            self.assertFalse(created)
+            path.write_bytes(b"external\n")
+
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.CapacityTrialRecordError, "changed while recording"
+                ):
+                    MODULE._append_line_fd(
+                        fd,
+                        path,
+                        "candidate\n",
+                        expected_size=0,
+                    )
+            finally:
+                os.close(fd)
+
+            self.assertEqual(path.read_bytes(), b"external\n")
 
 
 if __name__ == "__main__":
