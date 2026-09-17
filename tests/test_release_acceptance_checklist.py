@@ -123,7 +123,10 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             encoding="utf-8",
         )
         item["status"] = "satisfied"
-        item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
+        item["evidence"] = [
+            "docs/node-capacity-load-evidence.md",
+            report_path.relative_to(ROOT).as_posix(),
+        ]
 
         module.validate_checklist(payload)
 
