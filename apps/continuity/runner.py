@@ -64,9 +64,9 @@ class StandbyAwareContinuityPipeline(ContinuityPipeline):
             super().run()
         finally:
             # The decoder receives a /proc/self/fd or /dev/fd alias for the
-            # validated inode. Keep that descriptor alive until the output
-            # pipeline has stopped, then release it even on startup/runtime
-            # failure.
+            # private validated snapshot. Keep that descriptor alive until the
+            # output pipeline has stopped, then release it even on
+            # startup/runtime failure.
             self.standby_selection.close()
 
 
