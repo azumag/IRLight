@@ -144,6 +144,16 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertIn("invalid JSON", stderr)
             self.assertEqual(path.read_bytes(), before)
 
+    def test_rejects_preexisting_empty_jsonl_without_modifying_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"")
+
+            result, _, stderr = run_main(cli_args(path, sessions=1))
+            self.assertEqual(result, 2)
+            self.assertIn("at least one trial", stderr)
+            self.assertEqual(path.read_bytes(), b"")
+
     def test_refuses_symbolic_link_evidence_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -165,7 +175,8 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             directory = Path(tmp)
             path = directory / "trials.jsonl"
             path.write_bytes(b"")
-            fd = MODULE._open_trials_for_update(path)
+            fd, created = MODULE._open_trials_for_update(path)
+            self.assertFalse(created)
             moved = directory / "opened-inode.jsonl"
             os.replace(path, moved)
             path.write_text("replacement\n", encoding="utf-8")
@@ -185,7 +196,8 @@ class CapacityTrialRecorderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trials.jsonl"
             path.write_bytes(b"")
-            fd = MODULE._open_trials_for_update(path)
+            fd, created = MODULE._open_trials_for_update(path)
+            self.assertFalse(created)
             path.write_bytes(b"external\n")
 
             try:
