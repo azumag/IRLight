@@ -188,12 +188,20 @@ def collect_cpu_percent(container_ids: list[str]) -> float:
 
 
 def parse_top_output(output: str) -> list[tuple[int, str]]:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        raise SampleCollectionError("docker top returned no output")
+
+    # Docker Engine needs a PID column in the `ps` header so it can map the
+    # process list back to the container. Keep the header in `docker top`
+    # output, then validate and strip it here before parsing rows.
+    header = lines[0].split()
+    if len(header) != 2 or header[0].upper() != "PID" or header[1].upper() != "STAT":
+        raise SampleCollectionError(f"unexpected docker top header: {lines[0]!r}")
+
     result: list[tuple[int, str]] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        parts = stripped.split(None, 1)
+    for line in lines[1:]:
+        parts = line.split(None, 1)
         if len(parts) != 2 or not parts[0].isdigit() or not parts[1]:
             raise SampleCollectionError(f"unexpected docker top row: {line!r}")
         pid = int(parts[0])
@@ -261,7 +269,7 @@ def aggregate_processes(
 def collect_process_observations(container_ids: list[str]) -> tuple[int, int, int, int]:
     all_rows: list[tuple[int, str]] = []
     for container_id in container_ids:
-        output = run_checked(["docker", "top", container_id, "-eo", "pid=,stat="])
+        output = run_checked(["docker", "top", container_id, "-eo", "pid,stat"])
         all_rows.extend(parse_top_output(output))
     return aggregate_processes(all_rows)
 
