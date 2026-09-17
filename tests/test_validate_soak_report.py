@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +203,60 @@ class ValidateSoakReportTest(unittest.TestCase):
             path.write_bytes(b"{\xff}")
             with self.assertRaisesRegex(SoakReportError, "cannot read report"):
                 load_report(path)
+
+    def test_loader_rejects_symlink_fifo_and_oversized_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            regular = root / "regular.json"
+            regular.write_text(json.dumps(report()), encoding="utf-8")
+
+            link = root / "report-link.json"
+            try:
+                link.symlink_to(regular)
+            except (NotImplementedError, OSError):
+                pass
+            else:
+                with self.assertRaisesRegex(SoakReportError, "regular file"):
+                    load_report(link)
+
+            if hasattr(os, "mkfifo"):
+                fifo = root / "report.fifo"
+                os.mkfifo(fifo)
+                with self.assertRaisesRegex(SoakReportError, "regular file"):
+                    load_report(fifo)
+
+            oversized = root / "oversized.json"
+            oversized.write_bytes(b" " * (MODULE.MAX_REPORT_BYTES + 1))
+            with self.assertRaisesRegex(SoakReportError, "maximum size"):
+                load_report(oversized)
+
+    def test_loader_rejects_path_replacement_between_inspection_and_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "report.json"
+            replacement = root / "replacement.json"
+            path.write_text(json.dumps(report()), encoding="utf-8")
+            replacement.write_text('{"schema_version":1}', encoding="utf-8")
+            original_open = MODULE.os.open
+
+            def replacing_open(target: object, flags: int) -> int:
+                os.replace(replacement, path)
+                return original_open(target, flags)
+
+            with mock.patch.object(MODULE.os, "open", side_effect=replacing_open):
+                with self.assertRaisesRegex(SoakReportError, "changed while opening"):
+                    load_report(path)
+
+    def test_loader_accepts_regular_file_at_size_limit_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            encoded = json.dumps(report()).encode("utf-8")
+            self.assertLess(len(encoded), MODULE.MAX_REPORT_BYTES)
+            encoded += b" " * (MODULE.MAX_REPORT_BYTES - len(encoded))
+            self.assertEqual(len(encoded), MODULE.MAX_REPORT_BYTES)
+            path.write_bytes(encoded)
+            loaded = load_report(path)
+            self.assertEqual(loaded["schema_version"], 1)
 
     def test_run_id_and_strings_are_bounded(self) -> None:
         value = report()
