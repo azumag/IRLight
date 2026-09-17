@@ -60,13 +60,24 @@ class SoakResourceSampleCollectorTest(unittest.TestCase):
                     MODULE.parse_stats_output(json.dumps(value), 1)
 
     def test_parse_top_and_aggregate_process_observations(self) -> None:
-        rows = MODULE.parse_top_output("101 Ssl\n102 Z\n103 R+\n")
+        rows = MODULE.parse_top_output("PID STAT\n101 Ssl\n102 Z\n103 R+\n")
         self.assertEqual(rows, [(101, "Ssl"), (102, "Z"), (103, "R+")])
         observations = {101: (1000, 5), 102: (2000, 1), 103: (3000, 7)}
         memory, processes, zombies, fds = MODULE.aggregate_processes(
             rows, observations.__getitem__
         )
         self.assertEqual((memory, processes, zombies, fds), (6000, 3, 1, 13))
+
+    def test_collect_process_observations_keeps_pid_header_for_docker_engine(self) -> None:
+        with (
+            mock.patch.object(MODULE, "run_checked", return_value="PID STAT\n101 S\n") as run_checked,
+            mock.patch.object(MODULE, "aggregate_processes", return_value=(1, 1, 0, 1)) as aggregate,
+        ):
+            self.assertEqual(MODULE.collect_process_observations(["container-a"]), (1, 1, 0, 1))
+        run_checked.assert_called_once_with(
+            ["docker", "top", "container-a", "-eo", "pid,stat"]
+        )
+        aggregate.assert_called_once_with([(101, "S")])
 
     def test_process_aggregation_rejects_duplicate_pids_and_invalid_proc_values(self) -> None:
         with self.assertRaisesRegex(SampleCollectionError, "duplicate PID"):
@@ -75,8 +86,10 @@ class SoakResourceSampleCollectorTest(unittest.TestCase):
             MODULE.aggregate_processes([(10, "S")], lambda _: (True, 1))
         with self.assertRaisesRegex(SampleCollectionError, "file-descriptor count"):
             MODULE.aggregate_processes([(10, "S")], lambda _: (1, True))
-        with self.assertRaisesRegex(SampleCollectionError, "unexpected docker top row"):
+        with self.assertRaisesRegex(SampleCollectionError, "unexpected docker top header"):
             MODULE.parse_top_output("not-a-pid S")
+        with self.assertRaisesRegex(SampleCollectionError, "unexpected docker top row"):
+            MODULE.parse_top_output("PID STAT\nnot-a-pid S")
 
     def test_media_metrics_are_strict_and_unknown_requires_explicit_opt_in(self) -> None:
         with self.assertRaisesRegex(SampleCollectionError, "media-metrics-file is required"):
