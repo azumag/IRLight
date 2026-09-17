@@ -22,6 +22,8 @@ Custom画像の取得・checksum検証・cache・LRU・Sessionへのasset割当�
 
 custom assetが欠損・空・上限超過・未対応formatの場合はNode defaultへ切り替える。Node defaultまで利用不能な場合だけsynthetic blackへ切り替える。Continuityのローカルhandoff検査では、symlink・FIFO/deviceなどの非regular fileも利用不能として扱い、`lstat -> no-follow/non-blocking open -> fstat -> pathname再確認`で検査中のpath差し替えをfail-closedにする。
 
+検査に成功した画像は、その時点で開いたregular-file descriptorをContinuity pipeline終了まで保持する。GStreamerには元のpathnameではなく`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡すため、検査後に元pathnameが別inodeへunlink/recreate・symlink差し替えされても、decoderは検査済みinodeから読み込む。descriptorが失効・再利用されidentityを確認できない場合は、元pathnameへ戻らずsynthetic blackへfail-closedする。
+
 GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだけ読み、PNG/JPEG/WebPの幅・高さを取得する。幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで極端なdimension宣言をそのままdecoderへ渡さないための追加防御であり、完全な画像decodeや展開後メモリ量の保証ではない。
 
 ## Diagnostics
@@ -43,4 +45,4 @@ GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだ�
 
 ## Security boundary
 
-Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/dimension検査とsymlink・special-file拒否を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではなく、GStreamerが画像をdecodeする時点までの完全なfilesystem transactionも提供しない。malformed imageの完全decode検証、decompression bombの展開量保証、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
+Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/dimension検査、symlink・special-file拒否、検査済みinodeへのdecoder handoff固定を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではない。同じinodeの内容を別writerが検査後にin-place変更するケース、malformed imageの完全decode検証、decompression bombの展開量保証、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
