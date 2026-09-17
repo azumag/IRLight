@@ -32,9 +32,40 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _open_trials_readonly(path: Path) -> Any:
+    """Open one stable regular-file snapshot without following a symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise CapacityAssemblyError(f"cannot inspect trials: {exc}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise CapacityAssemblyError("trials JSONL must be a regular file")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise CapacityAssemblyError(f"cannot open trials: {exc}") from exc
+    try:
+        after = os.fstat(fd)
+        if not stat.S_ISREG(after.st_mode):
+            raise CapacityAssemblyError("trials JSONL must be a regular file")
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise CapacityAssemblyError("trials JSONL changed while opening")
+        return os.fdopen(fd, "r", encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def load_trials_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
-        raw = path.read_text(encoding="utf-8")
+        with _open_trials_readonly(path) as handle:
+            raw = handle.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise CapacityAssemblyError(f"cannot read trials: {exc}") from exc
 

@@ -95,6 +95,29 @@ class CapacityReportAssemblyTest(unittest.TestCase):
                 any(call.args[1] == MODULE.fcntl.LOCK_SH for call in flock.call_args_list)
             )
 
+    def test_snapshot_rejects_symbolic_link_trials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "real-trials.jsonl"
+            alias = root / "trials.jsonl"
+            target.write_text(json.dumps(trial(1, "pass")) + "\n", encoding="utf-8")
+            alias.symlink_to(target)
+
+            with self.assertRaisesRegex(CapacityAssemblyError, "regular file"):
+                MODULE.load_trials_snapshot(alias)
+
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                json.dumps(trial(1, "pass")) + "\n",
+            )
+
+    def test_snapshot_rejects_non_regular_trials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.mkdir()
+            with self.assertRaisesRegex(CapacityAssemblyError, "regular file"):
+                MODULE.load_trials_snapshot(path)
+
     def test_canonical_validator_rejects_invalid_boundary(self) -> None:
         with self.assertRaisesRegex(CapacityAssemblyError, "assembled report is invalid"):
             MODULE.assemble_report(
