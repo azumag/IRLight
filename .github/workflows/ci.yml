@@ -97,7 +97,10 @@ jobs:
       - name: Exercise Docker integration smoke suite
         run: bash ./scripts/ci-docker-smoke-suite.sh
       - name: Exercise measured soak evidence chain
-        run: bash ./scripts/smoke-measured-soak-evidence.sh
+        # The collector totals file descriptors from host /proc for container
+        # processes. GitHub-hosted container processes are commonly root-owned,
+        # so the otherwise read-only probe needs host process inspection access.
+        run: sudo bash ./scripts/smoke-measured-soak-evidence.sh
 
   # Compatibility gates retain the previous check names for repositories that
   # may require them in branch protection. The actual scenarios run once in the
