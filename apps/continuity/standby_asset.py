@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -13,21 +13,63 @@ MAX_IMAGE_DIMENSION = 16_384
 NODE_DEFAULT_IMAGE_PATH = "/opt/irlight/assets/default-standby.png"
 
 
-@dataclass(frozen=True)
+@dataclass
 class StandbyAssetSelection:
     source: str
     path: Path | None
     fallback_reason: str | None
     custom_configured: bool
+    _pinned_fd: int | None = field(default=None, repr=False, compare=False)
+    _pinned_identity: tuple[int, int] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def close(self) -> None:
+        """Release the validated standby inode without closing a reused fd."""
+
+        fd = self._pinned_fd
+        identity = self._pinned_identity
+        self._pinned_fd = None
+        self._pinned_identity = None
+        if fd is None:
+            return
+
+        try:
+            opened = os.fstat(fd)
+        except OSError:
+            return
+        if identity is not None and (opened.st_dev, opened.st_ino) != identity:
+            return
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown can tear down module globals before objects.
+            pass
 
 
-def _read_regular_file_prefix(path: Path) -> bytes | None:
-    """Read a bounded prefix from one stable, non-symlink regular file.
+def _close_fd_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _open_regular_file_prefix(
+    path: Path,
+) -> tuple[bytes, int, tuple[int, int]] | None:
+    """Open one stable regular file and return a bounded prefix plus pinned fd.
 
     Standby paths are a trusted Node-local handoff, but they can still be
     misconfigured to a symlink/FIFO/device or be replaced while Continuity is
     checking them. Keep validation non-blocking and fail closed rather than
-    following a link or opening a special file.
+    following a link or opening a special file. The successful fd remains open
+    so later decoder handoff can stay bound to the inode that was validated.
     """
 
     # Reject obvious special files before open. This is only a fast safety
@@ -54,18 +96,19 @@ def _read_regular_file_prefix(path: Path) -> bytes | None:
     try:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
-            return None
+            raise ValueError("standby asset is not a regular file")
         if opened.st_size <= 0 or opened.st_size > MAX_IMAGE_BYTES:
-            return None
+            raise ValueError("standby asset size is outside the allowed range")
 
         # Bind the validated pathname to the fd we actually opened. Keeping
         # that fd alive means its inode cannot be recycled while this check is
         # performed, so a path replacement after open is detected reliably.
         after = os.lstat(path)
         if not stat.S_ISREG(after.st_mode):
-            return None
-        if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
-            return None
+            raise ValueError("standby asset path stopped being a regular file")
+        identity = (opened.st_dev, opened.st_ino)
+        if (after.st_dev, after.st_ino) != identity:
+            raise ValueError("standby asset path changed during validation")
 
         remaining = min(opened.st_size, MAX_IMAGE_HEADER_BYTES)
         chunks: list[bytes] = []
@@ -75,11 +118,11 @@ def _read_regular_file_prefix(path: Path) -> bytes | None:
                 break
             chunks.append(chunk)
             remaining -= len(chunk)
-        return b"".join(chunks)
-    except OSError:
+        os.lseek(fd, 0, os.SEEK_SET)
+        return b"".join(chunks), fd, identity
+    except (OSError, ValueError):
+        _close_fd_quietly(fd)
         return None
-    finally:
-        os.close(fd)
 
 
 def _png_dimensions(payload: bytes) -> tuple[int, int] | None:
@@ -216,13 +259,17 @@ def _dimensions_are_safe(dimensions: tuple[int, int]) -> bool:
     return width <= MAX_IMAGE_PIXELS // height
 
 
-def _is_supported_image(path: Path) -> bool:
-    prefix = _read_regular_file_prefix(path)
-    if prefix is None:
-        return False
+def _open_supported_image(path: Path) -> tuple[int, tuple[int, int]] | None:
+    opened = _open_regular_file_prefix(path)
+    if opened is None:
+        return None
 
+    prefix, fd, identity = opened
     dimensions = _supported_image_dimensions(prefix)
-    return dimensions is not None and _dimensions_are_safe(dimensions)
+    if dimensions is None or not _dimensions_are_safe(dimensions):
+        _close_fd_quietly(fd)
+        return None
+    return fd, identity
 
 
 def resolve_standby_asset(
@@ -234,7 +281,8 @@ def resolve_standby_asset(
     ``custom_path`` is expected to be a Node-prefetched, already validated image.
     These cheap local checks cover missing, empty, oversized, non-regular,
     symlinked, unsupported, and excessive-dimension handoffs; deep decode/content
-    validation belongs to Issue #7.
+    validation belongs to Issue #7. A successful selection owns an open fd for
+    the validated inode until the Continuity pipeline releases it.
     """
 
     custom = (custom_path or "").strip()
@@ -243,22 +291,30 @@ def resolve_standby_asset(
 
     if custom:
         candidate = Path(custom)
-        if _is_supported_image(candidate):
+        opened = _open_supported_image(candidate)
+        if opened is not None:
+            fd, identity = opened
             return StandbyAssetSelection(
                 source="CUSTOM",
                 path=candidate,
                 fallback_reason=None,
                 custom_configured=True,
+                _pinned_fd=fd,
+                _pinned_identity=identity,
             )
 
     if fallback:
         candidate = Path(fallback)
-        if _is_supported_image(candidate):
+        opened = _open_supported_image(candidate)
+        if opened is not None:
+            fd, identity = opened
             return StandbyAssetSelection(
                 source="NODE_DEFAULT",
                 path=candidate,
                 fallback_reason="ASSET_UNAVAILABLE" if custom_configured else None,
                 custom_configured=custom_configured,
+                _pinned_fd=fd,
+                _pinned_identity=identity,
             )
 
     return StandbyAssetSelection(
@@ -273,13 +329,45 @@ def resolve_standby_asset(
     )
 
 
+def _pinned_fd_uri(selection: StandbyAssetSelection) -> str | None:
+    fd = selection._pinned_fd
+    identity = selection._pinned_identity
+    if fd is None or identity is None:
+        return None
+
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(opened.st_mode):
+        return None
+    if (opened.st_dev, opened.st_ino) != identity:
+        return None
+
+    # GStreamer opens a fresh descriptor through the process fd alias, so it
+    # sees the already validated inode even if the original pathname is later
+    # replaced. /proc is the production Linux path; /dev/fd keeps local Unix
+    # development environments working where that alias is available instead.
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        alias = base / str(fd)
+        try:
+            target = os.stat(alias)
+        except OSError:
+            continue
+        if (target.st_dev, target.st_ino) == identity:
+            return alias.as_uri()
+    return None
+
+
 def gst_standby_source(selection: StandbyAssetSelection) -> str:
     """Return only the source portion used before the existing raw-video caps."""
 
     if selection.path is None:
         return "videotestsrc name=standby_video is-live=true pattern=black !"
 
-    uri = selection.path.resolve().as_uri()
+    uri = _pinned_fd_uri(selection)
+    if uri is None:
+        return "videotestsrc name=standby_video is-live=true pattern=black !"
     escaped = uri.replace("\\", "\\\\").replace('"', '\\"')
     return (
         f'uridecodebin name=standby_image_decode uri="{escaped}" ! '
