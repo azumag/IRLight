@@ -98,18 +98,25 @@ def _open_lock_dir(path: Path) -> int:
         flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
         fd = os.open(path, flags)
         opened_stat = os.fstat(fd)
         if not stat.S_ISDIR(opened_stat.st_mode) or not _same_file(path_stat, opened_stat):
-            os.close(fd)
             raise DestinationProbeAdmissionUnavailable(
                 "destination verification admission is unavailable"
             )
         return fd
     except DestinationProbeAdmissionUnavailable:
+        if fd is not None:
+            os.close(fd)
         raise
     except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         ) from exc
@@ -133,17 +140,24 @@ def _open_slot(lock_dir_fd: int, slot_name: str) -> int:
     flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
         fd = os.open(slot_name, flags, 0o600, dir_fd=lock_dir_fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            os.close(fd)
             raise DestinationProbeAdmissionUnavailable(
                 "destination verification admission is unavailable"
             )
         return fd
     except DestinationProbeAdmissionUnavailable:
+        if fd is not None:
+            os.close(fd)
         raise
     except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         ) from exc
