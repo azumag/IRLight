@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKLIST = ROOT / "docs" / "release-acceptance-checklist.json"
+CAPACITY_REPORT_VALIDATOR = ROOT / "scripts" / "validate-node-capacity-report.py"
 MAX_CHECKLIST_BYTES = 128 * 1024
 
 ALLOWED_STATUSES = {"pending", "partial", "blocked", "satisfied"}
@@ -82,6 +84,46 @@ def _validate_repo_evidence(path_text: object) -> str:
     return path_text
 
 
+def _load_capacity_report_validator() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "irlight_release_capacity_report_validator",
+        CAPACITY_REPORT_VALIDATOR,
+    )
+    if spec is None or spec.loader is None:
+        raise ChecklistValidationError("Node capacity report validator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except (OSError, ImportError) as exc:
+        raise ChecklistValidationError(
+            "Node capacity report validator could not be loaded"
+        ) from exc
+    return module
+
+
+def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
+    """Require a canonical capacity report before capacity can be marked satisfied."""
+
+    validator = _load_capacity_report_validator()
+    failures: list[str] = []
+    for path_text in evidence_paths:
+        candidate = ROOT / path_text
+        try:
+            validator.validate_report(validator.load_report(candidate))
+        except (validator.CapacityReportError, OSError, UnicodeError) as exc:
+            failures.append(f"{path_text}: {exc}")
+            continue
+        return
+
+    detail = "; ".join(failures[:3])
+    if detail:
+        detail = f" ({detail})"
+    raise ChecklistValidationError(
+        "node-capacity-load: satisfied status requires at least one canonical "
+        f"Node capacity report{detail}"
+    )
+
+
 def validate_checklist(payload: dict[str, Any]) -> None:
     if set(payload) != TOP_LEVEL_FIELDS:
         raise ChecklistValidationError("checklist has an unexpected top-level shape")
@@ -143,6 +185,8 @@ def validate_checklist(payload: dict[str, Any]) -> None:
             raise ChecklistValidationError(
                 f"{item_id}: satisfied items require repository evidence"
             )
+        if item_id == "node-capacity-load" and status == "satisfied":
+            _validate_node_capacity_evidence(normalized_evidence)
 
         if item["required"]:
             required_statuses[item_id] = status

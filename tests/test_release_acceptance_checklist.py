@@ -59,6 +59,77 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         with self.assertRaisesRegex(module.ChecklistValidationError, "require repository evidence"):
             module.validate_checklist(payload)
 
+    def test_node_capacity_satisfied_rejects_arbitrary_repository_evidence(self) -> None:
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = ["docs/node-capacity-load-evidence.md"]
+
+        with self.assertRaisesRegex(
+            module.ChecklistValidationError, "canonical Node capacity report"
+        ):
+            module.validate_checklist(payload)
+
+    def test_node_capacity_satisfied_accepts_valid_canonical_report(self) -> None:
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
+        )
+        fd, name = tempfile.mkstemp(
+            prefix=".release-capacity-test-",
+            suffix=".json",
+            dir=ROOT,
+        )
+        os.close(fd)
+        report_path = Path(name)
+        self.addCleanup(report_path.unlink, missing_ok=True)
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "8f75d865-5e7c-4ffd-a5dc-e73fab5f39e1",
+                    "node_profile": "unit-test node profile",
+                    "software_revision": "0123456789abcdef0123456789abcdef01234567",
+                    "scenario": "unit-test approved acceptance policy",
+                    "safety_margin_percent": 25,
+                    "trials": [
+                        {
+                            "concurrent_sessions": 2,
+                            "duration_seconds": 120,
+                            "outcome": "pass",
+                            "cpu_peak_percent": 50.0,
+                            "memory_rss_peak_bytes": 1000,
+                            "egress_peak_bps": 1000.0,
+                            "failed_sessions": 0,
+                            "unexpected_reconnects": 0,
+                        },
+                        {
+                            "concurrent_sessions": 4,
+                            "duration_seconds": 120,
+                            "outcome": "fail",
+                            "cpu_peak_percent": 90.0,
+                            "memory_rss_peak_bytes": 2000,
+                            "egress_peak_bps": 2000.0,
+                            "failed_sessions": 1,
+                            "unexpected_reconnects": 0,
+                        },
+                    ],
+                    "notes": "unit-test evidence",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = [
+            "docs/node-capacity-load-evidence.md",
+            report_path.relative_to(ROOT).as_posix(),
+        ]
+
+        module.validate_checklist(payload)
+
     def test_missing_evidence_path_is_rejected(self) -> None:
         payload = self._canonical()
         item = next(

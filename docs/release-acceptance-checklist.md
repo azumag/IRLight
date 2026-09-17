@@ -18,6 +18,8 @@ python -m unittest tests.test_release_acceptance_checklist -v
 
 `qa_acceptance_ready` is deliberately fail-closed. The validator accepts `true` only when every required item is `satisfied`. A satisfied item must reference at least one existing repository file. Evidence paths are repository-relative, cannot escape the repository, and must resolve to regular files.
 
+`node-capacity-load` has an additional semantic gate: when that item is marked `satisfied`, at least one referenced evidence file must itself pass the canonical schema-v1 validator in `scripts/validate-node-capacity-report.py`. Documentation, workflow definitions, or other repository files may be supplementary evidence, but they cannot by themselves satisfy the capacity item. The capacity report validator proves the report shape, measured pass/fail boundary, explicit safety margin, and derived recommendation are internally consistent; it does **not** prove that measurements are real. Operators must still commit sanitized evidence from the actual intended Node profile and approved workload instead of fabricating a synthetic report merely to satisfy the machine gate.
+
 Repository evidence proves only what the referenced artifact actually demonstrates. In particular, FFmpeg CI must not be promoted into an OBS/mobile/hardware claim, local MediaMTX must not be promoted into Twitch/YouTube/Kick compatibility, and a short PR smoke run must not be promoted into a six-hour soak result.
 
 ## Current acceptance state
@@ -31,6 +33,7 @@ Before changing an item to `satisfied`:
 1. Commit sanitized, reproducible evidence to the repository. Manual compatibility evidence should follow `docs/compatibility-testing.md` and `docs/compatibility-reports/README.md`.
 2. Reference only the repository files that directly support the claim. Do not commit stream keys, SRT passphrases, tokens, private keys, credential-bearing URLs, or raw logs containing secrets.
 3. Keep long-running acceptance evidence separate from normal PR smoke tests. `AGENTS.md` keeps ordinary Docker validation bounded; a six-hour soak should be an explicit acceptance run with a recorded result.
-4. Run the validator and focused unit test above. Normal pull-request CI remains the merge gate.
+4. For `node-capacity-load`, include the sanitized canonical capacity report generated from the real run; helper scripts or documentation alone are not sufficient evidence.
+5. Run the validator and focused unit test above. Normal pull-request CI remains the merge gate.
 
 If an external device, account, hardware encoder, or paid platform is unavailable, leave the item `pending` or `blocked` and record the decision in the relevant Issue instead of manufacturing evidence.

@@ -65,7 +65,7 @@
       "required": true,
       "status": "pending",
       "evidence": [],
-      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target."
+      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target; satisfied also requires a repository capacity report accepted by the canonical capacity validator."
     },
     {
       "id": "beta-release-checklist",
