@@ -27,6 +27,10 @@ def _read_regular_file_header(path: Path) -> bytes | None:
     following a link or opening a special file.
     """
 
+    # Reject obvious special files before open. This is only a fast safety
+    # check; the opened fd plus the post-open pathname identity check below are
+    # authoritative, so inode reuse before open cannot make an old lstat result
+    # look like proof for the file that was actually opened.
     try:
         before = os.lstat(path)
     except OSError:
@@ -48,14 +52,12 @@ def _read_regular_file_header(path: Path) -> bytes | None:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
             return None
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            return None
         if opened.st_size <= 0 or opened.st_size > MAX_IMAGE_BYTES:
             return None
 
-        # Re-check the pathname after open. O_NOFOLLOW protects the normal
-        # Linux runtime, while the identity check also keeps the fallback safe
-        # on platforms where that flag is unavailable.
+        # Bind the validated pathname to the fd we actually opened. Keeping
+        # that fd alive means its inode cannot be recycled while this check is
+        # performed, so a path replacement after open is detected reliably.
         after = os.lstat(path)
         if not stat.S_ISREG(after.st_mode):
             return None
