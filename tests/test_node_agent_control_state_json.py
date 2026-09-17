@@ -59,13 +59,33 @@ class NodeAgentControlStateJsonTest(unittest.TestCase):
             },
         )
 
+    def test_missing_authority_fields_keep_legacy_bootstrap_defaults(self) -> None:
+        with patch("agent.time.time", return_value=1234.5):
+            self.agent.seed_control_state({})
+
+        state = json.loads(self.control_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state,
+            {
+                "audio_mode": "LIVE",
+                "version": 0,
+                "command_id": None,
+                "idempotency_key": None,
+                "updated_at": 1234.5,
+            },
+        )
+
     def test_seed_control_state_rejects_invalid_control_fields_before_write(self) -> None:
         cases = {
+            "unhashable mode": {"audio_mode": ["LIVE"]},
+            "non-string mode": {"audio_mode": {"value": "LIVE"}},
             "boolean version": {"audio_version": True},
             "negative version": {"audio_version": -1},
             "invalid command id": {"audio_command_id": "not-a-uuid"},
+            "empty idempotency key": {"audio_idempotency_key": ""},
             "oversized idempotency key": {"audio_idempotency_key": "x" * 201},
             "boolean update time": {"audio_updated_at": True},
+            "negative update time": {"audio_updated_at": -0.1},
             "nan update time": {"audio_updated_at": float("nan")},
             "positive infinity update time": {"audio_updated_at": float("inf")},
             "negative infinity update time": {"audio_updated_at": float("-inf")},
