@@ -146,8 +146,8 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
         raise CapacityReportError("notes must be a string up to 4000 characters")
 
     margin = report["safety_margin_percent"]
-    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 99:
-        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 99")
+    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 90:
+        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 90")
 
     trials = report["trials"]
     if not isinstance(trials, list) or len(trials) < 2:
@@ -216,7 +216,7 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     if first_fail <= highest_pass:
         raise CapacityReportError("first failing load level must be above the highest passing level")
 
-    recommended = math.floor(highest_pass * (100 - margin) / 100)
+    recommended = highest_pass * (100 - margin) // 100
     if recommended < 1:
         raise CapacityReportError(
             "evidence does not support a positive max_sessions after applying the safety margin"
