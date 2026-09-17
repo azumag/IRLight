@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,6 +215,45 @@ class CapacityTrialRecorderTest(unittest.TestCase):
                 os.close(fd)
 
             self.assertEqual(path.read_bytes(), b"external\n")
+
+    def test_partial_append_failure_rolls_back_existing_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            result, _, stderr = run_main(cli_args(path, sessions=1))
+            self.assertEqual(result, 0, stderr)
+            before = path.read_bytes()
+
+            def fail_after_partial_write(fd: int, payload: bytes) -> None:
+                os.write(fd, payload[: max(1, len(payload) // 2)])
+                raise MODULE.CapacityTrialRecordError("injected write failure")
+
+            with mock.patch.object(
+                MODULE, "_write_all", side_effect=fail_after_partial_write
+            ):
+                result, _, stderr = run_main(
+                    cli_args(path, sessions=4, outcome="fail")
+                )
+
+            self.assertEqual(result, 2)
+            self.assertIn("injected write failure", stderr)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_partial_first_append_failure_removes_new_evidence_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+
+            def fail_after_partial_write(fd: int, payload: bytes) -> None:
+                os.write(fd, payload[: max(1, len(payload) // 2)])
+                raise MODULE.CapacityTrialRecordError("injected write failure")
+
+            with mock.patch.object(
+                MODULE, "_write_all", side_effect=fail_after_partial_write
+            ):
+                result, _, stderr = run_main(cli_args(path, sessions=1))
+
+            self.assertEqual(result, 2)
+            self.assertIn("injected write failure", stderr)
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":
