@@ -346,15 +346,16 @@ class NodeAgent:
     def seed_control_state(self, response: dict[str, object]) -> None:
         """Seed a fresh node's audio authority before Continuity starts.
 
-        The Control Plane state volume is not present on a production media
-        node.  A bootstrap response therefore carries the initial command;
-        existing state is never overwritten, preserving operator changes over
+        Missing authority fields keep the legacy mixed-version defaults.  A
+        present field, however, must satisfy the fixed control-state schema so
+        malformed bootstrap data can never become persisted authority.
+        Existing state is never overwritten, preserving operator changes over
         agent restarts.
         """
         if self.control_state_path is None or self.control_state_path.exists():
             return
         mode = response.get("audio_mode", "LIVE")
-        if mode not in {"LIVE", "MUTED"}:
+        if not isinstance(mode, str) or mode not in {"LIVE", "MUTED"}:
             raise RuntimeError("bootstrap response has unsupported audio mode")
         version = response.get("audio_version", 0)
         if isinstance(version, bool) or not isinstance(version, int) or version < 0:
@@ -371,7 +372,9 @@ class NodeAgent:
                 ) from exc
         idempotency_key = response.get("audio_idempotency_key")
         if idempotency_key is not None and (
-            not isinstance(idempotency_key, str) or len(idempotency_key) > 200
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 200
         ):
             raise RuntimeError("bootstrap response has invalid audio idempotency key")
         updated_at_raw = response.get("audio_updated_at", time.time())
@@ -385,7 +388,7 @@ class NodeAgent:
             raise RuntimeError(
                 "bootstrap response has invalid audio update time"
             ) from None
-        if not math.isfinite(updated_at):
+        if not math.isfinite(updated_at) or updated_at < 0:
             raise RuntimeError("bootstrap response has invalid audio update time")
         payload = {
             "audio_mode": mode,
