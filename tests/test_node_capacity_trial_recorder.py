@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -158,6 +159,27 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertIn("symbolic link", stderr)
             self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_pinned_fd_refuses_replaced_path_without_touching_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "trials.jsonl"
+            path.write_bytes(b"")
+            fd = MODULE._open_trials_for_update(path)
+            moved = directory / "opened-inode.jsonl"
+            os.replace(path, moved)
+            path.write_text("replacement\n", encoding="utf-8")
+
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.CapacityTrialRecordError, "changed while recording"
+                ):
+                    MODULE._append_line_fd(fd, path, "candidate\n")
+            finally:
+                os.close(fd)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "replacement\n")
+            self.assertEqual(moved.read_bytes(), b"")
 
 
 if __name__ == "__main__":
