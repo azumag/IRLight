@@ -5,6 +5,11 @@ The validator intentionally does not invent release thresholds for resource
 trends. It verifies that a claimed successful run contains complete, ordered,
 finite observations and verified cleanup, then emits deterministic deltas that
 can be reviewed or gated by a separately approved policy.
+
+Canonical report inputs are limited to 2 MiB and must be stable regular files.
+The loader rejects symlinks and non-regular files and pins the opened inode
+before reading so validation cannot block on a FIFO/device or silently switch
+to a different path target between inspection and open.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import stat
 import sys
 import uuid
 from pathlib import Path
@@ -46,6 +53,7 @@ SAMPLE_FIELDS = {
 }
 CLEANUP_FIELDS = {"verified", "details"}
 OUTCOMES = {"pass", "fail", "aborted"}
+MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
 def _reject_constant(value: str) -> None:
@@ -61,9 +69,53 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _open_report_readonly(path: Path) -> Any:
+    """Open one stable regular-file report without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise SoakReportError(f"cannot inspect report: {exc}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise SoakReportError("report must be a regular file")
+    if before.st_size > MAX_REPORT_BYTES:
+        raise SoakReportError(
+            f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+        )
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise SoakReportError(f"cannot open report: {exc}") from exc
+    try:
+        after = os.fstat(fd)
+        if not stat.S_ISREG(after.st_mode):
+            raise SoakReportError("report must be a regular file")
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise SoakReportError("report changed while opening")
+        if after.st_size > MAX_REPORT_BYTES:
+            raise SoakReportError(
+                f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+            )
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def load_report(path: Path) -> dict[str, Any]:
     try:
-        raw = path.read_text(encoding="utf-8")
+        with _open_report_readonly(path) as handle:
+            raw_bytes = handle.read(MAX_REPORT_BYTES + 1)
+        if len(raw_bytes) > MAX_REPORT_BYTES:
+            raise SoakReportError(
+                f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+            )
+        raw = raw_bytes.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise SoakReportError(f"cannot read report: {exc}") from exc
     try:
