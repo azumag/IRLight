@@ -62,46 +62,130 @@ def _open_lock(path: Path) -> Any:
         raise
 
 
-def _needs_line_separator(path: Path) -> bool:
-    flags = os.O_RDONLY
+def _open_trials_for_update(path: Path) -> int:
+    """Open or create the evidence file once and pin the validated inode."""
+
+    flags = os.O_RDWR | os.O_APPEND
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        try:
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as exc:
+            raise CapacityTrialRecordError(
+                "trials JSONL appeared while opening"
+            ) from exc
+        except OSError as exc:
+            raise CapacityTrialRecordError(
+                f"cannot create trials JSONL: {exc}"
+            ) from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise CapacityTrialRecordError("trials JSONL must be a regular file")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    except OSError as exc:
+        raise CapacityTrialRecordError(f"cannot inspect trials JSONL: {exc}") from exc
+
+    if not stat.S_ISREG(before.st_mode):
+        raise CapacityTrialRecordError("trials JSONL must be a regular file")
     try:
         fd = os.open(path, flags)
     except OSError as exc:
-        raise CapacityTrialRecordError(f"cannot inspect trials JSONL ending: {exc}") from exc
+        raise CapacityTrialRecordError(f"cannot open trials JSONL: {exc}") from exc
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
+        after = os.fstat(fd)
+        if not stat.S_ISREG(after.st_mode):
             raise CapacityTrialRecordError("trials JSONL must be a regular file")
-        if info.st_size == 0:
-            return False
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise CapacityTrialRecordError("trials JSONL changed while opening")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _verify_trials_path(fd: int, path: Path) -> os.stat_result:
+    """Ensure the public path still names the inode pinned by fd."""
+
+    try:
+        current = os.lstat(path)
+        opened = os.fstat(fd)
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot verify trials JSONL identity: {exc}"
+        ) from exc
+    if not stat.S_ISREG(current.st_mode) or not stat.S_ISREG(opened.st_mode):
+        raise CapacityTrialRecordError("trials JSONL must be a regular file")
+    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise CapacityTrialRecordError("trials JSONL changed while recording")
+    return opened
+
+
+def _read_trials_fd(fd: int) -> str:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CapacityTrialRecordError(f"cannot read trials JSONL: {exc}") from exc
+
+
+def _needs_line_separator_fd(fd: int, info: os.stat_result) -> bool:
+    if info.st_size == 0:
+        return False
+    try:
         os.lseek(fd, -1, os.SEEK_END)
         return os.read(fd, 1) != b"\n"
-    finally:
-        os.close(fd)
-
-
-def _append_line(path: Path, line: str, *, prepend_newline: bool = False) -> None:
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o600)
     except OSError as exc:
-        raise CapacityTrialRecordError(f"cannot open trials JSONL for append: {exc}") from exc
+        raise CapacityTrialRecordError(
+            f"cannot inspect trials JSONL ending: {exc}"
+        ) from exc
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        try:
+            written = os.write(fd, view)
+        except OSError as exc:
+            raise CapacityTrialRecordError(
+                f"cannot append trials JSONL: {exc}"
+            ) from exc
+        if written <= 0:
+            raise CapacityTrialRecordError("cannot append trials JSONL: short write")
+        view = view[written:]
+
+
+def _append_line_fd(
+    fd: int,
+    path: Path,
+    line: str,
+    *,
+    prepend_newline: bool = False,
+) -> None:
+    """Append through the same inode that was parsed and validated."""
+
+    _verify_trials_path(fd, path)
+    payload = (("\n" if prepend_newline else "") + line).encode("utf-8")
+    _write_all(fd, payload)
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise CapacityTrialRecordError("trials JSONL must be a regular file")
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(("\n" if prepend_newline else "") + line)
-            handle.flush()
-            os.fsync(handle.fileno())
-    finally:
-        if fd >= 0:
-            os.close(fd)
+        os.fsync(fd)
+    except OSError as exc:
+        raise CapacityTrialRecordError(f"cannot sync trials JSONL: {exc}") from exc
+    _verify_trials_path(fd, path)
 
 
 def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
@@ -124,32 +208,38 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
     lock_path = path.with_name(f"{path.name}.lock")
     with _open_lock(lock_path) as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-
-        if path.is_symlink():
-            raise CapacityTrialRecordError("trials JSONL must not be a symbolic link")
-        if path.exists() and not path.is_file():
-            raise CapacityTrialRecordError("trials JSONL must be a regular file")
-
+        fd = _open_trials_for_update(path)
         try:
-            existing = assembler.load_trials_jsonl(path) if path.exists() else []
-            normalized = validator.normalize_trials(existing + [recorded], minimum_count=1)
-        except (ValueError, TypeError, OverflowError) as exc:
-            raise CapacityTrialRecordError(f"trial sequence is invalid: {exc}") from exc
+            info = _verify_trials_path(fd, path)
+            raw = _read_trials_fd(fd)
+            existing = assembler.parse_trials_jsonl(raw) if raw else []
+            try:
+                normalized = validator.normalize_trials(
+                    existing + [recorded], minimum_count=1
+                )
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise CapacityTrialRecordError(
+                    f"trial sequence is invalid: {exc}"
+                ) from exc
 
-        recorded = normalized[-1]
-        line = (
-            json.dumps(
-                recorded,
-                ensure_ascii=False,
-                sort_keys=True,
-                allow_nan=False,
-                separators=(",", ":"),
+            recorded = normalized[-1]
+            line = (
+                json.dumps(
+                    recorded,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        prepend_newline = path.exists() and _needs_line_separator(path)
-        _append_line(path, line, prepend_newline=prepend_newline)
-        return recorded
+            prepend_newline = _needs_line_separator_fd(fd, info)
+            _append_line_fd(fd, path, line, prepend_newline=prepend_newline)
+            return recorded
+        except assembler.CapacityAssemblyError as exc:
+            raise CapacityTrialRecordError(f"trial sequence is invalid: {exc}") from exc
+        finally:
+            os.close(fd)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
