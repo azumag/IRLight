@@ -18,6 +18,9 @@ class CapacityTrialRecordError(ValueError):
     """Raised when a raw capacity trial cannot be safely recorded."""
 
 
+MAX_TRIALS_JSONL_BYTES = 1 * 1024 * 1024
+
+
 def _load_script(filename: str, module_name: str) -> Any:
     path = Path(__file__).with_name(filename)
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -98,6 +101,10 @@ def _open_trials_for_update(path: Path) -> tuple[int, bool]:
         raise CapacityTrialRecordError("trials JSONL must not be a symbolic link")
     if not stat.S_ISREG(before.st_mode):
         raise CapacityTrialRecordError("trials JSONL must be a regular file")
+    if before.st_size > MAX_TRIALS_JSONL_BYTES:
+        raise CapacityTrialRecordError(
+            f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+        )
     try:
         fd = os.open(path, flags)
     except OSError as exc:
@@ -108,6 +115,10 @@ def _open_trials_for_update(path: Path) -> tuple[int, bool]:
             raise CapacityTrialRecordError("trials JSONL must be a regular file")
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise CapacityTrialRecordError("trials JSONL changed while opening")
+        if after.st_size > MAX_TRIALS_JSONL_BYTES:
+            raise CapacityTrialRecordError(
+                f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+            )
         return fd, False
     except Exception:
         os.close(fd)
@@ -135,19 +146,37 @@ def _verify_trials_path(
         raise CapacityTrialRecordError("trials JSONL changed while recording")
     if expected_size is not None and opened.st_size != expected_size:
         raise CapacityTrialRecordError("trials JSONL changed while recording")
+    if opened.st_size > MAX_TRIALS_JSONL_BYTES:
+        raise CapacityTrialRecordError(
+            f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+        )
     return opened
 
 
 def _read_trials_fd(fd: int) -> str:
     try:
+        info = os.fstat(fd)
+        if info.st_size > MAX_TRIALS_JSONL_BYTES:
+            raise CapacityTrialRecordError(
+                f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+            )
         os.lseek(fd, 0, os.SEEK_SET)
         chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, 1024 * 1024)
+        remaining = MAX_TRIALS_JSONL_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
             if not chunk:
                 break
             chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8")
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > MAX_TRIALS_JSONL_BYTES:
+            raise CapacityTrialRecordError(
+                f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+            )
+        return raw.decode("utf-8")
+    except CapacityTrialRecordError:
+        raise
     except (OSError, UnicodeDecodeError) as exc:
         raise CapacityTrialRecordError(f"cannot read trials JSONL: {exc}") from exc
 
@@ -244,6 +273,10 @@ def _append_line_fd(
 
     before = _verify_trials_path(fd, path, expected_size=expected_size)
     payload = (("\n" if prepend_newline else "") + line).encode("utf-8")
+    if before.st_size + len(payload) > MAX_TRIALS_JSONL_BYTES:
+        raise CapacityTrialRecordError(
+            f"trials JSONL would exceed maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+        )
     try:
         _write_all(fd, payload)
         try:
