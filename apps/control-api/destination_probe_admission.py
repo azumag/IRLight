@@ -74,38 +74,110 @@ class DestinationProbeAdmissionConfig:
         return cls(max_concurrent=parsed, lock_dir=lock_dir)
 
 
-def _prepare_lock_dir(path: Path) -> None:
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _open_lock_dir(path: Path) -> int:
+    """Create and pin the configured admission directory without following it."""
+
     try:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        stat_result = path.lstat()
+        path_stat = path.lstat()
     except OSError as exc:
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         ) from exc
-    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISDIR(stat_result.st_mode):
+    if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISDIR(path_stat.st_mode):
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         )
 
-
-def _open_slot(path: Path) -> int:
-    flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
-        fd = os.open(path, flags, 0o600)
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            os.close(fd)
+        fd = os.open(path, flags)
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISDIR(opened_stat.st_mode) or not _same_file(path_stat, opened_stat):
             raise DestinationProbeAdmissionUnavailable(
                 "destination verification admission is unavailable"
             )
         return fd
     except DestinationProbeAdmissionUnavailable:
+        if fd is not None:
+            os.close(fd)
         raise
     except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         raise DestinationProbeAdmissionUnavailable(
             "destination verification admission is unavailable"
         ) from exc
+
+
+def _lock_dir_matches_path(path: Path, lock_dir_fd: int) -> bool:
+    try:
+        path_stat = path.lstat()
+        opened_stat = os.fstat(lock_dir_fd)
+    except OSError:
+        return False
+    return (
+        not stat.S_ISLNK(path_stat.st_mode)
+        and stat.S_ISDIR(path_stat.st_mode)
+        and stat.S_ISDIR(opened_stat.st_mode)
+        and _same_file(path_stat, opened_stat)
+    )
+
+
+def _open_slot(lock_dir_fd: int, slot_name: str) -> int:
+    flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    try:
+        fd = os.open(slot_name, flags, 0o600, dir_fd=lock_dir_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise DestinationProbeAdmissionUnavailable(
+                "destination verification admission is unavailable"
+            )
+        return fd
+    except DestinationProbeAdmissionUnavailable:
+        if fd is not None:
+            os.close(fd)
+        raise
+    except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise DestinationProbeAdmissionUnavailable(
+            "destination verification admission is unavailable"
+        ) from exc
+
+
+def _slot_matches_path(lock_dir_fd: int, slot_name: str, slot_fd: int) -> bool:
+    try:
+        path_stat = os.stat(
+            slot_name,
+            dir_fd=lock_dir_fd,
+            follow_symlinks=False,
+        )
+        opened_stat = os.fstat(slot_fd)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(path_stat.st_mode)
+        and stat.S_ISREG(opened_stat.st_mode)
+        and _same_file(path_stat, opened_stat)
+    )
 
 
 @contextmanager
@@ -115,12 +187,14 @@ def destination_probe_slot(
     """Acquire one non-blocking host-wide probe slot or fail immediately."""
 
     cfg = config or DestinationProbeAdmissionConfig.from_env()
-    _prepare_lock_dir(cfg.lock_dir)
+    lock_dir_fd = _open_lock_dir(cfg.lock_dir)
 
     acquired_fd: int | None = None
+    acquired_name: str | None = None
     try:
         for index in range(cfg.max_concurrent):
-            fd = _open_slot(cfg.lock_dir / f"slot-{index}.lock")
+            slot_name = f"slot-{index}.lock"
+            fd = _open_slot(lock_dir_fd, slot_name)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -131,11 +205,25 @@ def destination_probe_slot(
                 raise DestinationProbeAdmissionUnavailable(
                     "destination verification admission is unavailable"
                 ) from exc
+            if not _slot_matches_path(lock_dir_fd, slot_name, fd):
+                os.close(fd)
+                raise DestinationProbeAdmissionUnavailable(
+                    "destination verification admission is unavailable"
+                )
             acquired_fd = fd
+            acquired_name = slot_name
             break
 
         if acquired_fd is None:
             raise DestinationProbeAdmissionBusy("destination verification is busy")
+        if (
+            acquired_name is None
+            or not _lock_dir_matches_path(cfg.lock_dir, lock_dir_fd)
+            or not _slot_matches_path(lock_dir_fd, acquired_name, acquired_fd)
+        ):
+            raise DestinationProbeAdmissionUnavailable(
+                "destination verification admission is unavailable"
+            )
         yield
     finally:
         if acquired_fd is not None:
@@ -143,3 +231,4 @@ def destination_probe_slot(
                 fcntl.flock(acquired_fd, fcntl.LOCK_UN)
             finally:
                 os.close(acquired_fd)
+        os.close(lock_dir_fd)

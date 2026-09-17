@@ -14,6 +14,7 @@ from fastapi import HTTPException
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
+import destination_probe_admission as admission  # noqa: E402
 from destination_probe_admission import (  # noqa: E402
     DEFAULT_MAX_CONCURRENT_PROBES,
     DestinationProbeAdmissionBusy,
@@ -89,6 +90,34 @@ class DestinationProbeAdmissionTest(unittest.TestCase):
             with self.assertRaises(DestinationProbeAdmissionUnavailable):
                 with destination_probe_slot(config):
                     self.fail("symlink admission directory unexpectedly accepted")
+
+    def test_lock_directory_replacement_during_acquire_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-probe-admission-") as root:
+            root_path = Path(root)
+            lock_dir = root_path / "locks"
+            lock_dir.mkdir()
+            replacement = root_path / "replacement"
+            replacement.mkdir()
+            moved = root_path / "moved-locks"
+            config = DestinationProbeAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
+            original_open_slot = admission._open_slot
+            swapped = False
+
+            def swap_then_open(lock_dir_fd: int, slot_name: str) -> int:
+                nonlocal swapped
+                if not swapped:
+                    lock_dir.rename(moved)
+                    replacement.rename(lock_dir)
+                    swapped = True
+                return original_open_slot(lock_dir_fd, slot_name)
+
+            with patch.object(admission, "_open_slot", side_effect=swap_then_open):
+                with self.assertRaises(DestinationProbeAdmissionUnavailable):
+                    with destination_probe_slot(config):
+                        self.fail("replaced admission directory unexpectedly accepted")
+
+            self.assertTrue((moved / "slot-0.lock").exists())
+            self.assertFalse((lock_dir / "slot-0.lock").exists())
 
     def test_symlink_slot_file_fails_closed(self) -> None:
         if not hasattr(os, "O_NOFOLLOW"):
