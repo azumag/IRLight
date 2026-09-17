@@ -186,6 +186,52 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _rollback_append(fd: int, original_size: int) -> None:
+    """Best-effort runtime rollback for a failed append on the pinned inode."""
+
+    try:
+        os.ftruncate(fd, original_size)
+        os.fsync(fd)
+        restored = os.fstat(fd)
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot roll back failed trials JSONL append: {exc}"
+        ) from exc
+    if restored.st_size != original_size:
+        raise CapacityTrialRecordError(
+            "cannot roll back failed trials JSONL append: size mismatch"
+        )
+
+
+def _remove_empty_created_trials_file(fd: int, path: Path) -> None:
+    """Remove a newly-created evidence file only when it is still our empty inode."""
+
+    try:
+        opened = os.fstat(fd)
+        current = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot inspect failed new trials JSONL: {exc}"
+        ) from exc
+
+    if opened.st_size != 0:
+        return
+    if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode):
+        return
+    if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot remove failed new trials JSONL: {exc}"
+        ) from exc
+
+
 def _append_line_fd(
     fd: int,
     path: Path,
@@ -198,12 +244,21 @@ def _append_line_fd(
 
     before = _verify_trials_path(fd, path, expected_size=expected_size)
     payload = (("\n" if prepend_newline else "") + line).encode("utf-8")
-    _write_all(fd, payload)
     try:
-        os.fsync(fd)
-    except OSError as exc:
-        raise CapacityTrialRecordError(f"cannot sync trials JSONL: {exc}") from exc
-    _verify_trials_path(fd, path, expected_size=before.st_size + len(payload))
+        _write_all(fd, payload)
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise CapacityTrialRecordError(f"cannot sync trials JSONL: {exc}") from exc
+        _verify_trials_path(fd, path, expected_size=before.st_size + len(payload))
+    except Exception as exc:
+        try:
+            _rollback_append(fd, before.st_size)
+        except CapacityTrialRecordError as rollback_exc:
+            raise CapacityTrialRecordError(
+                f"trials JSONL append failed and rollback failed: {rollback_exc}"
+            ) from exc
+        raise
 
 
 def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
@@ -228,40 +283,52 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         fd, created = _open_trials_for_update(path)
         try:
-            info = _verify_trials_path(fd, path)
-            raw = _read_trials_fd(fd)
-            existing = [] if created else assembler.parse_trials_jsonl(raw)
             try:
-                normalized = validator.normalize_trials(
-                    existing + [recorded], minimum_count=1
+                info = _verify_trials_path(fd, path)
+                raw = _read_trials_fd(fd)
+                existing = [] if created else assembler.parse_trials_jsonl(raw)
+                try:
+                    normalized = validator.normalize_trials(
+                        existing + [recorded], minimum_count=1
+                    )
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise CapacityTrialRecordError(
+                        f"trial sequence is invalid: {exc}"
+                    ) from exc
+
+                recorded = normalized[-1]
+                line = (
+                    json.dumps(
+                        recorded,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
                 )
-            except (ValueError, TypeError, OverflowError) as exc:
+                prepend_newline = _needs_line_separator_fd(fd, info)
+                _append_line_fd(
+                    fd,
+                    path,
+                    line,
+                    prepend_newline=prepend_newline,
+                    expected_size=info.st_size,
+                )
+                return recorded
+            except assembler.CapacityAssemblyError as exc:
                 raise CapacityTrialRecordError(
                     f"trial sequence is invalid: {exc}"
                 ) from exc
-
-            recorded = normalized[-1]
-            line = (
-                json.dumps(
-                    recorded,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
-            prepend_newline = _needs_line_separator_fd(fd, info)
-            _append_line_fd(
-                fd,
-                path,
-                line,
-                prepend_newline=prepend_newline,
-                expected_size=info.st_size,
-            )
-            return recorded
-        except assembler.CapacityAssemblyError as exc:
-            raise CapacityTrialRecordError(f"trial sequence is invalid: {exc}") from exc
+        except Exception as exc:
+            if created:
+                try:
+                    _remove_empty_created_trials_file(fd, path)
+                except CapacityTrialRecordError as cleanup_exc:
+                    raise CapacityTrialRecordError(
+                        f"trial recording failed and cleanup failed: {cleanup_exc}"
+                    ) from exc
+            raise
         finally:
             os.close(fd)
 
