@@ -80,6 +80,15 @@ class StandbyIntegrityTest(unittest.TestCase):
         self.assertEqual(selection.source, "NODE_DEFAULT")
         self.assertEqual(selection.fallback_reason, "ASSET_INTEGRITY_CHECK_FAILED")
 
+    def test_unbounded_size_text_falls_back_without_integer_conversion_failure(self) -> None:
+        selection = self._resolve(
+            expected_sha256=self._digest(self.custom),
+            expected_size_bytes="9" * 5000,
+        )
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_INTEGRITY_CHECK_FAILED")
+
     def test_invalid_digest_falls_back_to_node_default(self) -> None:
         selection = self._resolve(expected_sha256="A" * 64)
 
