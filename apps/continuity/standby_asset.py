@@ -259,6 +259,31 @@ def _dimensions_are_safe(dimensions: tuple[int, int]) -> bool:
     return width <= MAX_IMAGE_PIXELS // height
 
 
+def _pinned_fd_uri_for(fd: int, identity: tuple[int, int]) -> str | None:
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(opened.st_mode):
+        return None
+    if (opened.st_dev, opened.st_ino) != identity:
+        return None
+
+    # GStreamer opens a fresh descriptor through the process fd alias, so it
+    # sees the already validated inode even if the original pathname is later
+    # replaced. /proc is the production Linux path; /dev/fd keeps local Unix
+    # development environments working where that alias is available instead.
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        alias = base / str(fd)
+        try:
+            target = os.stat(alias)
+        except OSError:
+            continue
+        if (target.st_dev, target.st_ino) == identity:
+            return alias.as_uri()
+    return None
+
+
 def _open_supported_image(path: Path) -> tuple[int, tuple[int, int]] | None:
     opened = _open_regular_file_prefix(path)
     if opened is None:
@@ -267,6 +292,14 @@ def _open_supported_image(path: Path) -> tuple[int, tuple[int, int]] | None:
     prefix, fd, identity = opened
     dimensions = _supported_image_dimensions(prefix)
     if dimensions is None or not _dimensions_are_safe(dimensions):
+        _close_fd_quietly(fd)
+        return None
+    # Treat a decoder handoff that cannot be represented by a stable fd alias
+    # as unavailable at selection time. This lets custom -> Node default ->
+    # synthetic fallback and public diagnostics describe the source that can
+    # actually be handed to GStreamer, rather than selecting a path that will
+    # silently become black later during pipeline construction.
+    if _pinned_fd_uri_for(fd, identity) is None:
         _close_fd_quietly(fd)
         return None
     return fd, identity
@@ -280,9 +313,10 @@ def resolve_standby_asset(
 
     ``custom_path`` is expected to be a Node-prefetched, already validated image.
     These cheap local checks cover missing, empty, oversized, non-regular,
-    symlinked, unsupported, and excessive-dimension handoffs; deep decode/content
-    validation belongs to Issue #7. A successful selection owns an open fd for
-    the validated inode until the Continuity pipeline releases it.
+    symlinked, unsupported, excessive-dimension, and unusable decoder-handoff
+    inputs; deep decode/content validation belongs to Issue #7. A successful
+    selection owns an open fd for the validated inode until the Continuity
+    pipeline releases it.
     """
 
     custom = (custom_path or "").strip()
@@ -334,29 +368,7 @@ def _pinned_fd_uri(selection: StandbyAssetSelection) -> str | None:
     identity = selection._pinned_identity
     if fd is None or identity is None:
         return None
-
-    try:
-        opened = os.fstat(fd)
-    except OSError:
-        return None
-    if not stat.S_ISREG(opened.st_mode):
-        return None
-    if (opened.st_dev, opened.st_ino) != identity:
-        return None
-
-    # GStreamer opens a fresh descriptor through the process fd alias, so it
-    # sees the already validated inode even if the original pathname is later
-    # replaced. /proc is the production Linux path; /dev/fd keeps local Unix
-    # development environments working where that alias is available instead.
-    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
-        alias = base / str(fd)
-        try:
-            target = os.stat(alias)
-        except OSError:
-            continue
-        if (target.st_dev, target.st_ino) == identity:
-            return alias.as_uri()
-    return None
+    return _pinned_fd_uri_for(fd, identity)
 
 
 def gst_standby_source(selection: StandbyAssetSelection) -> str:

@@ -22,7 +22,7 @@ Custom画像の取得・checksum検証・cache・LRU・Sessionへのasset割当�
 
 custom assetが欠損・空・上限超過・未対応formatの場合はNode defaultへ切り替える。Node defaultまで利用不能な場合だけsynthetic blackへ切り替える。Continuityのローカルhandoff検査では、symlink・FIFO/deviceなどの非regular fileも利用不能として扱い、`lstat -> no-follow/non-blocking open -> fstat -> pathname再確認`で検査中のpath差し替えをfail-closedにする。
 
-検査に成功した画像は、その時点で開いたregular-file descriptorをContinuity pipeline終了まで保持する。GStreamerには元のpathnameではなく`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡すため、検査後に元pathnameが別inodeへunlink/recreate・symlink差し替えされても、decoderは検査済みinodeから読み込む。descriptorが失効・再利用されidentityを確認できない場合は、元pathnameへ戻らずsynthetic blackへfail-closedする。
+検査に成功した画像は、その時点で開いたregular-file descriptorをContinuity pipeline終了まで保持する。GStreamerには元のpathnameではなく`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡すため、検査後に元pathnameが別inodeへunlink/recreate・symlink差し替えされても、decoderは検査済みinodeから読み込む。さらに selection 時点でこのfd aliasが同じdevice/inodeへ解決できることまで確認する。customのdecoder handoffを構成できない場合はNode defaultを試し、defaultも構成不能ならsynthetic blackへ落とすため、`standby.json`の選択結果と実際にGStreamerへ渡せるsourceが起動時から食い違わない。descriptorが後から失効・再利用されidentityを確認できない場合も、元pathnameへ戻らずsynthetic blackへfail-closedする。
 
 GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだけ読み、PNG/JPEG/WebPの幅・高さを取得する。幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで極端なdimension宣言をそのままdecoderへ渡さないための追加防御であり、完全な画像decodeや展開後メモリ量の保証ではない。
 
