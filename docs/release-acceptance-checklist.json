@@ -57,7 +57,7 @@
       "required": true,
       "status": "pending",
       "evidence": [],
-      "notes": "Normal PR validation remains bounded; a dedicated long-running acceptance run must provide evidence."
+      "notes": "Normal PR validation remains bounded; satisfied requires a canonical passing soak report with both target and observed duration of at least 21600 seconds from a dedicated long-running acceptance run."
     },
     {
       "id": "node-capacity-load",

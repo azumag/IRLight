@@ -11,8 +11,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKLIST = ROOT / "docs" / "release-acceptance-checklist.json"
+SOAK_REPORT_VALIDATOR = ROOT / "scripts" / "validate-soak-report.py"
 CAPACITY_REPORT_VALIDATOR = ROOT / "scripts" / "validate-node-capacity-report.py"
 MAX_CHECKLIST_BYTES = 128 * 1024
+MIN_SIX_HOUR_SOAK_SECONDS = 6 * 60 * 60
 
 ALLOWED_STATUSES = {"pending", "partial", "blocked", "satisfied"}
 REQUIRED_ITEM_IDS = {
@@ -84,21 +86,69 @@ def _validate_repo_evidence(path_text: object) -> str:
     return path_text
 
 
-def _load_capacity_report_validator() -> Any:
-    spec = importlib.util.spec_from_file_location(
-        "irlight_release_capacity_report_validator",
-        CAPACITY_REPORT_VALIDATOR,
-    )
+def _load_report_validator(path: Path, module_name: str, label: str) -> Any:
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise ChecklistValidationError("Node capacity report validator could not be loaded")
+        raise ChecklistValidationError(f"{label} validator could not be loaded")
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
     except (OSError, ImportError) as exc:
-        raise ChecklistValidationError(
-            "Node capacity report validator could not be loaded"
-        ) from exc
+        raise ChecklistValidationError(f"{label} validator could not be loaded") from exc
     return module
+
+
+def _load_soak_report_validator() -> Any:
+    return _load_report_validator(
+        SOAK_REPORT_VALIDATOR,
+        "irlight_release_soak_report_validator",
+        "six-hour soak report",
+    )
+
+
+def _load_capacity_report_validator() -> Any:
+    return _load_report_validator(
+        CAPACITY_REPORT_VALIDATOR,
+        "irlight_release_capacity_report_validator",
+        "Node capacity report",
+    )
+
+
+def _validate_six_hour_soak_evidence(evidence_paths: list[str]) -> None:
+    """Require a canonical passing six-hour-or-longer soak report."""
+
+    validator = _load_soak_report_validator()
+    failures: list[str] = []
+    for path_text in evidence_paths:
+        candidate = ROOT / path_text
+        try:
+            summary = validator.validate_report(validator.load_report(candidate))
+        except (validator.SoakReportError, OSError, UnicodeError) as exc:
+            failures.append(f"{path_text}: {exc}")
+            continue
+
+        if summary["outcome"] != "pass":
+            failures.append(f"{path_text}: outcome must be pass")
+            continue
+        if summary["target_duration_seconds"] < MIN_SIX_HOUR_SOAK_SECONDS:
+            failures.append(
+                f"{path_text}: target_duration_seconds must be >= {MIN_SIX_HOUR_SOAK_SECONDS}"
+            )
+            continue
+        if summary["observed_duration_seconds"] < MIN_SIX_HOUR_SOAK_SECONDS:
+            failures.append(
+                f"{path_text}: observed_duration_seconds must be >= {MIN_SIX_HOUR_SOAK_SECONDS}"
+            )
+            continue
+        return
+
+    detail = "; ".join(failures[:3])
+    if detail:
+        detail = f" ({detail})"
+    raise ChecklistValidationError(
+        "six-hour-soak: satisfied status requires at least one canonical passing "
+        f"six-hour-or-longer soak report{detail}"
+    )
 
 
 def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
@@ -185,6 +235,8 @@ def validate_checklist(payload: dict[str, Any]) -> None:
             raise ChecklistValidationError(
                 f"{item_id}: satisfied items require repository evidence"
             )
+        if item_id == "six-hour-soak" and status == "satisfied":
+            _validate_six_hour_soak_evidence(normalized_evidence)
         if item_id == "node-capacity-load" and status == "satisfied":
             _validate_node_capacity_evidence(normalized_evidence)
 

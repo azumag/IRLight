@@ -22,6 +22,67 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
     def _canonical(self) -> dict[str, object]:
         return module.load_checklist(CHECKLIST)
 
+    def _write_soak_report(
+        self,
+        *,
+        target_duration_seconds: int,
+        observed_duration_seconds: int,
+        outcome: str = "pass",
+    ) -> Path:
+        fd, name = tempfile.mkstemp(
+            prefix=".release-soak-test-",
+            suffix=".json",
+            dir=ROOT,
+        )
+        os.close(fd)
+        report_path = Path(name)
+        self.addCleanup(report_path.unlink, missing_ok=True)
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "7c4dff13-6795-45dc-b6cb-2a6667477b0c",
+                    "scenario": "unit-test long-running acceptance evidence",
+                    "target_duration_seconds": target_duration_seconds,
+                    "outcome": outcome,
+                    "samples": [
+                        {
+                            "elapsed_seconds": 0,
+                            "memory_rss_bytes": 1000,
+                            "cpu_percent": 10.0,
+                            "open_fds": 5,
+                            "processes": 2,
+                            "zombies": 0,
+                            "bitrate_bps": 1000.0,
+                            "av_sync_drift_ms": 0.0,
+                            "timestamp_errors": 0,
+                            "unexpected_reconnects": 0,
+                        },
+                        {
+                            "elapsed_seconds": observed_duration_seconds,
+                            "memory_rss_bytes": 1100,
+                            "cpu_percent": 20.0,
+                            "open_fds": 5,
+                            "processes": 2,
+                            "zombies": 0,
+                            "bitrate_bps": 1000.0,
+                            "av_sync_drift_ms": 1.0,
+                            "timestamp_errors": 0,
+                            "unexpected_reconnects": 0,
+                        },
+                    ],
+                    "cleanup": {
+                        "verified": True,
+                        "details": "unit-test cleanup verified",
+                    },
+                    "notes": "synthetic validator fixture only",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return report_path
+
     def test_repository_checklist_is_valid_and_not_ready(self) -> None:
         payload = self._canonical()
         module.validate_checklist(payload)
@@ -58,6 +119,69 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         item["status"] = "satisfied"
         with self.assertRaisesRegex(module.ChecklistValidationError, "require repository evidence"):
             module.validate_checklist(payload)
+
+    def test_six_hour_soak_satisfied_rejects_arbitrary_repository_evidence(self) -> None:
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = ["docs/release-acceptance-checklist.md"]
+
+        with self.assertRaisesRegex(
+            module.ChecklistValidationError, "canonical passing six-hour-or-longer soak report"
+        ):
+            module.validate_checklist(payload)
+
+    def test_six_hour_soak_satisfied_rejects_short_canonical_pass(self) -> None:
+        report_path = self._write_soak_report(
+            target_duration_seconds=600,
+            observed_duration_seconds=600,
+        )
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
+
+        with self.assertRaisesRegex(
+            module.ChecklistValidationError, "target_duration_seconds must be >= 21600"
+        ):
+            module.validate_checklist(payload)
+
+    def test_six_hour_soak_satisfied_rejects_nonpassing_canonical_report(self) -> None:
+        report_path = self._write_soak_report(
+            target_duration_seconds=21600,
+            observed_duration_seconds=21600,
+            outcome="fail",
+        )
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
+
+        with self.assertRaisesRegex(module.ChecklistValidationError, "outcome must be pass"):
+            module.validate_checklist(payload)
+
+    def test_six_hour_soak_satisfied_accepts_canonical_six_hour_pass(self) -> None:
+        report_path = self._write_soak_report(
+            target_duration_seconds=21600,
+            observed_duration_seconds=21600,
+        )
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
+        )
+        item["status"] = "satisfied"
+        item["evidence"] = [
+            "docs/release-acceptance-checklist.md",
+            report_path.relative_to(ROOT).as_posix(),
+        ]
+
+        module.validate_checklist(payload)
 
     def test_node_capacity_satisfied_rejects_arbitrary_repository_evidence(self) -> None:
         payload = self._canonical()
