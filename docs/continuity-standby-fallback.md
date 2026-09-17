@@ -22,9 +22,11 @@ Custom画像の取得・checksum検証・cache・LRU・Sessionへのasset割当�
 
 custom assetが欠損・空・上限超過・未対応formatの場合はNode defaultへ切り替える。Node defaultまで利用不能な場合だけsynthetic blackへ切り替える。Continuityのローカルhandoff検査では、symlink・FIFO/deviceなどの非regular fileも利用不能として扱い、`lstat -> no-follow/non-blocking open -> fstat -> pathname再確認`で検査中のpath差し替えをfail-closedにする。
 
-検査に成功した画像は、その時点で開いたregular-file descriptorをContinuity pipeline終了まで保持する。GStreamerには元のpathnameではなく`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡すため、検査後に元pathnameが別inodeへunlink/recreate・symlink差し替えされても、decoderは検査済みinodeから読み込む。さらに selection 時点でこのfd aliasが同じdevice/inodeへ解決できることまで確認する。customのdecoder handoffを構成できない場合はNode defaultを試し、defaultも構成不能ならsynthetic blackへ落とすため、`standby.json`の選択結果と実際にGStreamerへ渡せるsourceが起動時から食い違わない。descriptorが後から失効・再利用されidentityを確認できない場合も、元pathnameへ戻らずsynthetic blackへfail-closedする。
+検査対象のregular fileは最大32 MiBという既存上限の範囲でprivate temporary fileへ全byteをcopyする。copy前後で元fdのdevice/inode/size/mtime/ctimeとpathnameのdevice/inodeを再確認し、copy中のpath差し替えや同一inodeへの書換えを検出した場合はその候補を利用不能としてfallbackする。copy完了後のsnapshotはmode `0400`でread-only fdとして開き直し、temporary pathnameをunlinkしてから選択結果として保持する。このため、selection完了後にNode側の元pathnameを別inodeへ差し替えたり、元inodeをin-place変更したりしてもdecoderが読むbyte列は変化しない。
 
-GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだけ読み、PNG/JPEG/WebPの幅・高さと最低限のcontainer/header整合性を確認する。PNGは固定長IHDRのCRCとbit depth / color type / compression / filter / interlaceの組み合わせ、JPEGはSOFのsample precision・component数・segment長の整合、WebPはRIFF宣言サイズと実ファイルサイズ、および先頭chunkの境界を確認する。そのうえで幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで明らかに壊れたheaderや極端なdimension宣言をdecoderへ渡さないための追加防御であり、完全な画像decode、全chunkの検証、展開後メモリ量の保証ではない。
+GStreamerには元のpathnameや元inodeではなく、private snapshot fdの`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡す。selection時点でこのfd aliasがsnapshotと同じdevice/inodeへ解決できることまで確認する。customのsnapshot/decoder handoffを構成できない場合はNode defaultを試し、defaultも構成不能ならsynthetic blackへ落とすため、`standby.json`の選択結果と実際にGStreamerへ渡せるsourceが起動時から食い違わない。descriptorが後から失効・再利用されidentityを確認できない場合も、元pathnameへ戻らずsynthetic blackへfail-closedする。
+
+GStreamerへ渡す前のcheap guardとして、snapshot作成時に画像ヘッダは最大1 MiBだけmemoryへ保持し、PNG/JPEG/WebPの幅・高さと最低限のcontainer/header整合性を確認する。PNGは固定長IHDRのCRCとbit depth / color type / compression / filter / interlaceの組み合わせ、JPEGはSOFのsample precision・component数・segment長の整合、WebPはRIFF宣言サイズと実ファイルサイズ、および先頭chunkの境界を確認する。そのうえで幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで明らかに壊れたheaderや極端なdimension宣言をdecoderへ渡さないための追加防御であり、完全な画像decode、全chunkの検証、展開後メモリ量の保証ではない。
 
 ## Diagnostics
 
@@ -45,4 +47,4 @@ GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだ�
 
 ## Security boundary
 
-Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/header-integrity/dimension検査、symlink・special-file拒否、検査済みinodeへのdecoder handoff固定を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではない。同じinodeの内容を別writerが検査後にin-place変更するケース、malformed imageの完全decode検証、decompression bombの展開量保証、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
+Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/header-integrity/dimension検査、symlink・special-file拒否、copy中のsource安定性確認、private unlinked snapshotへのdecoder handoff固定を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではない。malformed imageの完全decode検証、decompression bombの実際の展開量保証、checksumによる配送整合性、object storage認証、cache/LRUはIssue #7のAsset processing/prefetchで実施する。
