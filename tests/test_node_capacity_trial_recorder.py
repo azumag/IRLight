@@ -70,6 +70,20 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertEqual(second["outcome"], "fail")
             self.assertEqual(second["failed_sessions"], 1)
 
+    def test_preserves_jsonl_record_boundary_when_existing_file_has_no_final_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            result, _, stderr = run_main(cli_args(path, sessions=1))
+            self.assertEqual(result, 0, stderr)
+            path.write_bytes(path.read_bytes().rstrip(b"\n"))
+
+            result, _, stderr = run_main(cli_args(path, sessions=4, outcome="fail"))
+            self.assertEqual(result, 0, stderr)
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[0])["concurrent_sessions"], 1)
+            self.assertEqual(json.loads(lines[1])["concurrent_sessions"], 4)
+
     def test_rejects_non_increasing_load_without_modifying_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trials.jsonl"
