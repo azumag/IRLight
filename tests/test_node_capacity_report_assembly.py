@@ -175,7 +175,13 @@ class CapacityReportAssemblyTest(unittest.TestCase):
                 "--output",
                 str(output),
             ]
-            self.assertEqual(MODULE.main(argv), 0)
+            with mock.patch.object(
+                MODULE,
+                "_fsync_directory",
+                wraps=MODULE._fsync_directory,
+            ) as sync_directory:
+                self.assertEqual(MODULE.main(argv), 0)
+            self.assertEqual(sync_directory.call_count, 1)
             rendered = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(len(rendered["trials"]), 3)
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
@@ -218,6 +224,25 @@ class CapacityReportAssemblyTest(unittest.TestCase):
             ]
             with mock.patch.object(MODULE.os, "link", side_effect=OSError("injected")):
                 self.assertEqual(MODULE.main(argv), 2)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".report.json.tmp-*")), [])
+
+    def test_directory_sync_failure_rolls_back_published_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "report.json"
+            with mock.patch.object(
+                MODULE,
+                "_fsync_directory",
+                side_effect=[CapacityAssemblyError("injected directory sync"), None],
+            ) as sync_directory:
+                with self.assertRaisesRegex(
+                    CapacityAssemblyError,
+                    "cannot make output publication durable",
+                ):
+                    MODULE._write_exclusive_atomic(output, "{}\n")
+
+            self.assertEqual(sync_directory.call_count, 2)
             self.assertFalse(output.exists())
             self.assertEqual(list(root.glob(".report.json.tmp-*")), [])
 
