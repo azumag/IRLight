@@ -181,6 +181,28 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "replacement\n")
             self.assertEqual(moved.read_bytes(), b"")
 
+    def test_pinned_fd_refuses_stale_snapshot_size_before_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"")
+            fd = MODULE._open_trials_for_update(path)
+            path.write_bytes(b"external\n")
+
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.CapacityTrialRecordError, "changed while recording"
+                ):
+                    MODULE._append_line_fd(
+                        fd,
+                        path,
+                        "candidate\n",
+                        expected_size=0,
+                    )
+            finally:
+                os.close(fd)
+
+            self.assertEqual(path.read_bytes(), b"external\n")
+
 
 if __name__ == "__main__":
     unittest.main()
