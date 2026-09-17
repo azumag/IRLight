@@ -20,7 +20,7 @@ Custom画像の取得・checksum検証・cache・LRU・Sessionへのasset割当�
 
 選択した画像は`uridecodebin -> imagefreeze`で連続videoへ変換し、既存standby branchへ流す。音声fallbackは従来どおりsilence sourceを使用する。
 
-custom assetが欠損・空・上限超過・未対応formatの場合はNode defaultへ切り替える。Node defaultまで利用不能な場合だけsynthetic blackへ切り替える。
+custom assetが欠損・空・上限超過・未対応formatの場合はNode defaultへ切り替える。Node defaultまで利用不能な場合だけsynthetic blackへ切り替える。Continuityのローカルhandoff検査では、symlink・FIFO/deviceなどの非regular fileも利用不能として扱い、`lstat -> no-follow/non-blocking open -> fstat -> pathname再確認`で検査中のpath差し替えをfail-closedにする。
 
 ## Diagnostics
 
@@ -41,4 +41,4 @@ custom assetが欠損・空・上限超過・未対応formatの場合はNode def
 
 ## Security boundary
 
-Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルfileのみを対象とし、安価なmagic-byte/size検査を追加防御として行う。decompression bomb、MIME偽装、寸法上限、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
+Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なmagic-byte/size検査とsymlink・special-file拒否を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではなく、GStreamerが画像をdecodeする時点までの完全なfilesystem transactionも提供しない。decompression bomb、MIME偽装、寸法上限、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
