@@ -94,6 +94,8 @@ def _open_trials_for_update(path: Path) -> int:
     except OSError as exc:
         raise CapacityTrialRecordError(f"cannot inspect trials JSONL: {exc}") from exc
 
+    if stat.S_ISLNK(before.st_mode):
+        raise CapacityTrialRecordError("trials JSONL must not be a symbolic link")
     if not stat.S_ISREG(before.st_mode):
         raise CapacityTrialRecordError("trials JSONL must be a regular file")
     try:
@@ -112,7 +114,12 @@ def _open_trials_for_update(path: Path) -> int:
         raise
 
 
-def _verify_trials_path(fd: int, path: Path) -> os.stat_result:
+def _verify_trials_path(
+    fd: int,
+    path: Path,
+    *,
+    expected_size: int | None = None,
+) -> os.stat_result:
     """Ensure the public path still names the inode pinned by fd."""
 
     try:
@@ -125,6 +132,8 @@ def _verify_trials_path(fd: int, path: Path) -> os.stat_result:
     if not stat.S_ISREG(current.st_mode) or not stat.S_ISREG(opened.st_mode):
         raise CapacityTrialRecordError("trials JSONL must be a regular file")
     if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise CapacityTrialRecordError("trials JSONL changed while recording")
+    if expected_size is not None and opened.st_size != expected_size:
         raise CapacityTrialRecordError("trials JSONL changed while recording")
     return opened
 
@@ -144,6 +153,14 @@ def _read_trials_fd(fd: int) -> str:
 
 
 def _needs_line_separator_fd(fd: int, info: os.stat_result) -> bool:
+    try:
+        current = os.fstat(fd)
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot inspect trials JSONL ending: {exc}"
+        ) from exc
+    if current.st_size != info.st_size:
+        raise CapacityTrialRecordError("trials JSONL changed while recording")
     if info.st_size == 0:
         return False
     try:
@@ -175,17 +192,18 @@ def _append_line_fd(
     line: str,
     *,
     prepend_newline: bool = False,
+    expected_size: int | None = None,
 ) -> None:
     """Append through the same inode that was parsed and validated."""
 
-    _verify_trials_path(fd, path)
+    before = _verify_trials_path(fd, path, expected_size=expected_size)
     payload = (("\n" if prepend_newline else "") + line).encode("utf-8")
     _write_all(fd, payload)
     try:
         os.fsync(fd)
     except OSError as exc:
         raise CapacityTrialRecordError(f"cannot sync trials JSONL: {exc}") from exc
-    _verify_trials_path(fd, path)
+    _verify_trials_path(fd, path, expected_size=before.st_size + len(payload))
 
 
 def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
@@ -234,7 +252,13 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
                 + "\n"
             )
             prepend_newline = _needs_line_separator_fd(fd, info)
-            _append_line_fd(fd, path, line, prepend_newline=prepend_newline)
+            _append_line_fd(
+                fd,
+                path,
+                line,
+                prepend_newline=prepend_newline,
+                expected_size=info.st_size,
+            )
             return recorded
         except assembler.CapacityAssemblyError as exc:
             raise CapacityTrialRecordError(f"trial sequence is invalid: {exc}") from exc
