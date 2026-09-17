@@ -48,6 +48,8 @@ TRIAL_FIELDS = {
 }
 OUTCOMES = {"pass", "fail"}
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+MAX_TRIAL_COUNT = 4096
 
 
 def _reject_constant(value: str) -> None:
@@ -72,6 +74,10 @@ def _open_report_readonly(path: Path) -> Any:
         raise CapacityReportError(f"cannot inspect report: {exc}") from exc
     if not stat.S_ISREG(before.st_mode):
         raise CapacityReportError("report must be a regular file")
+    if before.st_size > MAX_REPORT_BYTES:
+        raise CapacityReportError(
+            f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+        )
 
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -87,7 +93,11 @@ def _open_report_readonly(path: Path) -> Any:
             raise CapacityReportError("report must be a regular file")
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise CapacityReportError("report changed while opening")
-        return os.fdopen(fd, "r", encoding="utf-8")
+        if after.st_size > MAX_REPORT_BYTES:
+            raise CapacityReportError(
+                f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+            )
+        return os.fdopen(fd, "rb")
     except Exception:
         os.close(fd)
         raise
@@ -96,7 +106,12 @@ def _open_report_readonly(path: Path) -> Any:
 def load_report(path: Path) -> dict[str, Any]:
     try:
         with _open_report_readonly(path) as handle:
-            raw = handle.read()
+            raw_bytes = handle.read(MAX_REPORT_BYTES + 1)
+        if len(raw_bytes) > MAX_REPORT_BYTES:
+            raise CapacityReportError(
+                f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+            )
+        raw = raw_bytes.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise CapacityReportError(f"cannot read report: {exc}") from exc
     try:
@@ -162,6 +177,10 @@ def normalize_trials(trials: Any, *, minimum_count: int = 1) -> list[dict[str, A
         noun = "load level" if minimum_count == 1 else "load levels"
         raise CapacityReportError(
             f"trials must contain at least {minimum_count} {noun}"
+        )
+    if len(trials) > MAX_TRIAL_COUNT:
+        raise CapacityReportError(
+            f"trials must contain at most {MAX_TRIAL_COUNT} load levels"
         )
 
     normalized: list[dict[str, Any]] = []
