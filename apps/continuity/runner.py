@@ -10,8 +10,8 @@ from standby_asset import (
     NODE_DEFAULT_IMAGE_PATH,
     gst_standby_source,
     public_standby_status,
-    resolve_standby_asset,
 )
+from standby_integrity import resolve_integrity_checked_standby_asset
 
 
 LOG = logging.getLogger("irlight.continuity")
@@ -25,9 +25,11 @@ class StandbyAwareContinuityPipeline(ContinuityPipeline):
         # turn retry timing into a disabled, unbounded, or platform-dependent
         # wait.  Preserve the existing behavior of every finite value.
         source_retry_seconds = finite_env_float("SOURCE_RETRY_SECONDS", 3.0)
-        self.standby_selection = resolve_standby_asset(
+        self.standby_selection = resolve_integrity_checked_standby_asset(
             os.getenv("STANDBY_IMAGE_PATH"),
             os.getenv("STANDBY_FALLBACK_IMAGE_PATH", NODE_DEFAULT_IMAGE_PATH),
+            expected_sha256=os.getenv("STANDBY_IMAGE_SHA256"),
+            expected_size_bytes=os.getenv("STANDBY_IMAGE_SIZE_BYTES"),
         )
         super().__init__()
         self.source_retry_seconds = source_retry_seconds
