@@ -72,6 +72,40 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertEqual(second["outcome"], "fail")
             self.assertEqual(second["failed_sessions"], 1)
 
+    def test_new_evidence_creation_syncs_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "trials.jsonl"
+            with mock.patch.object(
+                MODULE,
+                "_fsync_directory",
+                wraps=MODULE._fsync_directory,
+            ) as sync_directory:
+                result, _, stderr = run_main(cli_args(path, sessions=1))
+
+            self.assertEqual(result, 0, stderr)
+            self.assertEqual(sync_directory.call_count, 1)
+            self.assertEqual(sync_directory.call_args.args[0], root)
+            self.assertTrue(path.exists())
+
+    def test_new_evidence_directory_sync_failure_rolls_back_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            with mock.patch.object(
+                MODULE,
+                "_fsync_directory",
+                side_effect=[
+                    MODULE.CapacityTrialRecordError("injected directory sync"),
+                    None,
+                ],
+            ) as sync_directory:
+                result, _, stderr = run_main(cli_args(path, sessions=1))
+
+            self.assertEqual(result, 2)
+            self.assertIn("injected directory sync", stderr)
+            self.assertEqual(sync_directory.call_count, 2)
+            self.assertFalse(path.exists())
+
     def test_preserves_jsonl_record_boundary_when_existing_file_has_no_final_newline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trials.jsonl"

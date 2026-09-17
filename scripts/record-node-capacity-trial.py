@@ -215,6 +215,32 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Persist evidence-path namespace changes before reporting success."""
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(directory, flags)
+    except OSError as exc:
+        raise CapacityTrialRecordError(
+            f"cannot open trials JSONL directory for sync: {exc}"
+        ) from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise CapacityTrialRecordError("trials JSONL parent must be a directory")
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise CapacityTrialRecordError(
+                f"cannot sync trials JSONL directory: {exc}"
+            ) from exc
+    finally:
+        os.close(fd)
+
+
 def _rollback_append(fd: int, original_size: int) -> None:
     """Best-effort runtime rollback for a failed append on the pinned inode."""
 
@@ -259,6 +285,8 @@ def _remove_empty_created_trials_file(fd: int, path: Path) -> None:
         raise CapacityTrialRecordError(
             f"cannot remove failed new trials JSONL: {exc}"
         ) from exc
+    directory = path.parent if path.parent else Path(".")
+    _fsync_directory(directory)
 
 
 def _append_line_fd(
@@ -348,6 +376,19 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
                     prepend_newline=prepend_newline,
                     expected_size=info.st_size,
                 )
+                if created:
+                    directory = path.parent if path.parent else Path(".")
+                    try:
+                        _fsync_directory(directory)
+                    except CapacityTrialRecordError as sync_exc:
+                        try:
+                            _rollback_append(fd, 0)
+                        except CapacityTrialRecordError as rollback_exc:
+                            raise CapacityTrialRecordError(
+                                "new trials JSONL directory sync failed and data rollback "
+                                f"failed: {rollback_exc}"
+                            ) from sync_exc
+                        raise
                 return recorded
             except assembler.CapacityAssemblyError as exc:
                 raise CapacityTrialRecordError(
