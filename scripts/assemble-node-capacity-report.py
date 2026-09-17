@@ -19,6 +19,10 @@ class CapacityAssemblyError(ValueError):
     """Raised when raw capacity evidence cannot be safely assembled."""
 
 
+MAX_TRIALS_JSONL_BYTES = 1 * 1024 * 1024
+MAX_TRIAL_COUNT = 4096
+
+
 def _reject_constant(value: str) -> None:
     raise CapacityAssemblyError(f"non-standard JSON numeric constant: {value}")
 
@@ -38,6 +42,10 @@ def parse_trials_jsonl(raw: str) -> list[dict[str, Any]]:
     lines = raw.splitlines()
     if not lines:
         raise CapacityAssemblyError("trials JSONL must contain at least one trial")
+    if len(lines) > MAX_TRIAL_COUNT:
+        raise CapacityAssemblyError(
+            f"trials JSONL must contain at most {MAX_TRIAL_COUNT} trials"
+        )
 
     trials: list[dict[str, Any]] = []
     for line_number, line in enumerate(lines, start=1):
@@ -72,6 +80,10 @@ def _open_trials_readonly(path: Path) -> Any:
         raise CapacityAssemblyError(f"cannot inspect trials: {exc}") from exc
     if not stat.S_ISREG(before.st_mode):
         raise CapacityAssemblyError("trials JSONL must be a regular file")
+    if before.st_size > MAX_TRIALS_JSONL_BYTES:
+        raise CapacityAssemblyError(
+            f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+        )
 
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -87,7 +99,11 @@ def _open_trials_readonly(path: Path) -> Any:
             raise CapacityAssemblyError("trials JSONL must be a regular file")
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise CapacityAssemblyError("trials JSONL changed while opening")
-        return os.fdopen(fd, "r", encoding="utf-8")
+        if after.st_size > MAX_TRIALS_JSONL_BYTES:
+            raise CapacityAssemblyError(
+                f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+            )
+        return os.fdopen(fd, "rb")
     except Exception:
         os.close(fd)
         raise
@@ -96,7 +112,12 @@ def _open_trials_readonly(path: Path) -> Any:
 def load_trials_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
         with _open_trials_readonly(path) as handle:
-            raw = handle.read()
+            raw_bytes = handle.read(MAX_TRIALS_JSONL_BYTES + 1)
+        if len(raw_bytes) > MAX_TRIALS_JSONL_BYTES:
+            raise CapacityAssemblyError(
+                f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
+            )
+        raw = raw_bytes.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise CapacityAssemblyError(f"cannot read trials: {exc}") from exc
     return parse_trials_jsonl(raw)
