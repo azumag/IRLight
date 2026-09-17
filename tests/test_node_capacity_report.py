@@ -67,6 +67,7 @@ class CapacityReportTest(unittest.TestCase):
         self.assertEqual(summary["highest_passing_sessions"], 4)
         self.assertEqual(summary["first_failing_sessions"], 8)
         self.assertEqual(summary["recommended_max_sessions"], 3)
+        self.assertEqual(summary["highest_pass_duration_seconds"], 120.0)
         self.assertEqual(summary["tested_load_levels"], [1, 4, 8])
 
     def test_requires_exact_schema_and_rejects_duplicate_json_keys(self) -> None:
@@ -131,7 +132,7 @@ class CapacityReportTest(unittest.TestCase):
             MODULE.validate_report(candidate)
 
     def test_margin_must_be_explicit_bounded_integer(self) -> None:
-        for value in (0, 91, True, 20.5):
+        for value in (0, 100, True, 20.5):
             candidate = report()
             candidate["safety_margin_percent"] = value
             with self.subTest(value=value):
@@ -143,6 +144,12 @@ class CapacityReportTest(unittest.TestCase):
         candidate["trials"] = [candidate["trials"][0], candidate["trials"][-1]]
         candidate["safety_margin_percent"] = 50
         with self.assertRaisesRegex(CapacityReportError, "positive max_sessions"):
+            MODULE.validate_report(candidate)
+
+    def test_schema_version_requires_integer_not_numeric_equivalence(self) -> None:
+        candidate = report()
+        candidate["schema_version"] = 1.0
+        with self.assertRaisesRegex(CapacityReportError, "schema_version"):
             MODULE.validate_report(candidate)
 
     def test_revision_and_uuid_are_fixed_format(self) -> None:
