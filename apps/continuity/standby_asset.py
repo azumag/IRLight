@@ -3,6 +3,7 @@ from __future__ import annotations
 import binascii
 import os
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +13,7 @@ MAX_IMAGE_HEADER_BYTES = 1024 * 1024
 MAX_IMAGE_PIXELS = 16 * 1024 * 1024
 MAX_IMAGE_DIMENSION = 16_384
 NODE_DEFAULT_IMAGE_PATH = "/opt/irlight/assets/default-standby.png"
+_COPY_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass
@@ -26,7 +28,7 @@ class StandbyAssetSelection:
     )
 
     def close(self) -> None:
-        """Release the validated standby inode without closing a reused fd."""
+        """Release the private standby snapshot without closing a reused fd."""
 
         fd = self._pinned_fd
         identity = self._pinned_identity
@@ -54,29 +56,50 @@ class StandbyAssetSelection:
             pass
 
 
-def _close_fd_quietly(fd: int) -> None:
+def _close_fd_quietly(fd: int | None) -> None:
+    if fd is None:
+        return
     try:
         os.close(fd)
     except OSError:
         pass
 
 
-def _open_regular_file_prefix(
+def _stat_signature(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Return the fields that must remain stable while source bytes are copied."""
+
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("standby snapshot write made no progress")
+        view = view[written:]
+
+
+def _snapshot_regular_file_prefix(
     path: Path,
 ) -> tuple[bytes, int, tuple[int, int], int] | None:
-    """Open one stable regular file and return a bounded prefix plus pinned fd.
+    """Copy one stable regular file into a private, bounded decoder snapshot.
 
     Standby paths are a trusted Node-local handoff, but they can still be
-    misconfigured to a symlink/FIFO/device or be replaced while Continuity is
-    checking them. Keep validation non-blocking and fail closed rather than
-    following a link or opening a special file. The successful fd remains open
-    so later decoder handoff can stay bound to the inode that was validated.
+    misconfigured to a symlink/FIFO/device, be replaced while Continuity checks
+    them, or be modified in place by another writer after validation. Copy at
+    most ``MAX_IMAGE_BYTES`` into a mode-0400 temporary file, verify that the
+    source identity/content metadata stayed stable for the copy, then unlink the
+    temporary pathname. The returned read-only fd is the only decoder handoff,
+    so later writes to the source inode cannot change the selected bytes.
     """
 
-    # Reject obvious special files before open. This is only a fast safety
-    # check; the opened fd plus the post-open pathname identity check below are
-    # authoritative, so inode reuse before open cannot make an old lstat result
-    # look like proof for the file that was actually opened.
     try:
         before = os.lstat(path)
     except OSError:
@@ -84,46 +107,105 @@ def _open_regular_file_prefix(
     if not stat.S_ISREG(before.st_mode):
         return None
 
-    flags = os.O_RDONLY
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NONBLOCK", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+    source_flags = os.O_RDONLY
+    source_flags |= getattr(os, "O_CLOEXEC", 0)
+    source_flags |= getattr(os, "O_NONBLOCK", 0)
+    source_flags |= getattr(os, "O_NOFOLLOW", 0)
 
     try:
-        fd = os.open(path, flags)
+        source_fd = os.open(path, source_flags)
     except OSError:
         return None
 
+    snapshot_write_fd: int | None = None
+    snapshot_read_fd: int | None = None
+    snapshot_path: str | None = None
     try:
-        opened = os.fstat(fd)
+        opened = os.fstat(source_fd)
         if not stat.S_ISREG(opened.st_mode):
             raise ValueError("standby asset is not a regular file")
         if opened.st_size <= 0 or opened.st_size > MAX_IMAGE_BYTES:
             raise ValueError("standby asset size is outside the allowed range")
 
-        # Bind the validated pathname to the fd we actually opened. Keeping
-        # that fd alive means its inode cannot be recycled while this check is
-        # performed, so a path replacement after open is detected reliably.
-        after = os.lstat(path)
-        if not stat.S_ISREG(after.st_mode):
+        after_open = os.lstat(path)
+        if not stat.S_ISREG(after_open.st_mode):
             raise ValueError("standby asset path stopped being a regular file")
-        identity = (opened.st_dev, opened.st_ino)
-        if (after.st_dev, after.st_ino) != identity:
+        source_identity = (opened.st_dev, opened.st_ino)
+        if (after_open.st_dev, after_open.st_ino) != source_identity:
             raise ValueError("standby asset path changed during validation")
+        source_signature = _stat_signature(opened)
 
-        remaining = min(opened.st_size, MAX_IMAGE_HEADER_BYTES)
-        chunks: list[bytes] = []
+        snapshot_write_fd, snapshot_path = tempfile.mkstemp(
+            prefix="irlight-standby-", suffix=".image"
+        )
+        remaining = opened.st_size
+        prefix_remaining = min(opened.st_size, MAX_IMAGE_HEADER_BYTES)
+        prefix_parts: list[bytes] = []
         while remaining > 0:
-            chunk = os.read(fd, remaining)
+            chunk = os.read(source_fd, min(_COPY_CHUNK_BYTES, remaining))
             if not chunk:
-                break
-            chunks.append(chunk)
+                raise ValueError("standby asset changed while being snapshotted")
+            if prefix_remaining > 0:
+                prefix_chunk = chunk[:prefix_remaining]
+                prefix_parts.append(prefix_chunk)
+                prefix_remaining -= len(prefix_chunk)
+            _write_all(snapshot_write_fd, chunk)
             remaining -= len(chunk)
-        os.lseek(fd, 0, os.SEEK_SET)
-        return b"".join(chunks), fd, identity, opened.st_size
+
+        after_copy = os.fstat(source_fd)
+        if _stat_signature(after_copy) != source_signature:
+            raise ValueError("standby asset changed while being snapshotted")
+        after_path = os.lstat(path)
+        if not stat.S_ISREG(after_path.st_mode):
+            raise ValueError("standby asset path stopped being a regular file")
+        if (after_path.st_dev, after_path.st_ino) != source_identity:
+            raise ValueError("standby asset path changed while being snapshotted")
+
+        snapshot_written = os.fstat(snapshot_write_fd)
+        if not stat.S_ISREG(snapshot_written.st_mode):
+            raise ValueError("standby snapshot is not a regular file")
+        if snapshot_written.st_size != opened.st_size:
+            raise ValueError("standby snapshot size does not match source")
+        os.fchmod(snapshot_write_fd, stat.S_IRUSR)
+        os.fsync(snapshot_write_fd)
+
+        snapshot_flags = os.O_RDONLY
+        snapshot_flags |= getattr(os, "O_CLOEXEC", 0)
+        snapshot_flags |= getattr(os, "O_NOFOLLOW", 0)
+        snapshot_read_fd = os.open(snapshot_path, snapshot_flags)
+        snapshot_opened = os.fstat(snapshot_read_fd)
+        snapshot_identity = (snapshot_opened.st_dev, snapshot_opened.st_ino)
+        if not stat.S_ISREG(snapshot_opened.st_mode):
+            raise ValueError("standby snapshot stopped being a regular file")
+        if snapshot_opened.st_size != opened.st_size:
+            raise ValueError("standby snapshot changed before decoder handoff")
+        if snapshot_identity != (
+            snapshot_written.st_dev,
+            snapshot_written.st_ino,
+        ):
+            raise ValueError("standby snapshot path changed before decoder handoff")
+
+        os.unlink(snapshot_path)
+        snapshot_path = None
+        _close_fd_quietly(snapshot_write_fd)
+        snapshot_write_fd = None
+        _close_fd_quietly(source_fd)
+        source_fd = None
+        os.lseek(snapshot_read_fd, 0, os.SEEK_SET)
+        retained_fd = snapshot_read_fd
+        snapshot_read_fd = None
+        return b"".join(prefix_parts), retained_fd, snapshot_identity, opened.st_size
     except (OSError, ValueError):
-        _close_fd_quietly(fd)
         return None
+    finally:
+        _close_fd_quietly(source_fd)
+        _close_fd_quietly(snapshot_write_fd)
+        _close_fd_quietly(snapshot_read_fd)
+        if snapshot_path is not None:
+            try:
+                os.unlink(snapshot_path)
+            except OSError:
+                pass
 
 
 def _png_dimensions(payload: bytes) -> tuple[int, int] | None:
@@ -313,9 +395,9 @@ def _pinned_fd_uri_for(fd: int, identity: tuple[int, int]) -> str | None:
         return None
 
     # GStreamer opens a fresh descriptor through the process fd alias, so it
-    # sees the already validated inode even if the original pathname is later
-    # replaced. /proc is the production Linux path; /dev/fd keeps local Unix
-    # development environments working where that alias is available instead.
+    # sees the private immutable snapshot even if the source pathname/inode is
+    # later replaced or modified. /proc is the production Linux path; /dev/fd
+    # keeps local Unix development environments working where available.
     for base in (Path("/proc/self/fd"), Path("/dev/fd")):
         alias = base / str(fd)
         try:
@@ -328,7 +410,7 @@ def _pinned_fd_uri_for(fd: int, identity: tuple[int, int]) -> str | None:
 
 
 def _open_supported_image(path: Path) -> tuple[int, tuple[int, int]] | None:
-    opened = _open_regular_file_prefix(path)
+    opened = _snapshot_regular_file_prefix(path)
     if opened is None:
         return None
 
@@ -356,10 +438,11 @@ def resolve_standby_asset(
 
     ``custom_path`` is expected to be a Node-prefetched, already validated image.
     These cheap local checks cover missing, empty, oversized, non-regular,
-    symlinked, unsupported, malformed-header, excessive-dimension, and unusable
-    decoder-handoff inputs; deep decode/content validation belongs to Issue #7.
-    A successful selection owns an open fd for the validated inode until the
-    Continuity pipeline releases it.
+    symlinked, unsupported, malformed-header, excessive-dimension, acquisition
+    races, and unusable decoder handoff inputs. A successful selection owns a
+    private unlinked snapshot fd until the Continuity pipeline releases it, so
+    later source-path replacement or in-place mutation cannot change decoder
+    bytes. Deep decode/decompression validation still belongs to Issue #7.
     """
 
     custom = (custom_path or "").strip()
