@@ -132,12 +132,27 @@ class CapacityReportTest(unittest.TestCase):
             MODULE.validate_report(candidate)
 
     def test_margin_must_be_explicit_bounded_integer(self) -> None:
-        for value in (0, 100, True, 20.5):
+        for value in (0, 91, 100, True, 20.5):
             candidate = report()
             candidate["safety_margin_percent"] = value
             with self.subTest(value=value):
                 with self.assertRaisesRegex(CapacityReportError, "safety_margin_percent"):
                     MODULE.validate_report(candidate)
+
+        candidate = report()
+        candidate["trials"][1]["concurrent_sessions"] = 100
+        candidate["trials"][2]["concurrent_sessions"] = 101
+        candidate["safety_margin_percent"] = 90
+        summary = MODULE.validate_report(candidate)
+        self.assertEqual(summary["recommended_max_sessions"], 10)
+
+    def test_capacity_derivation_uses_integer_arithmetic_for_large_session_counts(self) -> None:
+        candidate = report()
+        huge = 10**400
+        candidate["trials"][1]["concurrent_sessions"] = huge
+        candidate["trials"][2]["concurrent_sessions"] = huge + 1
+        summary = MODULE.validate_report(candidate)
+        self.assertEqual(summary["recommended_max_sessions"], huge * 75 // 100)
 
     def test_rejects_evidence_that_rounds_safe_capacity_to_zero(self) -> None:
         candidate = report()
