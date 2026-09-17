@@ -275,6 +275,70 @@ class StandbyAssetTest(unittest.TestCase):
         self.assertEqual(selection.path, self.fallback)
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
+    def test_custom_changed_during_snapshot_falls_back(self) -> None:
+        custom = self.root / "custom.png"
+        write_png(custom, width=16, height=9)
+        source_stat = custom.stat()
+        source_identity = (source_stat.st_dev, source_stat.st_ino)
+        real_read = os.read
+        mutated = False
+
+        def mutating_read(fd: int, size: int) -> bytes:
+            nonlocal mutated
+            payload = real_read(fd, size)
+            if not mutated:
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino) == source_identity:
+                    with custom.open("r+b", buffering=0) as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        final = handle.read(1)
+                        handle.seek(-1, os.SEEK_END)
+                        handle.write(bytes([final[0] ^ 0x01]))
+                        os.fsync(handle.fileno())
+                    mutated = True
+            return payload
+
+        with patch("standby_asset.os.read", side_effect=mutating_read):
+            selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertTrue(mutated)
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.path, self.fallback)
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_custom_mutated_after_selection_does_not_change_decoder_snapshot(self) -> None:
+        custom = self.root / "custom.png"
+        write_png(custom, width=16, height=9)
+        original = custom.read_bytes()
+        source_stat = custom.stat()
+        source_identity = (source_stat.st_dev, source_stat.st_ino)
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        try:
+            self.assertEqual(selection.source, "CUSTOM")
+            self.assertIsNotNone(selection._pinned_fd)
+            assert selection._pinned_fd is not None
+            snapshot_stat = os.fstat(selection._pinned_fd)
+            self.assertNotEqual(
+                (snapshot_stat.st_dev, snapshot_stat.st_ino), source_identity
+            )
+
+            with custom.open("r+b", buffering=0) as handle:
+                handle.seek(0)
+                handle.write(b"X" * len(original))
+                os.fsync(handle.fileno())
+
+            current_stat = custom.stat()
+            self.assertEqual((current_stat.st_dev, current_stat.st_ino), source_identity)
+            self.assertNotEqual(custom.read_bytes(), original)
+
+            os.lseek(selection._pinned_fd, 0, os.SEEK_SET)
+            snapshotted = os.read(selection._pinned_fd, len(original) + 1)
+            self.assertEqual(snapshotted, original)
+            self.assertIn("uridecodebin", gst_standby_source(selection))
+        finally:
+            selection.close()
+
     def test_missing_custom_and_default_uses_synthetic_black(self) -> None:
         selection = resolve_standby_asset(
             str(self.root / "missing-custom.png"),
