@@ -62,7 +62,27 @@ def _open_lock(path: Path) -> Any:
         raise
 
 
-def _append_line(path: Path, line: str) -> None:
+def _needs_line_separator(path: Path) -> bool:
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise CapacityTrialRecordError(f"cannot inspect trials JSONL ending: {exc}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise CapacityTrialRecordError("trials JSONL must be a regular file")
+        if info.st_size == 0:
+            return False
+        os.lseek(fd, -1, os.SEEK_END)
+        return os.read(fd, 1) != b"\n"
+    finally:
+        os.close(fd)
+
+
+def _append_line(path: Path, line: str, *, prepend_newline: bool = False) -> None:
     flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -76,7 +96,7 @@ def _append_line(path: Path, line: str) -> None:
             raise CapacityTrialRecordError("trials JSONL must be a regular file")
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             fd = -1
-            handle.write(line)
+            handle.write(("\n" if prepend_newline else "") + line)
             handle.flush()
             os.fsync(handle.fileno())
     finally:
@@ -127,7 +147,8 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
             )
             + "\n"
         )
-        _append_line(path, line)
+        prepend_newline = path.exists() and _needs_line_separator(path)
+        _append_line(path, line, prepend_newline=prepend_newline)
         return recorded
 
 
