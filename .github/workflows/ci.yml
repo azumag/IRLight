@@ -96,6 +96,22 @@ jobs:
           echo "::endgroup::"
       - name: Exercise Docker integration smoke suite
         run: bash ./scripts/ci-docker-smoke-suite.sh
+      - name: Exercise measured soak evidence chain
+        # The collector totals file descriptors from host /proc for container
+        # processes. GitHub-hosted container processes are commonly root-owned,
+        # so the otherwise read-only probe needs host process inspection access.
+        run: |
+          sudo env \
+            MEASURED_SOAK_DIAGNOSTIC_DIR="$RUNNER_TEMP/irlight-measured-soak-diagnostics" \
+            bash ./scripts/smoke-measured-soak-evidence.sh
+      - name: Retain measured soak failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: measured-soak-failure-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/irlight-measured-soak-diagnostics
+          if-no-files-found: warn
+          retention-days: 3
 
   # Compatibility gates retain the previous check names for repositories that
   # may require them in branch protection. The actual scenarios run once in the

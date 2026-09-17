@@ -50,6 +50,24 @@ python3 scripts/run-measured-soak.py \
 A/V-sync, timestamp errors, or reconnect behavior. Do not use a diagnostic-only
 run to claim the media acceptance criteria passed.
 
+## Linux CI evidence-chain smoke
+
+Pull-request CI runs `scripts/smoke-measured-soak-evidence.sh` on the existing
+shared Linux Docker runner after the regular Docker integration suite. The smoke
+uses an eight-second, two-second-interval resource-only run so it exercises the
+real Compose lifecycle, sample collector, cleanup verifier, report assembler,
+and canonical validator without adding a second cold Docker runner.
+
+The smoke also revalidates the persisted `report.json` independently and checks
+that the caller-visible evidence bundle contains the required baseline and a
+final sample covering the declared duration. This catches wiring or filesystem
+regressions that unit tests of the individual Python helpers cannot prove.
+
+This CI smoke is deliberately `diagnostic-unmeasured`: it proves the end-to-end
+evidence machinery executes on a real Linux Docker host, but it does **not**
+prove media quality, leak thresholds, six-hour stability, or release
+acceptance. Those remain separate measured runs with a live media probe.
+
 ## Release-candidate duration
 
 Issue #13 requires a measured run of at least six hours for release acceptance.
