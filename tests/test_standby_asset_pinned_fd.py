@@ -5,12 +5,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "continuity"))
 
 from make_default_standby import write_png  # noqa: E402
+import standby_asset  # noqa: E402
 from standby_asset import gst_standby_source, resolve_standby_asset  # noqa: E402
 
 
@@ -74,6 +76,50 @@ class StandbyAssetPinnedFdTest(unittest.TestCase):
             )
         finally:
             selection.close()
+
+    def test_custom_without_decoder_handoff_falls_back_to_node_default(self) -> None:
+        custom = self.root / "custom.png"
+        write_png(custom, width=16, height=9)
+        real_fd_uri = standby_asset._pinned_fd_uri_for
+        calls = 0
+
+        def selective_fd_uri(fd: int, identity: tuple[int, int]) -> str | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            return real_fd_uri(fd, identity)
+
+        with mock.patch.object(
+            standby_asset, "_pinned_fd_uri_for", side_effect=selective_fd_uri
+        ):
+            selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        try:
+            self.assertEqual(selection.source, "NODE_DEFAULT")
+            self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+            self.assertTrue(selection.custom_configured)
+            self.assertEqual(selection.path, self.fallback)
+            self.assertIn("uridecodebin", gst_standby_source(selection))
+            self.assertGreaterEqual(calls, 2)
+        finally:
+            selection.close()
+
+    def test_no_decoder_handoff_fails_closed_to_synthetic_black(self) -> None:
+        custom = self.root / "custom.png"
+        write_png(custom, width=16, height=9)
+
+        with mock.patch.object(standby_asset, "_pinned_fd_uri_for", return_value=None):
+            selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "SYNTHETIC_BLACK")
+        self.assertEqual(
+            selection.fallback_reason, "ASSET_AND_NODE_DEFAULT_UNAVAILABLE"
+        )
+        self.assertTrue(selection.custom_configured)
+        self.assertIsNone(selection.path)
+        self.assertIsNone(selection._pinned_fd)
+        self.assertIn("videotestsrc", gst_standby_source(selection))
 
     def test_closed_selection_fails_closed_to_synthetic_black(self) -> None:
         custom = self.root / "custom.png"
