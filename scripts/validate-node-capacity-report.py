@@ -120,38 +120,16 @@ def _bounded_text(value: Any, label: str, *, maximum: int) -> str:
     return value
 
 
-def validate_report(report: dict[str, Any]) -> dict[str, Any]:
-    _require_exact_fields(report, TOP_LEVEL_FIELDS, "report")
+def normalize_trials(trials: Any, *, minimum_count: int = 1) -> list[dict[str, Any]]:
+    """Validate trial records and their monotonic ordering without deriving policy."""
 
-    if (
-        isinstance(report["schema_version"], bool)
-        or not isinstance(report["schema_version"], int)
-        or report["schema_version"] != 1
-    ):
-        raise CapacityReportError("schema_version must be integer 1")
-    if not isinstance(report["run_id"], str):
-        raise CapacityReportError("run_id must be a UUID string")
-    try:
-        uuid.UUID(report["run_id"])
-    except (ValueError, AttributeError) as exc:
-        raise CapacityReportError("run_id must be a UUID string") from exc
-
-    node_profile = _bounded_text(report["node_profile"], "node_profile", maximum=300)
-    revision = report["software_revision"]
-    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
-        raise CapacityReportError("software_revision must be a lowercase 40-character Git commit SHA")
-    scenario = _bounded_text(report["scenario"], "scenario", maximum=300)
-    notes = report["notes"]
-    if not isinstance(notes, str) or len(notes) > 4000:
-        raise CapacityReportError("notes must be a string up to 4000 characters")
-
-    margin = report["safety_margin_percent"]
-    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 90:
-        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 90")
-
-    trials = report["trials"]
-    if not isinstance(trials, list) or len(trials) < 2:
-        raise CapacityReportError("trials must contain at least two load levels")
+    if isinstance(minimum_count, bool) or not isinstance(minimum_count, int) or minimum_count < 1:
+        raise ValueError("minimum_count must be a positive integer")
+    if not isinstance(trials, list) or len(trials) < minimum_count:
+        noun = "load level" if minimum_count == 1 else "load levels"
+        raise CapacityReportError(
+            f"trials must contain at least {minimum_count} {noun}"
+        )
 
     normalized: list[dict[str, Any]] = []
     previous_sessions = 0
@@ -203,6 +181,39 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
                 "unexpected_reconnects": reconnects,
             }
         )
+    return normalized
+
+
+def validate_report(report: dict[str, Any]) -> dict[str, Any]:
+    _require_exact_fields(report, TOP_LEVEL_FIELDS, "report")
+
+    if (
+        isinstance(report["schema_version"], bool)
+        or not isinstance(report["schema_version"], int)
+        or report["schema_version"] != 1
+    ):
+        raise CapacityReportError("schema_version must be integer 1")
+    if not isinstance(report["run_id"], str):
+        raise CapacityReportError("run_id must be a UUID string")
+    try:
+        uuid.UUID(report["run_id"])
+    except (ValueError, AttributeError) as exc:
+        raise CapacityReportError("run_id must be a UUID string") from exc
+
+    node_profile = _bounded_text(report["node_profile"], "node_profile", maximum=300)
+    revision = report["software_revision"]
+    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+        raise CapacityReportError("software_revision must be a lowercase 40-character Git commit SHA")
+    scenario = _bounded_text(report["scenario"], "scenario", maximum=300)
+    notes = report["notes"]
+    if not isinstance(notes, str) or len(notes) > 4000:
+        raise CapacityReportError("notes must be a string up to 4000 characters")
+
+    margin = report["safety_margin_percent"]
+    if isinstance(margin, bool) or not isinstance(margin, int) or not 1 <= margin <= 90:
+        raise CapacityReportError("safety_margin_percent must be an integer from 1 through 90")
+
+    normalized = normalize_trials(report["trials"], minimum_count=2)
 
     passing = [trial for trial in normalized if trial["outcome"] == "pass"]
     failing = [trial for trial in normalized if trial["outcome"] == "fail"]
