@@ -155,6 +155,34 @@ class CapacityTrialRecorderTest(unittest.TestCase):
             self.assertIn("at least one trial", stderr)
             self.assertEqual(path.read_bytes(), b"")
 
+    def test_rejects_oversized_existing_jsonl_without_modifying_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"x" * (MODULE.MAX_TRIALS_JSONL_BYTES + 1))
+            before = path.read_bytes()
+
+            result, _, stderr = run_main(cli_args(path, sessions=2))
+            self.assertEqual(result, 2)
+            self.assertIn("maximum size", stderr)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_refuses_append_that_would_exceed_evidence_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            result, _, stderr = run_main(cli_args(path, sessions=1))
+            self.assertEqual(result, 0, stderr)
+            body = path.read_bytes().rstrip(b"\n")
+            padding = MODULE.MAX_TRIALS_JSONL_BYTES - len(body) - 1
+            self.assertGreaterEqual(padding, 0)
+            path.write_bytes(body + (b" " * padding) + b"\n")
+            before = path.read_bytes()
+            self.assertEqual(len(before), MODULE.MAX_TRIALS_JSONL_BYTES)
+
+            result, _, stderr = run_main(cli_args(path, sessions=4, outcome="fail"))
+            self.assertEqual(result, 2)
+            self.assertIn("would exceed maximum size", stderr)
+            self.assertEqual(path.read_bytes(), before)
+
     def test_refuses_symbolic_link_evidence_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
