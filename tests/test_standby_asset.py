@@ -80,7 +80,7 @@ class StandbyAssetTest(unittest.TestCase):
         self.assertEqual(selection.path, self.fallback)
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
-    def test_custom_replaced_during_open_falls_back(self) -> None:
+    def test_custom_replaced_after_open_falls_back(self) -> None:
         custom = self.root / "custom.png"
         write_png(custom, width=16, height=9)
         real_open = os.open
@@ -88,11 +88,12 @@ class StandbyAssetTest(unittest.TestCase):
 
         def swapping_open(path: str | bytes | os.PathLike[str], flags: int, *args, **kwargs):
             nonlocal swapped
+            fd = real_open(path, flags, *args, **kwargs)
             if not swapped and Path(path) == custom:
                 swapped = True
                 custom.unlink()
                 write_png(custom, width=8, height=8)
-            return real_open(path, flags, *args, **kwargs)
+            return fd
 
         with patch("standby_asset.os.open", side_effect=swapping_open):
             selection = resolve_standby_asset(str(custom), str(self.fallback))
