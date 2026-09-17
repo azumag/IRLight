@@ -32,6 +32,37 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def parse_trials_jsonl(raw: str) -> list[dict[str, Any]]:
+    """Parse already-snapshotted trial JSONL without reopening its path."""
+
+    lines = raw.splitlines()
+    if not lines:
+        raise CapacityAssemblyError("trials JSONL must contain at least one trial")
+
+    trials: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            raise CapacityAssemblyError(
+                f"trials JSONL line {line_number} must not be blank"
+            )
+        try:
+            value = json.loads(
+                line,
+                parse_constant=_reject_constant,
+                object_pairs_hook=_strict_object,
+            )
+        except json.JSONDecodeError as exc:
+            raise CapacityAssemblyError(
+                f"invalid JSON on trials JSONL line {line_number}: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise CapacityAssemblyError(
+                f"trials JSONL line {line_number} must contain a JSON object"
+            )
+        trials.append(value)
+    return trials
+
+
 def _open_trials_readonly(path: Path) -> Any:
     """Open one stable regular-file snapshot without following a symlink."""
 
@@ -68,33 +99,7 @@ def load_trials_jsonl(path: Path) -> list[dict[str, Any]]:
             raw = handle.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise CapacityAssemblyError(f"cannot read trials: {exc}") from exc
-
-    lines = raw.splitlines()
-    if not lines:
-        raise CapacityAssemblyError("trials JSONL must contain at least one trial")
-
-    trials: list[dict[str, Any]] = []
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            raise CapacityAssemblyError(
-                f"trials JSONL line {line_number} must not be blank"
-            )
-        try:
-            value = json.loads(
-                line,
-                parse_constant=_reject_constant,
-                object_pairs_hook=_strict_object,
-            )
-        except json.JSONDecodeError as exc:
-            raise CapacityAssemblyError(
-                f"invalid JSON on trials JSONL line {line_number}: {exc}"
-            ) from exc
-        if not isinstance(value, dict):
-            raise CapacityAssemblyError(
-                f"trials JSONL line {line_number} must contain a JSON object"
-            )
-        trials.append(value)
-    return trials
+    return parse_trials_jsonl(raw)
 
 
 def _open_trials_lock(path: Path) -> Any:
