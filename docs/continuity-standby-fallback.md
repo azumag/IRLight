@@ -24,7 +24,7 @@ custom assetが欠損・空・上限超過・未対応formatの場合はNode def
 
 検査に成功した画像は、その時点で開いたregular-file descriptorをContinuity pipeline終了まで保持する。GStreamerには元のpathnameではなく`/proc/self/fd/<n>`（利用可能なUnix環境では`/dev/fd/<n>`）を渡すため、検査後に元pathnameが別inodeへunlink/recreate・symlink差し替えされても、decoderは検査済みinodeから読み込む。さらに selection 時点でこのfd aliasが同じdevice/inodeへ解決できることまで確認する。customのdecoder handoffを構成できない場合はNode defaultを試し、defaultも構成不能ならsynthetic blackへ落とすため、`standby.json`の選択結果と実際にGStreamerへ渡せるsourceが起動時から食い違わない。descriptorが後から失効・再利用されidentityを確認できない場合も、元pathnameへ戻らずsynthetic blackへfail-closedする。
 
-GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだけ読み、PNG/JPEG/WebPの幅・高さを取得する。幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで極端なdimension宣言をそのままdecoderへ渡さないための追加防御であり、完全な画像decodeや展開後メモリ量の保証ではない。
+GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだけ読み、PNG/JPEG/WebPの幅・高さと最低限のcontainer/header整合性を確認する。PNGは固定長IHDRのCRCとbit depth / color type / compression / filter / interlaceの組み合わせ、JPEGはSOFのsample precision・component数・segment長の整合、WebPはRIFF宣言サイズと実ファイルサイズ、および先頭chunkの境界を確認する。そのうえで幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで明らかに壊れたheaderや極端なdimension宣言をdecoderへ渡さないための追加防御であり、完全な画像decode、全chunkの検証、展開後メモリ量の保証ではない。
 
 ## Diagnostics
 
@@ -45,4 +45,4 @@ GStreamerへ渡す前のcheap guardとして、画像ヘッダは最大1 MiBだ�
 
 ## Security boundary
 
-Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/dimension検査、symlink・special-file拒否、検査済みinodeへのdecoder handoff固定を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではない。同じinodeの内容を別writerが検査後にin-place変更するケース、malformed imageの完全decode検証、decompression bombの展開量保証、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
+Continuityは任意URLをfetchしない。`STANDBY_IMAGE_PATH`はtrusted Node側でprefetch済みのローカルregular fileのみを対象とし、安価なformat/size/header-integrity/dimension検査、symlink・special-file拒否、検査済みinodeへのdecoder handoff固定を追加防御として行う。この検査はNode側prefetchのtrust boundaryを置き換えるものではない。同じinodeの内容を別writerが検査後にin-place変更するケース、malformed imageの完全decode検証、decompression bombの展開量保証、checksum、object storage認証はIssue #7のAsset processing/prefetchで実施する。
