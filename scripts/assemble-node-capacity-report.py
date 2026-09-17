@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.util
 import json
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +66,35 @@ def load_trials_jsonl(path: Path) -> list[dict[str, Any]]:
     return trials
 
 
+def _open_trials_lock(path: Path) -> Any:
+    lock_path = path.with_name(f"{path.name}.lock")
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise CapacityAssemblyError(f"cannot open trial lock: {exc}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise CapacityAssemblyError("trial lock must be a regular file")
+        return os.fdopen(fd, "r+", encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def load_trials_snapshot(path: Path) -> list[dict[str, Any]]:
+    """Read a complete trial snapshot while cooperating recorders are excluded."""
+
+    if path.parent and not path.parent.exists():
+        raise CapacityAssemblyError("trials JSONL parent directory does not exist")
+    with _open_trials_lock(path) as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+        return load_trials_jsonl(path)
+
+
 def _load_validator() -> Any:
     path = Path(__file__).with_name("validate-node-capacity-report.py")
     spec = importlib.util.spec_from_file_location(
@@ -107,6 +140,49 @@ def assemble_report(
     return report
 
 
+def _write_exclusive_atomic(path: Path, rendered: str) -> None:
+    """Publish a complete report without exposing a partially written final path."""
+
+    parent = path.parent
+    if parent and not parent.exists():
+        raise CapacityAssemblyError("output parent directory does not exist")
+    directory = parent if parent else Path(".")
+    try:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.tmp-",
+            dir=directory,
+        )
+    except OSError as exc:
+        raise CapacityAssemblyError(f"cannot create temporary output: {exc}") from exc
+
+    temporary = Path(temporary_name)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(rendered)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except (OSError, UnicodeEncodeError) as exc:
+            raise CapacityAssemblyError(f"cannot write temporary output: {exc}") from exc
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise CapacityAssemblyError("output already exists") from exc
+        except OSError as exc:
+            raise CapacityAssemblyError(f"cannot publish output atomically: {exc}") from exc
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trials-jsonl", type=Path, required=True)
@@ -132,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError as exc:
                 raise CapacityAssemblyError(f"cannot resolve paths: {exc}") from exc
 
-        trials = load_trials_jsonl(args.trials_jsonl)
+        trials = load_trials_snapshot(args.trials_jsonl)
         report = assemble_report(
             trials=trials,
             run_id=args.run_id,
@@ -155,8 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.output is None:
             sys.stdout.write(rendered)
         else:
-            with args.output.open("x", encoding="utf-8") as handle:
-                handle.write(rendered)
+            _write_exclusive_atomic(args.output, rendered)
     except (CapacityAssemblyError, OSError, UnicodeEncodeError) as exc:
         print(f"node capacity report assembly failed: {exc}", file=sys.stderr)
         return 2
