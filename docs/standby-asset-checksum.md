@@ -40,6 +40,7 @@ The helper is read-only and accepts only one stable local regular file.
 - device/inode are checked across pathname open and after hashing
 - size/mtime/ctime and descriptor identity must remain stable while bytes are hashed
 - path replacement or in-place mutation during inspection fails closed
+- `verify` always requires an expected SHA-256; size alone never produces a verified integrity claim
 - expected SHA-256 uses exactly 64 lowercase hexadecimal characters
 - expected size, when supplied, must be within the same 32 MiB bound
 
