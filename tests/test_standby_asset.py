@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import binascii
 import os
 import sys
 import tempfile
@@ -33,12 +34,18 @@ class StandbyAssetTest(unittest.TestCase):
 
     @staticmethod
     def _write_png_header(path: Path, *, width: int, height: int) -> None:
+        ihdr = (
+            width.to_bytes(4, "big")
+            + height.to_bytes(4, "big")
+            + b"\x08\x02\x00\x00\x00"
+        )
+        checksum = binascii.crc32(b"IHDR")
+        checksum = binascii.crc32(ihdr, checksum) & 0xFFFFFFFF
         path.write_bytes(
             b"\x89PNG\r\n\x1a\n"
             + b"\x00\x00\x00\rIHDR"
-            + width.to_bytes(4, "big")
-            + height.to_bytes(4, "big")
-            + b"\x08\x02\x00\x00\x00"
+            + ihdr
+            + checksum.to_bytes(4, "big")
         )
 
     @staticmethod
@@ -120,6 +127,18 @@ class StandbyAssetTest(unittest.TestCase):
         self.assertEqual(selection.source, "NODE_DEFAULT")
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
+    def test_png_bad_ihdr_crc_falls_back_to_node_default(self) -> None:
+        custom = self.root / "bad-crc.png"
+        self._write_png_header(custom, width=1280, height=720)
+        payload = bytearray(custom.read_bytes())
+        payload[-1] ^= 0x01
+        custom.write_bytes(payload)
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
     def test_png_dimension_limit_falls_back_to_node_default(self) -> None:
         custom = self.root / "oversized.png"
         self._write_png_header(
@@ -168,6 +187,18 @@ class StandbyAssetTest(unittest.TestCase):
         self.assertEqual(selection.source, "NODE_DEFAULT")
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
+    def test_jpeg_inconsistent_sof_components_falls_back_to_node_default(self) -> None:
+        custom = self.root / "bad-components.jpg"
+        self._write_jpeg_sof(custom, width=1280, height=720)
+        payload = bytearray(custom.read_bytes())
+        payload[11] = 4
+        custom.write_bytes(payload)
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
     def test_webp_dimension_limit_falls_back_to_node_default(self) -> None:
         custom = self.root / "oversized.webp"
         self._write_webp_vp8x(
@@ -175,6 +206,19 @@ class StandbyAssetTest(unittest.TestCase):
             width=MAX_IMAGE_DIMENSION + 1,
             height=1,
         )
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_webp_riff_size_mismatch_falls_back_to_node_default(self) -> None:
+        custom = self.root / "bad-riff-size.webp"
+        self._write_webp_vp8x(custom, width=1280, height=720)
+        payload = bytearray(custom.read_bytes())
+        declared = int.from_bytes(payload[4:8], "little")
+        payload[4:8] = (declared + 2).to_bytes(4, "little")
+        custom.write_bytes(payload)
 
         selection = resolve_standby_asset(str(custom), str(self.fallback))
 

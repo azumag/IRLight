@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import binascii
 import os
 import stat
 from dataclasses import dataclass, field
@@ -62,7 +63,7 @@ def _close_fd_quietly(fd: int) -> None:
 
 def _open_regular_file_prefix(
     path: Path,
-) -> tuple[bytes, int, tuple[int, int]] | None:
+) -> tuple[bytes, int, tuple[int, int], int] | None:
     """Open one stable regular file and return a bounded prefix plus pinned fd.
 
     Standby paths are a trusted Node-local handoff, but they can still be
@@ -119,20 +120,47 @@ def _open_regular_file_prefix(
             chunks.append(chunk)
             remaining -= len(chunk)
         os.lseek(fd, 0, os.SEEK_SET)
-        return b"".join(chunks), fd, identity
+        return b"".join(chunks), fd, identity, opened.st_size
     except (OSError, ValueError):
         _close_fd_quietly(fd)
         return None
 
 
 def _png_dimensions(payload: bytes) -> tuple[int, int] | None:
-    if len(payload) < 24 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+    # A PNG signature plus the complete fixed-size IHDR chunk is 33 bytes.
+    # Validate the chunk CRC and fields before trusting the declared dimensions.
+    if len(payload) < 33 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
     if payload[8:12] != b"\x00\x00\x00\r" or payload[12:16] != b"IHDR":
         return None
+
+    ihdr = payload[16:29]
+    expected_crc = int.from_bytes(payload[29:33], "big")
+    actual_crc = binascii.crc32(b"IHDR")
+    actual_crc = binascii.crc32(ihdr, actual_crc) & 0xFFFFFFFF
+    if actual_crc != expected_crc:
+        return None
+
+    bit_depth = ihdr[8]
+    color_type = ihdr[9]
+    compression = ihdr[10]
+    filter_method = ihdr[11]
+    interlace = ihdr[12]
+    allowed_depths = {
+        0: {1, 2, 4, 8, 16},
+        2: {8, 16},
+        3: {1, 2, 4, 8},
+        4: {8, 16},
+        6: {8, 16},
+    }
+    if bit_depth not in allowed_depths.get(color_type, set()):
+        return None
+    if compression != 0 or filter_method != 0 or interlace not in {0, 1}:
+        return None
+
     return (
-        int.from_bytes(payload[16:20], "big"),
-        int.from_bytes(payload[20:24], "big"),
+        int.from_bytes(ihdr[0:4], "big"),
+        int.from_bytes(ihdr[4:8], "big"),
     )
 
 
@@ -189,10 +217,16 @@ def _jpeg_dimensions(payload: bytes) -> tuple[int, int] | None:
             return None
 
         if marker in _JPEG_SOF_MARKERS:
-            if segment_length < 8:
+            if segment_length < 11:
                 return None
+            precision = payload[offset + 2]
             height = int.from_bytes(payload[offset + 3 : offset + 5], "big")
             width = int.from_bytes(payload[offset + 5 : offset + 7], "big")
+            component_count = payload[offset + 7]
+            if precision <= 0 or precision > 16 or component_count <= 0:
+                return None
+            if segment_length != 8 + 3 * component_count:
+                return None
             return width, height
 
         offset = segment_end
@@ -200,7 +234,7 @@ def _jpeg_dimensions(payload: bytes) -> tuple[int, int] | None:
     return None
 
 
-def _webp_dimensions(payload: bytes) -> tuple[int, int] | None:
+def _webp_dimensions(payload: bytes, *, file_size: int) -> tuple[int, int] | None:
     if (
         len(payload) < 20
         or payload[:4] != b"RIFF"
@@ -208,11 +242,18 @@ def _webp_dimensions(payload: bytes) -> tuple[int, int] | None:
     ):
         return None
 
+    riff_size = int.from_bytes(payload[4:8], "little")
+    if riff_size + 8 != file_size:
+        return None
+
     chunk_type = payload[12:16]
     chunk_size = int.from_bytes(payload[16:20], "little")
+    padded_chunk_size = chunk_size + (chunk_size & 1)
+    if 20 + padded_chunk_size > file_size:
+        return None
 
     if chunk_type == b"VP8X":
-        if chunk_size < 10 or len(payload) < 30:
+        if chunk_size != 10 or len(payload) < 30:
             return None
         width = 1 + int.from_bytes(payload[24:27], "little")
         height = 1 + int.from_bytes(payload[27:30], "little")
@@ -240,13 +281,15 @@ def _webp_dimensions(payload: bytes) -> tuple[int, int] | None:
     return None
 
 
-def _supported_image_dimensions(payload: bytes) -> tuple[int, int] | None:
+def _supported_image_dimensions(
+    payload: bytes, *, file_size: int
+) -> tuple[int, int] | None:
     if payload.startswith(b"\x89PNG\r\n\x1a\n"):
         return _png_dimensions(payload)
     if payload.startswith(b"\xff\xd8"):
         return _jpeg_dimensions(payload)
     if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
-        return _webp_dimensions(payload)
+        return _webp_dimensions(payload, file_size=file_size)
     return None
 
 
@@ -289,8 +332,8 @@ def _open_supported_image(path: Path) -> tuple[int, tuple[int, int]] | None:
     if opened is None:
         return None
 
-    prefix, fd, identity = opened
-    dimensions = _supported_image_dimensions(prefix)
+    prefix, fd, identity, file_size = opened
+    dimensions = _supported_image_dimensions(prefix, file_size=file_size)
     if dimensions is None or not _dimensions_are_safe(dimensions):
         _close_fd_quietly(fd)
         return None
@@ -313,10 +356,10 @@ def resolve_standby_asset(
 
     ``custom_path`` is expected to be a Node-prefetched, already validated image.
     These cheap local checks cover missing, empty, oversized, non-regular,
-    symlinked, unsupported, excessive-dimension, and unusable decoder-handoff
-    inputs; deep decode/content validation belongs to Issue #7. A successful
-    selection owns an open fd for the validated inode until the Continuity
-    pipeline releases it.
+    symlinked, unsupported, malformed-header, excessive-dimension, and unusable
+    decoder-handoff inputs; deep decode/content validation belongs to Issue #7.
+    A successful selection owns an open fd for the validated inode until the
+    Continuity pipeline releases it.
     """
 
     custom = (custom_path or "").strip()
