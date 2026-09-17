@@ -100,6 +100,13 @@ class CapacityReportTest(unittest.TestCase):
             with self.assertRaisesRegex(CapacityReportError, "regular file"):
                 MODULE.load_report(fifo)
 
+    def test_load_report_rejects_oversized_file_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_bytes(b" " * (MODULE.MAX_REPORT_BYTES + 1))
+            with self.assertRaisesRegex(CapacityReportError, "maximum size"):
+                MODULE.load_report(path)
+
     def test_rejects_non_finite_metrics_and_boolean_numbers(self) -> None:
         for field, value in (
             ("cpu_peak_percent", float("nan")),
@@ -148,6 +155,12 @@ class CapacityReportTest(unittest.TestCase):
         candidate = report()
         candidate["trials"][-1]["failed_sessions"] = 9
         with self.assertRaisesRegex(CapacityReportError, "cannot exceed concurrent_sessions"):
+            MODULE.validate_report(candidate)
+
+    def test_rejects_excessive_trial_count_before_processing_records(self) -> None:
+        candidate = report()
+        candidate["trials"] = [candidate["trials"][0]] * (MODULE.MAX_TRIAL_COUNT + 1)
+        with self.assertRaisesRegex(CapacityReportError, "at most"):
             MODULE.validate_report(candidate)
 
     def test_margin_must_be_explicit_bounded_integer(self) -> None:
