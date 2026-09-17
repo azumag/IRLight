@@ -60,10 +60,11 @@ class StandbyAssetChecksumTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.AssetChecksumError, "size"):
             MODULE.verify_asset(
                 self.asset,
+                expected_sha256=digest,
                 expected_size_bytes=len(self.payload) + 1,
             )
         with self.assertRaisesRegex(MODULE.AssetChecksumError, "requires"):
-            MODULE.verify_asset(self.asset)
+            MODULE.verify_asset(self.asset, expected_size_bytes=len(self.payload))
 
     def test_malformed_expected_digest_is_rejected(self) -> None:
         for value in ("A" * 64, "f" * 63, "g" * 64):
