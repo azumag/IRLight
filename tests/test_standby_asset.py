@@ -79,6 +79,22 @@ class StandbyAssetTest(unittest.TestCase):
         self.assertEqual(selection.path, custom)
         self.assertIsNone(selection.fallback_reason)
 
+    def test_supported_jpeg_dimensions_are_accepted(self) -> None:
+        custom = self.root / "custom.jpg"
+        self._write_jpeg_sof(custom, width=1280, height=720)
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+        self.assertEqual(selection.source, "CUSTOM")
+        self.assertEqual(selection.path, custom)
+        self.assertIsNone(selection.fallback_reason)
+
+    def test_supported_webp_dimensions_are_accepted(self) -> None:
+        custom = self.root / "custom.webp"
+        self._write_webp_vp8x(custom, width=1280, height=720)
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+        self.assertEqual(selection.source, "CUSTOM")
+        self.assertEqual(selection.path, custom)
+        self.assertIsNone(selection.fallback_reason)
+
     def test_missing_custom_falls_back_to_node_default(self) -> None:
         selection = resolve_standby_asset(
             str(self.root / "missing.png"), str(self.fallback)
