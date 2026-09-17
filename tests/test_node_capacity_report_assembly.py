@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import stat
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,22 @@ class CapacityReportAssemblyTest(unittest.TestCase):
             with self.assertRaisesRegex(CapacityAssemblyError, "must contain a JSON object"):
                 MODULE.load_trials_jsonl(path)
 
+    def test_snapshot_uses_recorder_sidecar_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_text(json.dumps(trial(1, "pass")) + "\n", encoding="utf-8")
+            with mock.patch.object(
+                MODULE.fcntl,
+                "flock",
+                wraps=MODULE.fcntl.flock,
+            ) as flock:
+                loaded = MODULE.load_trials_snapshot(path)
+            self.assertEqual(len(loaded), 1)
+            self.assertTrue(path.with_name("trials.jsonl.lock").exists())
+            self.assertTrue(
+                any(call.args[1] == MODULE.fcntl.LOCK_SH for call in flock.call_args_list)
+            )
+
     def test_canonical_validator_rejects_invalid_boundary(self) -> None:
         with self.assertRaisesRegex(CapacityAssemblyError, "assembled report is invalid"):
             MODULE.assemble_report(
@@ -125,7 +143,48 @@ class CapacityReportAssemblyTest(unittest.TestCase):
             self.assertEqual(MODULE.main(argv), 0)
             rendered = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(len(rendered["trials"]), 3)
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            before = output.read_bytes()
             self.assertEqual(MODULE.main(argv), 2)
+            self.assertEqual(output.read_bytes(), before)
+
+    def test_atomic_publish_failure_does_not_leave_partial_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "trials.jsonl"
+            output = root / "report.json"
+            raw.write_text(
+                "\n".join(
+                    json.dumps(item, separators=(",", ":"))
+                    for item in (
+                        trial(1, "pass"),
+                        trial(4, "pass"),
+                        trial(8, "fail", failed_sessions=1),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            argv = [
+                "--trials-jsonl",
+                str(raw),
+                "--run-id",
+                str(uuid.uuid4()),
+                "--node-profile",
+                "linux-x86_64 4 vCPU 8 GiB",
+                "--software-revision",
+                "d" * 40,
+                "--scenario",
+                "fixture scenario",
+                "--safety-margin-percent",
+                "25",
+                "--output",
+                str(output),
+            ]
+            with mock.patch.object(MODULE.os, "link", side_effect=OSError("injected")):
+                self.assertEqual(MODULE.main(argv), 2)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".report.json.tmp-*")), [])
 
     def test_main_refuses_to_overwrite_raw_trials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -99,7 +99,9 @@ python3 scripts/assemble-node-capacity-report.py \
   --output capacity-report.json
 ```
 
-When `--output` is supplied, the destination must not already exist and must not alias the raw JSONL file. This keeps the raw observations intact if assembly or canonical validation fails. Omitting `--output` writes the validated report to stdout. The assembler does not execute a load test, provision a Node, mutate scheduler inventory, or contact a provider.
+When `--output` is supplied, the destination must not already exist and must not alias the raw JSONL file. The assembler first takes a shared advisory lock on the same `capacity-trials.jsonl.lock` sidecar used by the recorder, so cooperating recorder processes cannot append while the raw evidence snapshot is being read. It validates that snapshot, writes the complete report to a mode-`0600` temporary file in the destination directory, flushes and `fsync`s that file, and only then publishes it to the final path with a no-overwrite atomic hard-link operation. If validation, writing, or publication fails, a partially written final report path is not exposed. Omitting `--output` writes the validated report to stdout.
+
+The sidecar lock only coordinates tools that honor it. A manual or otherwise non-cooperating writer can still mutate the JSONL outside this contract and must not be used during report assembly. The assembler does not execute a load test, provision a Node, mutate scheduler inventory, or contact a provider.
 
 ## Record raw trials safely
 
@@ -122,7 +124,7 @@ python3 scripts/record-node-capacity-trial.py \
 
 Before append, the recorder validates the new trial with the same canonical trial schema used by the report validator. Under an advisory sidecar lock (`capacity-trials.jsonl.lock`), it then parses the complete existing JSONL with duplicate-key and non-finite-number rejection, verifies that load levels remain strictly increasing and that no passing level appears after a failed level, appends one canonical JSON line, flushes it, and `fsync`s the evidence file. A malformed existing file or invalid sequence is left unchanged. New evidence and lock files are created with mode `0600`, and symbolic-link evidence targets are refused.
 
-The sidecar lock serializes **cooperating recorder processes**; direct/manual writers do not participate in that lock. Treat one JSONL file as one monotonic controlled run. After a failed level has been recorded, a later higher level may also be recorded as failed, but a passing retest or a lower load requires a new run/file so the final boundary is not cherry-picked.
+The sidecar lock serializes **cooperating recorder processes** and the final assembler snapshot; direct/manual writers do not participate in that lock. Treat one JSONL file as one monotonic controlled run. After a failed level has been recorded, a later higher level may also be recorded as failed, but a passing retest or a lower load requires a new run/file so the final boundary is not cherry-picked.
 
 This recorder only persists measurements supplied by the load harness. It does not create traffic, provision a Node, contact a provider, update scheduler inventory, or decide production `max_sessions`. After the run has a real passing/failing boundary, assemble the report with `assemble-node-capacity-report.py` and validate it before any operational capacity change.
 
