@@ -14,6 +14,7 @@ from standby_asset import (
 
 _READ_CHUNK_BYTES = 64 * 1024
 _SHA256_HEX_LENGTH = hashlib.sha256().digest_size * 2
+_MAX_EXPECTED_SIZE_DIGITS = len(str(MAX_IMAGE_BYTES))
 
 
 class StandbyIntegrityError(RuntimeError):
@@ -36,8 +37,13 @@ def _validated_expected_sha256(value: str | None) -> str | None:
 def _validated_expected_size_bytes(value: str | None) -> int | None:
     if value is None:
         return None
-    if not value or not value.isascii() or not value.isdigit():
-        raise StandbyIntegrityError("expected standby size must be a decimal integer")
+    if (
+        not value
+        or len(value) > _MAX_EXPECTED_SIZE_DIGITS
+        or not value.isascii()
+        or not value.isdigit()
+    ):
+        raise StandbyIntegrityError("expected standby size must be a bounded decimal integer")
     parsed = int(value, 10)
     if parsed <= 0 or parsed > MAX_IMAGE_BYTES:
         raise StandbyIntegrityError("expected standby size is outside the allowed range")
