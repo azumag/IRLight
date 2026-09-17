@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +51,55 @@ class StandbyAssetTest(unittest.TestCase):
         custom.write_text("not an image", encoding="utf-8")
         selection = resolve_standby_asset(str(custom), str(self.fallback))
         self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_symlink_custom_falls_back_without_following_target(self) -> None:
+        target = self.root / "target.png"
+        custom = self.root / "custom.png"
+        write_png(target, width=16, height=9)
+        try:
+            custom.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink unavailable: {exc}")
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.path, self.fallback)
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_fifo_custom_falls_back_without_blocking(self) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO creation is unavailable")
+        custom = self.root / "custom-fifo"
+        os.mkfifo(custom)
+
+        selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.path, self.fallback)
+        self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
+
+    def test_custom_replaced_during_open_falls_back(self) -> None:
+        custom = self.root / "custom.png"
+        write_png(custom, width=16, height=9)
+        real_open = os.open
+        swapped = False
+
+        def swapping_open(path: str | bytes | os.PathLike[str], flags: int, *args, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(path) == custom:
+                swapped = True
+                custom.unlink()
+                write_png(custom, width=8, height=8)
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch("standby_asset.os.open", side_effect=swapping_open):
+            selection = resolve_standby_asset(str(custom), str(self.fallback))
+
+        self.assertTrue(swapped)
+        self.assertEqual(selection.source, "NODE_DEFAULT")
+        self.assertEqual(selection.path, self.fallback)
         self.assertEqual(selection.fallback_reason, "ASSET_UNAVAILABLE")
 
     def test_missing_custom_and_default_uses_synthetic_black(self) -> None:
