@@ -82,6 +82,25 @@ python3 scripts/validate-node-capacity-report.py capacity-report.json --json
 
 For the illustrative report the highest passing level is 4, the first failing level is 8, and a 25% policy margin produces `recommended_max_sessions=3`.
 
+## Assemble raw trial JSONL
+
+A load harness may append one completed trial object per line to a raw JSONL file and only assemble the final report after the run. `scripts/assemble-node-capacity-report.py` provides that boundary without choosing a workload threshold, margin, or production capacity. Each JSONL line is parsed with duplicate-key and non-finite-number rejection, and the assembled object is passed through the canonical report validator before it can be emitted.
+
+All run metadata remains explicit. The assembler does not infer the tested revision, Node profile, scenario policy, or safety margin:
+
+```bash
+python3 scripts/assemble-node-capacity-report.py \
+  --trials-jsonl capacity-trials.jsonl \
+  --run-id 8f75d865-5e7c-4ffd-a5dc-e73fab5f39e1 \
+  --node-profile 'linux-x86_64 4 vCPU 8 GiB' \
+  --software-revision 0123456789abcdef0123456789abcdef01234567 \
+  --scenario 'approved steady pass-through workload' \
+  --safety-margin-percent 25 \
+  --output capacity-report.json
+```
+
+When `--output` is supplied, the destination must not already exist and must not alias the raw JSONL file. This keeps the raw observations intact if assembly or canonical validation fails. Omitting `--output` writes the validated report to stdout. The assembler does not execute a load test, provision a Node, mutate scheduler inventory, or contact a provider.
+
 ## Release acceptance boundary
 
 This contract alone does **not** satisfy the `node-capacity-load` item in `docs/release-acceptance-checklist.json`. That item remains pending until a real load harness has exercised the intended Node profile and workload, the resulting repository evidence passes this validator, and the chosen safety margin has been approved for operations. Do not update scheduler inventory, provision infrastructure, or make provider/billing changes merely because a synthetic or example report validates.
