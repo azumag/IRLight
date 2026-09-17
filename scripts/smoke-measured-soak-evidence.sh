@@ -5,7 +5,30 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-measured-soak-ci.XXXXXX")"
 evidence_dir="$work_dir/evidence"
 canonical_summary="$work_dir/canonical-summary.json"
+diagnostic_dir="${MEASURED_SOAK_DIAGNOSTIC_DIR:-}"
 trap 'rm -rf "$work_dir"' EXIT
+
+preserve_failure_evidence() {
+  if [[ -z "$diagnostic_dir" || ! -d "$evidence_dir" ]]; then
+    return 0
+  fi
+
+  if ! install -d -m 0755 "$diagnostic_dir"; then
+    echo "Could not create measured-soak diagnostic directory: $diagnostic_dir" >&2
+    return 0
+  fi
+
+  # Keep the CI artifact deliberately narrow. These are the machine-readable
+  # evidence files produced by this smoke; do not copy environment dumps,
+  # Compose configuration, docker inspect output, or other secret-bearing data.
+  local name
+  for name in run-result.json summary.json samples.jsonl report.json; do
+    if [[ -f "$evidence_dir/$name" ]]; then
+      install -m 0644 "$evidence_dir/$name" "$diagnostic_dir/$name" || \
+        echo "Could not preserve diagnostic evidence file: $name" >&2
+    fi
+  done
+}
 
 dump_failure_diagnostics() {
   echo "::group::Measured soak failure diagnostics" >&2
@@ -41,6 +64,7 @@ fail_stage() {
   printf '::error title=IRLight docker smoke failure::stage=%s status=%s\n' "$stage" "$status" >&2
   echo "$message" >&2
   dump_failure_diagnostics
+  preserve_failure_evidence
   exit "$status"
 }
 
