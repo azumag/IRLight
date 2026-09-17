@@ -62,7 +62,7 @@ def _open_lock(path: Path) -> Any:
         raise
 
 
-def _open_trials_for_update(path: Path) -> int:
+def _open_trials_for_update(path: Path) -> tuple[int, bool]:
     """Open or create the evidence file once and pin the validated inode."""
 
     flags = os.O_RDWR | os.O_APPEND
@@ -87,7 +87,7 @@ def _open_trials_for_update(path: Path) -> int:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
                 raise CapacityTrialRecordError("trials JSONL must be a regular file")
-            return fd
+            return fd, True
         except Exception:
             os.close(fd)
             raise
@@ -108,7 +108,7 @@ def _open_trials_for_update(path: Path) -> int:
             raise CapacityTrialRecordError("trials JSONL must be a regular file")
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise CapacityTrialRecordError("trials JSONL changed while opening")
-        return fd
+        return fd, False
     except Exception:
         os.close(fd)
         raise
@@ -226,11 +226,11 @@ def append_trial(path: Path, trial: dict[str, Any]) -> dict[str, Any]:
     lock_path = path.with_name(f"{path.name}.lock")
     with _open_lock(lock_path) as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        fd = _open_trials_for_update(path)
+        fd, created = _open_trials_for_update(path)
         try:
             info = _verify_trials_path(fd, path)
             raw = _read_trials_fd(fd)
-            existing = assembler.parse_trials_jsonl(raw) if raw else []
+            existing = [] if created else assembler.parse_trials_jsonl(raw)
             try:
                 normalized = validator.normalize_trials(
                     existing + [recorded], minimum_count=1
