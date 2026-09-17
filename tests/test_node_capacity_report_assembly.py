@@ -79,6 +79,18 @@ class CapacityReportAssemblyTest(unittest.TestCase):
             with self.assertRaisesRegex(CapacityAssemblyError, "must contain a JSON object"):
                 MODULE.load_trials_jsonl(path)
 
+    def test_rejects_oversized_raw_evidence_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trials.jsonl"
+            path.write_bytes(b"x" * (MODULE.MAX_TRIALS_JSONL_BYTES + 1))
+            with self.assertRaisesRegex(CapacityAssemblyError, "maximum size"):
+                MODULE.load_trials_jsonl(path)
+
+    def test_rejects_excessive_trial_count(self) -> None:
+        raw = "{}\n" * (MODULE.MAX_TRIAL_COUNT + 1)
+        with self.assertRaisesRegex(CapacityAssemblyError, "at most"):
+            MODULE.parse_trials_jsonl(raw)
+
     def test_snapshot_uses_recorder_sidecar_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "trials.jsonl"
