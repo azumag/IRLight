@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
 import uuid
@@ -80,6 +81,24 @@ class CapacityReportTest(unittest.TestCase):
             path.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
             with self.assertRaisesRegex(CapacityReportError, "duplicate JSON key"):
                 MODULE.load_report(path)
+
+    def test_load_report_rejects_symbolic_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "report-target.json"
+            target.write_text("{}", encoding="utf-8")
+            alias = root / "report.json"
+            alias.symlink_to(target)
+            with self.assertRaisesRegex(CapacityReportError, "regular file"):
+                MODULE.load_report(alias)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation is unavailable")
+    def test_load_report_rejects_fifo_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo = Path(tmp) / "report.fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(CapacityReportError, "regular file"):
+                MODULE.load_report(fifo)
 
     def test_rejects_non_finite_metrics_and_boolean_numbers(self) -> None:
         for field, value in (

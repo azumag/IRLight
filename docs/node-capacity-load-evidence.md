@@ -80,6 +80,8 @@ Validate and emit a deterministic summary:
 python3 scripts/validate-node-capacity-report.py capacity-report.json --json
 ```
 
+The validator only accepts a stable regular-file report. Symbolic links and non-regular inputs such as FIFOs are rejected, the final path is opened without following a symlink, and the device/inode observed before and after open must match. This prevents a validation run from blocking on a special file or silently reading a swapped path alias.
+
 For the illustrative report the highest passing level is 4, the first failing level is 8, and a 25% policy margin produces `recommended_max_sessions=3`.
 
 ## Assemble raw trial JSONL
