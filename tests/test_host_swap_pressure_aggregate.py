@@ -19,6 +19,7 @@ class HostSwapPressureAggregateTest(unittest.TestCase):
         swap_pressure_mode: str | None = None,
         component_code: int = 0,
         swap_pressure_code: int = 0,
+        use_swap_meminfo_override: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-host-swap-pressure-aggregate-") as temporary:
             root = Path(temporary)
@@ -64,8 +65,12 @@ class HostSwapPressureAggregateTest(unittest.TestCase):
             env = os.environ.copy()
             env["IRLIGHT_TEST_COMPONENT_CODE"] = str(component_code)
             env["IRLIGHT_TEST_SWAP_PRESSURE_CODE"] = str(swap_pressure_code)
-            env["IRLIGHT_TEST_SWAP_MEMINFO_PATH"] = str(swap_meminfo)
-            env["IRLIGHT_SWAP_MEMINFO_PATH"] = str(swap_meminfo)
+            if use_swap_meminfo_override:
+                env["IRLIGHT_TEST_SWAP_MEMINFO_PATH"] = str(swap_meminfo)
+                env["IRLIGHT_SWAP_MEMINFO_PATH"] = str(swap_meminfo)
+            else:
+                env["IRLIGHT_TEST_SWAP_MEMINFO_PATH"] = str(meminfo)
+                env.pop("IRLIGHT_SWAP_MEMINFO_PATH", None)
             env["IRLIGHT_HOST_SWAP_IO_MODE"] = "disabled"
             env["IRLIGHT_HOST_CPU_STEAL_MODE"] = "disabled"
             env["IRLIGHT_HOST_BOOT_GENERATION_MODE"] = "disabled"
@@ -141,6 +146,15 @@ class HostSwapPressureAggregateTest(unittest.TestCase):
 
     def test_enabled_mode_forwards_swap_meminfo_path(self) -> None:
         result = self._run(swap_pressure_mode="enabled", swap_pressure_code=0)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("swap_pressure_status=OK", result.stdout)
+
+    def test_enabled_mode_defaults_to_aggregate_meminfo_path(self) -> None:
+        result = self._run(
+            swap_pressure_mode="enabled",
+            swap_pressure_code=0,
+            use_swap_meminfo_override=False,
+        )
         self.assertEqual(result.returncode, 0)
         self.assertIn("swap_pressure_status=OK", result.stdout)
 
