@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,6 +122,87 @@ class AssembleSoakReportTest(unittest.TestCase):
             path.write_bytes(b"{\xff}\n")
             with self.assertRaisesRegex(SoakAssemblyError, "cannot read samples"):
                 load_samples_jsonl(path)
+
+    def test_loader_rejects_symlink_fifo_and_oversized_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            target = directory / "target.jsonl"
+            target.write_text(json.dumps(sample(0)) + "\n", encoding="utf-8")
+
+            symlink = directory / "samples-symlink.jsonl"
+            symlink.symlink_to(target)
+            with self.assertRaisesRegex(SoakAssemblyError, "regular file"):
+                load_samples_jsonl(symlink)
+
+            if hasattr(os, "mkfifo"):
+                fifo = directory / "samples.fifo"
+                os.mkfifo(fifo)
+                with self.assertRaisesRegex(SoakAssemblyError, "regular file"):
+                    load_samples_jsonl(fifo)
+
+            oversized = directory / "oversized.jsonl"
+            with oversized.open("wb") as handle:
+                handle.truncate(MODULE.MAX_SAMPLES_JSONL_BYTES + 1)
+            with self.assertRaisesRegex(SoakAssemblyError, "byte limit"):
+                load_samples_jsonl(oversized)
+
+    def test_loader_rejects_path_replacement_while_opening(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "samples.jsonl"
+            replacement = directory / "replacement.jsonl"
+            backup = directory / "original.jsonl"
+            path.write_text(json.dumps(sample(0)) + "\n", encoding="utf-8")
+            replacement.write_text(json.dumps(sample(60)) + "\n", encoding="utf-8")
+
+            real_open = MODULE.os.open
+            swapped = False
+
+            def swapping_open(target: object, flags: int, mode: int = 0o777) -> int:
+                nonlocal swapped
+                if not swapped and Path(target) == path:
+                    path.replace(backup)
+                    replacement.replace(path)
+                    swapped = True
+                return real_open(target, flags, mode)
+
+            with mock.patch.object(MODULE.os, "open", side_effect=swapping_open):
+                with self.assertRaisesRegex(SoakAssemblyError, "changed while opening"):
+                    load_samples_jsonl(path)
+
+    def test_loader_rejects_in_place_mutation_while_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "samples.jsonl"
+            path.write_text(
+                json.dumps(sample(0)) + "\n" + json.dumps(sample(60)) + "\n",
+                encoding="utf-8",
+            )
+
+            real_read = MODULE.os.read
+            mutated = False
+
+            def read_then_mutate(fd: int, size: int) -> bytes:
+                nonlocal mutated
+                chunk = real_read(fd, size)
+                if chunk and not mutated:
+                    path.write_text(
+                        json.dumps(sample(0)) + "\n" + json.dumps(sample(120)) + "\n",
+                        encoding="utf-8",
+                    )
+                    mutated = True
+                return chunk
+
+            with mock.patch.object(MODULE.os, "read", side_effect=read_then_mutate):
+                with self.assertRaisesRegex(SoakAssemblyError, "changed while reading"):
+                    load_samples_jsonl(path)
+
+    def test_loader_normalizes_recursive_json_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "samples.jsonl"
+            path.write_text(json.dumps(sample(0)) + "\n", encoding="utf-8")
+            with mock.patch.object(MODULE.json, "loads", side_effect=RecursionError("deep")):
+                with self.assertRaisesRegex(SoakAssemblyError, "nesting limit"):
+                    load_samples_jsonl(path)
 
     def test_main_writes_deterministic_report_without_clobbering_raw_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
