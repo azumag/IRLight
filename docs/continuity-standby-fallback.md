@@ -31,6 +31,12 @@ GStreamerには元のpathnameや元inodeではなく、private snapshot fdの`/p
 
 GStreamerへ渡す前のcheap guardとして、snapshot作成時に画像ヘッダは最大1 MiBだけmemoryへ保持し、PNG/JPEG/WebPの幅・高さと最低限のcontainer/header整合性を確認する。PNGは固定長IHDRのCRCとbit depth / color type / compression / filter / interlaceの組み合わせ、JPEGはSOFのsample precision・component数・segment長の整合、WebPはRIFF宣言サイズと実ファイルサイズ、および先頭chunkの境界を確認する。そのうえで幅または高さが16,384 pxを超える画像、0 pxの寸法、総画素数が16 Mi pixelsを超える画像は利用不能としてfallbackする。これはNode-local handoffで明らかに壊れたheaderや極端なdimension宣言をdecoderへ渡さないための追加防御であり、完全な画像decode、全chunkの検証、展開後メモリ量の保証ではない。
 
+## Image packaging contract
+
+Continuity imageのDockerfileはPython sourceを明示的に`/app`へcopyする。source tree上のunit testだけが成功しても、`runner.py`またはbuild時にdefault画像を生成する`make_default_standby.py`から新しいlocal moduleをimportし、そのmoduleをimageへ入れ忘れるとcontainer内では起動・buildできない。
+
+`tests/test_continuity_dockerfile_packaging.py`は、この2つのentrypointから辿れるstatic local import closureが実際に`/app`へcopyされることを検査する。別directoryへのCOPYは契約を満たしたものとして扱わない。dynamic importはこの検査対象外なので、導入する場合はimage-level smokeも合わせて追加する。
+
 ## Diagnostics
 
 `/state/standby.json`には次の安全な情報だけを書く。
