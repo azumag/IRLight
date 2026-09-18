@@ -149,7 +149,8 @@ class HostSwapPressureCheckTest(unittest.TestCase):
             total_kb="9223372036854775807",
             free_kb="1844674407370955162",
         )
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("status=OK", result.stdout)
         self.assertIn("usage_percent=79", result.stdout)
 
 
