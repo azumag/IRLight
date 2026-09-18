@@ -42,6 +42,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
 - cgroup runtime pressure aggregate の opt-in 診断: [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md)
 - cgroup PSI / process FD の targeted read-only 診断: [targeted-runtime-pressure-diagnostics.md](targeted-runtime-pressure-diagnostics.md)
+- host swap pressure の targeted read-only 診断: [host-swap-pressure-monitoring.md](host-swap-pressure-monitoring.md)
 - IPv6 default route の targeted read-only 診断: [targeted-ipv6-default-route-diagnostics.md](targeted-ipv6-default-route-diagnostics.md)
 - link / IPv4 / IPv6 route の targeted egress 診断: [targeted-network-egress-health.md](targeted-network-egress-health.md)
 - network interface error / drop delta の targeted read-only 診断: [network-interface-error-monitoring.md](network-interface-error-monitoring.md)
