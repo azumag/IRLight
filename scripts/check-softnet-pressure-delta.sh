@@ -19,13 +19,15 @@ is_softnet_hex() {
 read_softnet_counters() {
   local path="$1"
   local unavailable_reason="$2"
-  local prefix="$3"
+  local processed_name="$3"
+  local dropped_name="$4"
+  local squeeze_name="$5"
+  local -n processed_ref="$processed_name"
+  local -n dropped_ref="$dropped_name"
+  local -n squeeze_ref="$squeeze_name"
   local -a lines=()
   local -a fields=()
-  local line dropped squeeze
-  local total_dropped=0
-  local total_squeeze=0
-  local records=0
+  local line
 
   [[ -f "$path" && -r "$path" ]] || unknown "$unavailable_reason"
   if ! mapfile -t lines < "$path"; then
@@ -41,32 +43,45 @@ read_softnet_counters() {
     is_softnet_hex "${fields[1]}" || unknown invalid_softnet_record
     is_softnet_hex "${fields[2]}" || unknown invalid_softnet_record
 
-    dropped=$((16#${fields[1]}))
-    squeeze=$((16#${fields[2]}))
-    total_dropped=$((total_dropped + dropped))
-    total_squeeze=$((total_squeeze + squeeze))
-    records=$((records + 1))
+    processed_ref+=("$((16#${fields[0]}))")
+    dropped_ref+=("$((16#${fields[1]}))")
+    squeeze_ref+=("$((16#${fields[2]}))")
   done
-
-  (( records > 0 )) || unknown invalid_softnet_record
-  printf -v "${prefix}_dropped" '%d' "$total_dropped"
-  printf -v "${prefix}_time_squeeze" '%d' "$total_squeeze"
 }
 
 [[ -n "$baseline_path" ]] || unknown baseline_softnet_unavailable
 
-read_softnet_counters "$current_path" current_softnet_unavailable current
-read_softnet_counters "$baseline_path" baseline_softnet_unavailable baseline
+current_processed=()
+current_dropped=()
+current_time_squeeze=()
+baseline_processed=()
+baseline_dropped=()
+baseline_time_squeeze=()
+read_softnet_counters \
+  "$current_path" current_softnet_unavailable \
+  current_processed current_dropped current_time_squeeze
+read_softnet_counters \
+  "$baseline_path" baseline_softnet_unavailable \
+  baseline_processed baseline_dropped baseline_time_squeeze
 
-for counter in dropped time_squeeze; do
-  current_var="current_${counter}"
-  baseline_var="baseline_${counter}"
-  current_value="${!current_var}"
-  baseline_value="${!baseline_var}"
-  if (( current_value < baseline_value )); then
+if (( ${#current_processed[@]} != ${#baseline_processed[@]} )); then
+  unknown cpu_topology_changed
+fi
+
+delta_dropped=0
+delta_time_squeeze=0
+for ((i = 0; i < ${#current_processed[@]}; i++)); do
+  if ((
+    current_processed[i] < baseline_processed[i]
+    || current_dropped[i] < baseline_dropped[i]
+    || current_time_squeeze[i] < baseline_time_squeeze[i]
+  )); then
     unknown counter_reset
   fi
-  printf -v "delta_${counter}" '%d' "$((current_value - baseline_value))"
+  delta_dropped=$((delta_dropped + current_dropped[i] - baseline_dropped[i]))
+  delta_time_squeeze=$((
+    delta_time_squeeze + current_time_squeeze[i] - baseline_time_squeeze[i]
+  ))
 done
 
 status="OK"
