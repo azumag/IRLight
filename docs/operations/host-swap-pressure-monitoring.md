@@ -2,7 +2,7 @@
 
 Issue #11 の host memory 診断を補完するため、Linux の `/proc/meminfo` にある `SwapTotal` / `SwapFree` と、`/proc/vmstat` にある累積 swap I/O counter を副作用なく確認する targeted checks を定義する。
 
-`MemAvailable` が十分でも swap pool が高使用率になっていることはあり、逆に swap を意図的に無効化している host もある。そのため、これらの check は既存の `check-host-pressure.sh` aggregate へ自動追加せず、swap を運用対象にする deployment で opt-in する。
+`MemAvailable` が十分でも swap pool が高使用率になっていることはあり、逆に swap を意図的に無効化している host もある。そのため usage check は既存の `check-host-pressure.sh` aggregate へ自動追加しない。swap I/O delta も既定では aggregate 無効のままとし、同一 boot generation の baseline を管理できる deployment だけ明示的に opt-in する。
 
 ## Usage check
 
@@ -75,6 +75,21 @@ IRLIGHT_SWAP_IO status=WARNING reason=swap_io_activity pswpin_delta=8 pswpout_de
 
 この WARNING は swap thrashing や user-visible latency を単独で証明しない。小さな background activity でも増加し得るため、PSI、memory pressure、swap 使用率、OOM、service latency と相関する targeted signal として扱う。deployment 固有の閾値や自動 remediation はこの checker では導入しない。
 
+### Host aggregate opt-in
+
+同一 boot generation の baseline を運用側で管理できる場合に限り、swap I/O companion を既存 host-pressure aggregate へ明示的に追加できる。
+
+```bash
+IRLIGHT_HOST_SWAP_IO_MODE=enabled \
+IRLIGHT_VMSTAT_PATH=/proc/vmstat \
+IRLIGHT_VMSTAT_BASELINE_PATH=/var/lib/irlight-monitoring/vmstat.baseline \
+  bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_HOST_SWAP_IO_MODE` は `enabled` / `disabled` のみを受け付け、既定は `disabled`。既定時は従来の `IRLIGHT_HOST_PRESSURE` 出力を変更しない。`enabled` 時だけ `swap_io_status=OK|WARNING|UNKNOWN` を追加し、同じ severity aggregation と component timeout の境界に参加させる。
+
+baseline が未設定・読取不能、counter が不正、世代が一致しない場合は `swap_io_status=UNKNOWN` として fail-closed になる。無効な mode 値も aggregate 自体を `UNKNOWN reason=invalid_swap_io_mode` にする。aggregate は baseline を作成・更新せず、swap usage checker を暗黙に有効化もしない。
+
 ## Diagnosis
 
 `WARNING` / `CRITICAL` は swap 関連 signal で、host memory exhaustion や OOM の発生を単独で証明しない。同じ時間帯の以下を照合する。
@@ -102,6 +117,8 @@ python -m unittest discover -s tests -p 'test_host_swap_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_swap_pressure_runbook_inventory.py' -v
 python -m unittest discover -s tests -p 'test_swap_io_delta_check.py' -v
 python -m unittest discover -s tests -p 'test_host_swap_io_runbook_inventory.py' -v
+python -m unittest discover -s tests -p 'test_host_swap_io_aggregate.py' -v
 bash -n scripts/check-host-swap-pressure.sh
 bash -n scripts/check-swap-io-delta.sh
+bash -n scripts/check-host-pressure.sh
 ```

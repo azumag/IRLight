@@ -22,9 +22,19 @@ class HostSwapIoRunbookInventoryTest(unittest.TestCase):
         self.assertIn("operator-managed baseline", text)
         self.assertIn("baseline を作成・更新しない", text)
 
-    def test_swap_io_check_remains_targeted_opt_in(self) -> None:
+    def test_swap_io_check_remains_explicit_opt_in(self) -> None:
         aggregate = HOST_AGGREGATE.read_text(encoding="utf-8")
-        self.assertNotIn("check-swap-io-delta.sh", aggregate)
+        self.assertIn(
+            'swap_io_mode="${IRLIGHT_HOST_SWAP_IO_MODE:-disabled}"',
+            aggregate,
+        )
+        self.assertIn(
+            'if [[ "$swap_io_mode" == "enabled" ]]; then\n'
+            '  add_component "swap_io" "$script_dir/check-swap-io-delta.sh" '
+            '"$vmstat_path" "$vmstat_baseline_path"\n'
+            'fi',
+            aggregate,
+        )
 
 
 if __name__ == "__main__":
