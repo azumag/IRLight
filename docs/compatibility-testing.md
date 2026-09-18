@@ -83,9 +83,11 @@ Report-level `result` is one of `PASS`, `PARTIAL`, `FAIL`, or `BLOCKED`. Check r
 
 `tested_at` must include a timezone offset. `entry_id` and `coverage` must match the matrix entry exactly. Record versions, profile, environment, and network conditions precisely enough to reproduce the test, but keep account identities, private endpoints, credentials, and raw logs out of the report.
 
-Evidence paths are resolved before use and the resolved file must remain inside `docs/compatibility-reports/`. A path traversal or symlink that resolves elsewhere in the repository is rejected rather than treated as manual evidence.
+Evidence paths must be relative paths below `docs/compatibility-reports/`. Path traversal and symlinked parent directories are rejected. The final report pathname is deliberately left unresolved until the input reader checks it, so a final symlink is rejected rather than followed even when it points to another file inside the report directory.
 
 Manual report files are strict JSON and are limited to 64 KiB before parsing. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected so different JSON parsers cannot interpret the same evidence differently and a report cannot become an unbounded CI input.
+
+Both the compatibility matrix consumed by `validate-manual-compatibility-reports.py` and every referenced manual report are read through a bounded regular-file boundary. Final symlinks, FIFOs, devices, and other non-regular inputs are rejected before blocking reads; no-follow and non-blocking open flags are used where available; reads are capped at the applicable limit plus one byte; and device/inode/size/mtime/ctime plus final pathname identity are checked across the read. Path replacement or same-inode modification during validation therefore fails closed. Invalid UTF-8, recursive JSON parser failures, and recursion encountered by the report secret/URL scan are normalized to controlled validation errors instead of escaping as tracebacks. These input-safety checks do not change compatibility status semantics or create new support claims.
 
 ## Secret boundary
 
