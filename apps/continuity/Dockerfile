@@ -56,7 +56,7 @@ RUN sed -i \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY state.py continuity.py control_state.py secret_files.py standby_asset.py runtime_timer_config.py runner.py make_default_standby.py ./
+COPY state.py continuity.py control_state.py secret_files.py standby_asset.py standby_integrity.py runtime_timer_config.py runner.py make_default_standby.py ./
 
 RUN mkdir -p /opt/irlight/assets \
     && python3 /app/make_default_standby.py /opt/irlight/assets/default-standby.png
