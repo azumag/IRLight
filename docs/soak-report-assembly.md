@@ -14,7 +14,7 @@ python3 scripts/collect-soak-resource-sample.py \
   >> /tmp/irlight-soak-samples.jsonl
 ```
 
-Repeat collection at the configured interval. The assembler treats this JSONL file as raw evidence: blank lines, duplicate JSON keys, non-object lines, invalid UTF-8, `NaN`, and `Infinity` fail closed. The final ordering, counters, schema fields, target-duration coverage, and passing-run baseline are checked by the canonical soak report validator.
+Repeat collection at the configured interval. The assembler treats this JSONL file as raw evidence: blank lines, duplicate JSON keys, non-object lines, invalid UTF-8, `NaN`, `Infinity`, and JSON nesting beyond the parser limit fail closed. The input must be a stable regular file, not a symlink, FIFO, device, or another special file. The assembler opens the final path without following symlinks where the platform supports it, reads at most 32 MiB plus one detection byte, and rejects pathname replacement or in-place mutation detected across the read. This bound is far above the normal evidence volume for the documented 2–24 hour soak runs while preventing an accidental or adversarial path from turning report assembly into an unbounded memory read. The final ordering, counters, schema fields, target-duration coverage, and passing-run baseline are checked by the canonical soak report validator.
 
 ## Verify cleanup
 
@@ -56,4 +56,4 @@ python3 scripts/validate-soak-report.py --json /tmp/irlight-soak-report.json
 
 ## Safety boundary
 
-The assembler performs local file reads and an optional new-file write only. It does not start, stop, restart, remove, or inspect containers; contact Twitch, YouTube, Kick, or another provider; alter routes/firewalls; or use credentials. Cleanup verification is performed separately by `verify-soak-cleanup.py`, which only reads exact Docker Compose project labels and never removes resources. Resource and media acceptance thresholds remain a separate policy decision based on measured PoC results.
+The assembler performs local bounded regular-file reads and an optional new-file write only. It does not start, stop, restart, remove, or inspect containers; contact Twitch, YouTube, Kick, or another provider; alter routes/firewalls; or use credentials. Cleanup verification is performed separately by `verify-soak-cleanup.py`, which only reads exact Docker Compose project labels and never removes resources. Resource and media acceptance thresholds remain a separate policy decision based on measured PoC results.

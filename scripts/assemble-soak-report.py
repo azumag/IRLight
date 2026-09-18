@@ -6,9 +6,15 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
+
+
+MAX_SAMPLES_JSONL_BYTES = 32 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 
 
 class SoakAssemblyError(ValueError):
@@ -28,11 +34,90 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def load_samples_jsonl(path: Path) -> list[dict[str, Any]]:
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_samples_bytes(path: Path) -> bytes:
+    """Read one stable bounded regular file without following a final symlink."""
+
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise SoakAssemblyError(f"cannot read samples: {exc}") from exc
+        before = os.lstat(path)
+    except OSError as exc:
+        raise SoakAssemblyError("cannot inspect samples JSONL") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise SoakAssemblyError("samples JSONL must be a regular file")
+    if before.st_size > MAX_SAMPLES_JSONL_BYTES:
+        raise SoakAssemblyError(
+            f"samples JSONL exceeds {MAX_SAMPLES_JSONL_BYTES}-byte limit"
+        )
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise SoakAssemblyError("cannot open samples JSONL") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise SoakAssemblyError("samples JSONL must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise SoakAssemblyError("samples JSONL changed while opening")
+        if opened.st_size > MAX_SAMPLES_JSONL_BYTES:
+            raise SoakAssemblyError(
+                f"samples JSONL exceeds {MAX_SAMPLES_JSONL_BYTES}-byte limit"
+            )
+
+        before_read = os.fstat(fd)
+        raw = bytearray()
+        while len(raw) <= MAX_SAMPLES_JSONL_BYTES:
+            remaining = MAX_SAMPLES_JSONL_BYTES + 1 - len(raw)
+            try:
+                chunk = os.read(fd, min(_READ_CHUNK_BYTES, remaining))
+            except OSError as exc:
+                raise SoakAssemblyError("cannot read samples JSONL") from exc
+            if not chunk:
+                break
+            raw.extend(chunk)
+
+        after_read = os.fstat(fd)
+        if _file_identity(before_read) != _file_identity(after_read):
+            raise SoakAssemblyError("samples JSONL changed while reading")
+        try:
+            current = os.lstat(path)
+        except OSError as exc:
+            raise SoakAssemblyError("samples JSONL changed while reading") from exc
+        if not stat.S_ISREG(current.st_mode) or _file_identity(current) != _file_identity(
+            after_read
+        ):
+            raise SoakAssemblyError("samples JSONL changed while reading")
+        if len(raw) > MAX_SAMPLES_JSONL_BYTES:
+            raise SoakAssemblyError(
+                f"samples JSONL exceeds {MAX_SAMPLES_JSONL_BYTES}-byte limit"
+            )
+        if len(raw) != after_read.st_size:
+            raise SoakAssemblyError("samples JSONL changed while reading")
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
+def load_samples_jsonl(path: Path) -> list[dict[str, Any]]:
+    raw_bytes = _read_samples_bytes(path)
+    try:
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SoakAssemblyError("cannot read samples: invalid UTF-8") from exc
 
     lines = raw.splitlines()
     if not lines:
@@ -51,6 +136,10 @@ def load_samples_jsonl(path: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError as exc:
             raise SoakAssemblyError(
                 f"invalid JSON on samples JSONL line {line_number}: {exc}"
+            ) from exc
+        except RecursionError as exc:
+            raise SoakAssemblyError(
+                f"samples JSONL line {line_number} exceeds JSON nesting limit"
             ) from exc
         if not isinstance(value, dict):
             raise SoakAssemblyError(
