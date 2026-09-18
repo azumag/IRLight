@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import os
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from typing import Any
 
 class MediaStackInspectError(RuntimeError):
     """Raised when the media stack cannot be inspected safely."""
+
+
+MAX_RESTART_BASELINE_BYTES = 1024 * 1024
 
 
 def _positive_finite(value: str) -> float:
@@ -110,12 +114,80 @@ def _parse_inspect_line(output: str) -> tuple[str, int, bool, int]:
     return state, exit_code, oom_value == "true", restart_count
 
 
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _open_restart_baseline_readonly(path: Path) -> Any:
+    """Open one bounded stable regular baseline without following its final path."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise MediaStackInspectError("restart baseline is unavailable") from exc
+    if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_RESTART_BASELINE_BYTES:
+        raise MediaStackInspectError("restart baseline is unavailable")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise MediaStackInspectError("restart baseline is unavailable") from exc
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size > MAX_RESTART_BASELINE_BYTES
+            or _file_identity(before) != _file_identity(opened)
+        ):
+            raise MediaStackInspectError("restart baseline is unavailable")
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _read_restart_baseline_bytes(path: Path) -> bytes:
+    try:
+        with _open_restart_baseline_readonly(path) as handle:
+            before_read = os.fstat(handle.fileno())
+            raw = handle.read(MAX_RESTART_BASELINE_BYTES + 1)
+            after_read = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise MediaStackInspectError("restart baseline is unavailable") from exc
+
+    if (
+        len(raw) > MAX_RESTART_BASELINE_BYTES
+        or _file_identity(before_read) != _file_identity(after_read)
+    ):
+        raise MediaStackInspectError("restart baseline is unavailable")
+    try:
+        final_path = os.lstat(path)
+    except OSError as exc:
+        raise MediaStackInspectError("restart baseline is unavailable") from exc
+    if (
+        not stat.S_ISREG(final_path.st_mode)
+        or _file_identity(final_path) != _file_identity(after_read)
+    ):
+        raise MediaStackInspectError("restart baseline is unavailable")
+    return raw
+
+
 def _load_restart_baseline(
     path: Path, *, egress_mode: str, services: tuple[str, ...]
 ) -> dict[str, int]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(_read_restart_baseline_bytes(path).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise MediaStackInspectError("restart baseline is unavailable") from exc
 
     if not isinstance(payload, dict) or payload.get("egress_mode") != egress_mode:
