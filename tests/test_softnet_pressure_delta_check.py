@@ -21,9 +21,6 @@ class SoftnetPressureDeltaCheckTests(unittest.TestCase):
         self,
         current: str | None,
         baseline: str | None,
-        *,
-        current_arg: bool = True,
-        baseline_arg: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-softnet-pressure-") as temporary:
             root = Path(temporary)
@@ -34,19 +31,11 @@ class SoftnetPressureDeltaCheckTests(unittest.TestCase):
             if baseline is not None:
                 baseline_path.write_text(baseline, encoding="ascii")
 
-            args = ["bash", str(SCRIPT)]
-            if current_arg:
-                args.append(str(current_path))
-            if baseline_arg:
-                if not current_arg:
-                    self.fail("baseline positional argument requires current positional argument")
-                args.append(str(baseline_path))
-
             env = dict(os.environ)
             env.pop("IRLIGHT_SOFTNET_STAT_PATH", None)
             env.pop("IRLIGHT_SOFTNET_STAT_BASELINE_PATH", None)
             return subprocess.run(
-                args,
+                ["bash", str(SCRIPT), str(current_path), str(baseline_path)],
                 text=True,
                 capture_output=True,
                 env=env,
@@ -62,14 +51,14 @@ class SoftnetPressureDeltaCheckTests(unittest.TestCase):
             "IRLIGHT_SOFTNET_PRESSURE status=OK reason=none dropped_delta=0 time_squeeze_delta=0\n",
         )
 
-    def test_dropped_delta_is_warning(self) -> None:
+    def test_multi_cpu_deltas_are_aggregated(self) -> None:
         baseline = softnet_line(100, 2, 3) + softnet_line(200, 5, 7)
-        current = softnet_line(120, 4, 3) + softnet_line(240, 8, 7)
+        current = softnet_line(120, 4, 4) + softnet_line(240, 8, 11)
         result = self.run_check(current, baseline)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(
             result.stdout,
-            "IRLIGHT_SOFTNET_PRESSURE status=WARNING reason=softnet_pressure_activity dropped_delta=5 time_squeeze_delta=0\n",
+            "IRLIGHT_SOFTNET_PRESSURE status=WARNING reason=softnet_pressure_activity dropped_delta=5 time_squeeze_delta=5\n",
         )
 
     def test_time_squeeze_delta_is_warning(self) -> None:
@@ -79,14 +68,24 @@ class SoftnetPressureDeltaCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("dropped_delta=0 time_squeeze_delta=7", result.stdout)
 
-    def test_counter_reset_is_unknown(self) -> None:
-        baseline = softnet_line(100, 10, 12)
-        current = softnet_line(200, 9, 13)
+    def test_per_cpu_counter_reset_is_unknown_even_when_aggregate_grows(self) -> None:
+        baseline = softnet_line(100, 10, 12) + softnet_line(100, 0, 0)
+        current = softnet_line(90, 9, 13) + softnet_line(500, 50, 50)
         result = self.run_check(current, baseline)
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(
             result.stdout,
             "IRLIGHT_SOFTNET_PRESSURE status=UNKNOWN reason=counter_reset\n",
+        )
+
+    def test_cpu_record_count_change_is_unknown(self) -> None:
+        baseline = softnet_line(100, 1, 2)
+        current = baseline + softnet_line(10, 0, 0)
+        result = self.run_check(current, baseline)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "IRLIGHT_SOFTNET_PRESSURE status=UNKNOWN reason=cpu_topology_changed\n",
         )
 
     def test_missing_inputs_are_unknown_without_path_echo(self) -> None:
@@ -124,6 +123,26 @@ class SoftnetPressureDeltaCheckTests(unittest.TestCase):
             result.stdout,
             "IRLIGHT_SOFTNET_PRESSURE status=UNKNOWN reason=baseline_softnet_unavailable\n",
         )
+
+    def test_environment_paths_are_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-softnet-pressure-") as temporary:
+            root = Path(temporary)
+            current_path = root / "current.softnet"
+            baseline_path = root / "baseline.softnet"
+            baseline_path.write_text(softnet_line(1, 0, 0), encoding="ascii")
+            current_path.write_text(softnet_line(2, 1, 0), encoding="ascii")
+            env = dict(os.environ)
+            env["IRLIGHT_SOFTNET_STAT_PATH"] = str(current_path)
+            env["IRLIGHT_SOFTNET_STAT_BASELINE_PATH"] = str(baseline_path)
+            result = subprocess.run(
+                ["bash", str(SCRIPT)],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("dropped_delta=1", result.stdout)
 
     def test_malformed_target_fields_are_unknown(self) -> None:
         baseline = softnet_line(1, 0, 0)
