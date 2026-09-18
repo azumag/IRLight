@@ -60,7 +60,14 @@ def _read_verified_peer_text(path: Path) -> str:
     if hasattr(os, "O_NONBLOCK"):
         flags |= os.O_NONBLOCK
 
-    fd = os.open(path, flags)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise DestinationGuardError(
+            "DESTINATION_GUARD_INVALID",
+            "verified destination address metadata disappeared before it was read",
+            terminal=True,
+        ) from None
     try:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
