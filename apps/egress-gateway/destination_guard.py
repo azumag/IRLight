@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -9,6 +11,7 @@ from urllib.parse import urlsplit
 
 
 Resolver = Callable[..., list[tuple[int, int, int, str, tuple[Any, ...]]]]
+MAX_VERIFIED_PEER_FILE_BYTES = 4 * 1024
 
 
 class DestinationGuardError(RuntimeError):
@@ -25,29 +28,120 @@ class DestinationResolution:
     addresses: tuple[str, ...]
 
 
+def _metadata_snapshot(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_verified_peer_text(path: Path) -> str:
+    """Read the small verified-peer metadata file without blocking on special files."""
+    inspected = path.stat()
+    if not stat.S_ISREG(inspected.st_mode):
+        raise DestinationGuardError(
+            "DESTINATION_GUARD_INVALID",
+            "verified destination address metadata must be a regular file",
+            terminal=True,
+        )
+    if inspected.st_size > MAX_VERIFIED_PEER_FILE_BYTES:
+        raise DestinationGuardError(
+            "DESTINATION_GUARD_INVALID",
+            "verified destination address metadata exceeds the size limit",
+            terminal=True,
+        )
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata must be a regular file",
+                terminal=True,
+            )
+        if _metadata_snapshot(opened) != _metadata_snapshot(inspected):
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata changed before it was read",
+                terminal=True,
+            )
+        if opened.st_size > MAX_VERIFIED_PEER_FILE_BYTES:
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata exceeds the size limit",
+                terminal=True,
+            )
+
+        payload = bytearray()
+        while len(payload) <= MAX_VERIFIED_PEER_FILE_BYTES:
+            chunk = os.read(
+                fd,
+                min(1024, MAX_VERIFIED_PEER_FILE_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > MAX_VERIFIED_PEER_FILE_BYTES:
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata exceeds the size limit",
+                terminal=True,
+            )
+
+        after_read = os.fstat(fd)
+        if _metadata_snapshot(after_read) != _metadata_snapshot(opened):
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata changed while it was read",
+                terminal=True,
+            )
+        try:
+            return bytes(payload).decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raise DestinationGuardError(
+                "DESTINATION_GUARD_INVALID",
+                "verified destination address metadata is not valid UTF-8",
+                terminal=True,
+            ) from None
+    finally:
+        os.close(fd)
+
+
 def read_verified_peer_ip(path: str | Path | None) -> str | None:
     if path is None:
         return None
     try:
-        value = Path(path).read_text(encoding="utf-8").strip()
+        value = _read_verified_peer_text(Path(path))
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except DestinationGuardError:
+        raise
+    except OSError:
         raise DestinationGuardError(
             "DESTINATION_GUARD_INVALID",
             "verified destination address metadata is unavailable",
             terminal=True,
-        ) from exc
+        ) from None
     if not value:
         return None
     try:
         return str(ipaddress.ip_address(value.split("%", 1)[0]))
-    except ValueError as exc:
+    except ValueError:
         raise DestinationGuardError(
             "DESTINATION_GUARD_INVALID",
             "verified destination address metadata is invalid",
             terminal=True,
-        ) from exc
+        ) from None
 
 
 def validate_destination_runtime(
