@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-release-acceptance-checklist.py"
@@ -18,20 +19,32 @@ _spec.loader.exec_module(module)
 
 
 class ReleaseAcceptanceChecklistDepthTests(unittest.TestCase):
-    def test_deeply_nested_json_is_reported_as_validation_error(self) -> None:
+    def _write_temp(self, raw: bytes) -> Path:
         fd, name = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         path = Path(name)
         self.addCleanup(path.unlink, missing_ok=True)
+        path.write_bytes(raw)
+        return path
 
+    def test_parser_recursion_error_is_normalized(self) -> None:
+        path = self._write_temp(b"{}")
+
+        with mock.patch.object(
+            module.json, "loads", side_effect=RecursionError("too deep")
+        ):
+            with self.assertRaisesRegex(
+                module.ChecklistValidationError, "checklist is not valid JSON"
+            ):
+                module.load_checklist(path)
+
+    def test_deeply_nested_json_fails_closed(self) -> None:
         depth = 10_000
         raw = ("[" * depth + "0" + "]" * depth).encode("utf-8")
         self.assertLess(len(raw), module.MAX_CHECKLIST_BYTES)
-        path.write_bytes(raw)
+        path = self._write_temp(raw)
 
-        with self.assertRaisesRegex(
-            module.ChecklistValidationError, "checklist is not valid JSON"
-        ):
+        with self.assertRaises(module.ChecklistValidationError):
             module.load_checklist(path)
 
 
