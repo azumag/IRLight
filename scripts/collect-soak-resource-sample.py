@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ MEDIA_FIELDS = {
     "timestamp_errors",
     "unexpected_reconnects",
 }
+MAX_MEDIA_METRICS_BYTES = 64 * 1024
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -274,6 +276,82 @@ def collect_process_observations(container_ids: list[str]) -> tuple[int, int, in
     return aggregate_processes(all_rows)
 
 
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _open_media_metrics_readonly(path: Path) -> Any:
+    """Open a stable regular media-metrics snapshot without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise SampleCollectionError("cannot inspect media metrics file") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise SampleCollectionError("media metrics file must be a regular file")
+    if before.st_size > MAX_MEDIA_METRICS_BYTES:
+        raise SampleCollectionError(
+            f"media metrics file exceeds maximum size of {MAX_MEDIA_METRICS_BYTES} bytes"
+        )
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise SampleCollectionError("cannot open media metrics file") from exc
+    try:
+        after = os.fstat(fd)
+        if not stat.S_ISREG(after.st_mode):
+            raise SampleCollectionError("media metrics file must be a regular file")
+        if _stat_identity(before) != _stat_identity(after):
+            raise SampleCollectionError("media metrics file changed while opening")
+        if after.st_size > MAX_MEDIA_METRICS_BYTES:
+            raise SampleCollectionError(
+                f"media metrics file exceeds maximum size of {MAX_MEDIA_METRICS_BYTES} bytes"
+            )
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _read_media_metrics_bytes(path: Path) -> bytes:
+    try:
+        with _open_media_metrics_readonly(path) as handle:
+            before_read = os.fstat(handle.fileno())
+            raw_bytes = handle.read(MAX_MEDIA_METRICS_BYTES + 1)
+            after_read = os.fstat(handle.fileno())
+    except SampleCollectionError:
+        raise
+    except OSError as exc:
+        raise SampleCollectionError("cannot read media metrics file") from exc
+
+    if _stat_identity(before_read) != _stat_identity(after_read):
+        raise SampleCollectionError("media metrics file changed while reading")
+    if len(raw_bytes) > MAX_MEDIA_METRICS_BYTES:
+        raise SampleCollectionError(
+            f"media metrics file exceeds maximum size of {MAX_MEDIA_METRICS_BYTES} bytes"
+        )
+    try:
+        final_path = os.lstat(path)
+    except OSError as exc:
+        raise SampleCollectionError("cannot re-inspect media metrics file") from exc
+    if not stat.S_ISREG(final_path.st_mode):
+        raise SampleCollectionError("media metrics file changed while reading")
+    if _stat_identity(final_path) != _stat_identity(after_read):
+        raise SampleCollectionError("media metrics file changed while reading")
+    return raw_bytes
+
+
 def load_media_metrics(path: Path | None, *, allow_unmeasured: bool) -> dict[str, Any]:
     if path is None:
         if not allow_unmeasured:
@@ -287,17 +365,17 @@ def load_media_metrics(path: Path | None, *, allow_unmeasured: bool) -> dict[str
             "unexpected_reconnects": 0,
         }
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise SampleCollectionError(f"cannot read media metrics file: {exc}") from exc
+        raw = _read_media_metrics_bytes(path).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SampleCollectionError("media metrics file is not valid UTF-8") from exc
     try:
         value = json.loads(
             raw,
             parse_constant=_reject_constant,
             object_pairs_hook=_strict_object,
         )
-    except json.JSONDecodeError as exc:
-        raise SampleCollectionError(f"invalid media metrics JSON: {exc}") from exc
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise SampleCollectionError("invalid media metrics JSON") from exc
     if not isinstance(value, dict):
         raise SampleCollectionError("media metrics root must be an object")
     if set(value) != MEDIA_FIELDS:
