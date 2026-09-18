@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from runtime_secret_file import RuntimeSecretFileError, read_runtime_secret
+
 
 @dataclass(frozen=True)
 class IngestQualityConfig:
@@ -119,9 +121,9 @@ class IngestQualitySampler:
         if self.config.input_url_file is None:
             return self.config.input_url
         try:
-            value = self.config.input_url_file.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError("ingest sample URL secret is unavailable") from exc
+            value = read_runtime_secret(self.config.input_url_file).strip()
+        except RuntimeSecretFileError:
+            raise RuntimeError("ingest sample URL secret is unavailable") from None
         if not value:
             raise RuntimeError("ingest sample URL secret is empty")
         return value
