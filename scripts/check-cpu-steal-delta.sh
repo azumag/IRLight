@@ -73,11 +73,12 @@ baseline=()
 read_cpu_counters "$current_path" current_proc_stat_unavailable current
 read_cpu_counters "$baseline_path" baseline_proc_stat_unavailable baseline
 
-for index in "${!current[@]}"; do
-  if (( 10#${current[$index]} < 10#${baseline[$index]} )); then
-    unknown counter_reset
-  fi
-done
+# Only the steal counter is required to be monotonic for this diagnostic.
+# Linux documents that iowait can decrease in some conditions, so using every
+# /proc/stat CPU field as a generation check would create false UNKNOWN states.
+if (( 10#${current[7]} < 10#${baseline[7]} )); then
+  unknown counter_reset
+fi
 
 steal_delta=$((10#${current[7]} - 10#${baseline[7]}))
 if (( steal_delta > 0 )); then
