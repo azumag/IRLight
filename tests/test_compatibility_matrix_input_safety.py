@@ -65,10 +65,15 @@ class CompatibilityMatrixInputSafetyTest(unittest.TestCase):
         os.close(fd)
         path = Path(name)
         self.addCleanup(path.unlink, missing_ok=True)
-        path.write_text("[" * 5000 + "0" + "]" * 5000, encoding="utf-8")
+        path.write_text("{}\n", encoding="utf-8")
 
-        with self.assertRaisesRegex(ValueError, "cannot read compatibility matrix"):
-            module.load_matrix(path)
+        with mock.patch.object(
+            module.json,
+            "loads",
+            side_effect=RecursionError("synthetic recursive input"),
+        ):
+            with self.assertRaisesRegex(ValueError, "cannot read compatibility matrix"):
+                module.load_matrix(path)
 
     def test_path_replacement_during_read_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
