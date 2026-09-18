@@ -38,8 +38,8 @@ def _read_secret_file(path: Path, *, file_env: str) -> str:
             raise RuntimeError(f"secret file exceeds size limit: {file_env}")
         try:
             return bytes(payload).decode("utf-8").strip()
-        except UnicodeDecodeError as exc:
-            raise RuntimeError(f"secret file is not valid UTF-8: {file_env}") from exc
+        except UnicodeDecodeError:
+            raise RuntimeError(f"secret file is not valid UTF-8: {file_env}") from None
     finally:
         os.close(fd)
 
@@ -68,11 +68,11 @@ def read_secret_file_or_env(name: str, default: str) -> str:
                 value = _read_secret_file(Path(file_path), file_env=file_env)
             except RuntimeError:
                 raise
-            except OSError as exc:
+            except OSError:
                 if time.monotonic() < deadline:
                     time.sleep(0.1)
                     continue
-                raise RuntimeError(f"cannot read secret file: {file_env}") from exc
+                raise RuntimeError(f"cannot read secret file: {file_env}") from None
             if value:
                 return value
             if time.monotonic() >= deadline:
