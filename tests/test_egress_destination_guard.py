@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,16 @@ class DestinationGuardTest(unittest.TestCase):
             self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
             self.assertNotIn(str(path), str(failure.exception))
             self.assertIsNone(failure.exception.__cause__)
+
+    def test_verified_peer_file_disappearance_after_inspection_is_not_optional(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peer"
+            path.write_text("8.8.8.8\n", encoding="utf-8")
+            with patch("destination_guard.os.open", side_effect=FileNotFoundError):
+                with self.assertRaises(DestinationGuardError) as failure:
+                    read_verified_peer_ip(path)
+            self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+            self.assertTrue(failure.exception.terminal)
 
     def test_verified_peer_file_read_error_redacts_path(self) -> None:
         if not hasattr(os, "symlink"):
