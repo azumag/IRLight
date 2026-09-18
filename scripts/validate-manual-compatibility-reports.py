@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
 MAX_MANUAL_REPORT_BYTES = 64 * 1024
 MAX_COMPATIBILITY_MATRIX_BYTES = 256 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 REPORT_RESULTS = {"PASS", "PARTIAL", "FAIL", "BLOCKED"}
 CHECK_RESULTS = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
 REQUIRED_REPORT_FIELDS = {
@@ -140,27 +143,107 @@ def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant is not allowed: {value}")
 
 
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_stable_regular_bytes(
+    path: Path,
+    *,
+    description: str,
+    max_bytes: int,
+) -> bytes:
+    """Read a bounded stable regular file without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise ValueError(f"cannot inspect {description}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{description} must be a regular file")
+    if before.st_size > max_bytes:
+        raise ValueError(f"{description} exceeds {max_bytes}-byte limit")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot open {description}") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"{description} must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"{description} changed while opening")
+        if opened.st_size > max_bytes:
+            raise ValueError(f"{description} exceeds {max_bytes}-byte limit")
+
+        before_read = os.fstat(fd)
+        raw = bytearray()
+        while len(raw) <= max_bytes:
+            remaining = max_bytes + 1 - len(raw)
+            try:
+                chunk = os.read(fd, min(_READ_CHUNK_BYTES, remaining))
+            except OSError as exc:
+                raise ValueError(f"cannot read {description}") from exc
+            if not chunk:
+                break
+            raw.extend(chunk)
+
+        after_read = os.fstat(fd)
+        if _file_identity(before_read) != _file_identity(after_read):
+            raise ValueError(f"{description} changed while reading")
+        try:
+            current = os.lstat(path)
+        except OSError as exc:
+            raise ValueError(f"{description} changed while reading") from exc
+        if not stat.S_ISREG(current.st_mode) or (
+            current.st_dev,
+            current.st_ino,
+        ) != (after_read.st_dev, after_read.st_ino):
+            raise ValueError(f"{description} changed while reading")
+        if len(raw) > max_bytes:
+            raise ValueError(f"{description} exceeds {max_bytes}-byte limit")
+        if len(raw) != after_read.st_size:
+            raise ValueError(f"{description} changed while reading")
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
 def _load_strict_json_object(
     path: Path,
     *,
     description: str,
     max_bytes: int = MAX_MANUAL_REPORT_BYTES,
 ) -> dict[str, Any]:
+    raw_bytes = _read_stable_regular_bytes(
+        path,
+        description=description,
+        max_bytes=max_bytes,
+    )
     try:
-        size = path.stat().st_size
-    except OSError as exc:
-        raise ValueError(f"cannot stat {description}: {exc}") from exc
-    if size > max_bytes:
-        raise ValueError(f"{description} exceeds {max_bytes}-byte limit")
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"cannot read {description}: invalid UTF-8") from exc
 
     try:
-        raw = path.read_text(encoding="utf-8")
         value = json.loads(
             raw,
             object_pairs_hook=_reject_duplicate_object_keys,
             parse_constant=_reject_nonstandard_json_constant,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise ValueError(f"cannot read {description}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"{description} root must be an object")
@@ -273,9 +356,16 @@ def validate_report(
     if expected_coverage is not None and coverage != expected_coverage:
         errors.append(f"coverage must match matrix coverage {expected_coverage!r}")
 
-    for path in sorted(set(_sensitive_field_paths(report))):
+    try:
+        sensitive_paths = sorted(set(_sensitive_field_paths(report)))
+        credential_url_paths = sorted(set(_credential_url_paths(report)))
+    except RecursionError:
+        errors.append("report structure is too deeply nested")
+        return errors
+
+    for path in sensitive_paths:
         errors.append(f"sensitive field name is not allowed in evidence: {path}")
-    for path in sorted(set(_credential_url_paths(report))):
+    for path in credential_url_paths:
         errors.append(f"credential-bearing URL is not allowed in evidence: {path}")
 
     return errors
@@ -287,12 +377,24 @@ def _safe_report_path(root: Path, raw_path: str) -> Path | None:
     relative = Path(raw_path)
     if relative.is_absolute() or any(part == ".." for part in relative.parts):
         return None
+
     root_resolved = root.resolve()
     report_root = root_resolved / MANUAL_REPORT_PREFIX.rstrip("/")
-    candidate = (root_resolved / relative).resolve()
+    candidate = root_resolved / relative
     try:
-        candidate.relative_to(report_root)
+        candidate.parent.relative_to(report_root)
     except ValueError:
+        return None
+
+    # Keep the final component unresolved so the bounded reader can reject a
+    # final symlink. Parent directory symlinks are rejected as boundary changes.
+    try:
+        if (
+            report_root.resolve() != report_root
+            or candidate.parent.resolve() != candidate.parent
+        ):
+            return None
+    except OSError:
         return None
     return candidate
 
