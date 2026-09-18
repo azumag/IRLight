@@ -211,6 +211,15 @@ class EgressSecretInputTest(unittest.TestCase):
 
 
 class EgressSecretPackagingContractTest(unittest.TestCase):
+    def test_direct_egress_uses_hardened_secret_readers(self) -> None:
+        source = (EGRESS_DIR / "egress.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "from secret_inputs import read_destination_url, read_input_uri as _read_input_uri",
+            source,
+        )
+        self.assertNotIn("def _read_input_uri()", source)
+        self.assertNotIn("def read_destination_url(path: Path)", source)
+
     def test_production_entrypoint_binds_hardened_readers_before_egress_main(self) -> None:
         source = (EGRESS_DIR / "egress_entrypoint.py").read_text(encoding="utf-8")
         main_source = source[source.index("def main() -> int:") :]
