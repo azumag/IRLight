@@ -37,6 +37,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - Destination verification の同時実行 admission: [destination-verification-admission.md](destination-verification-admission.md)
 - 認証 password KDF の同時実行 admission: [auth-kdf-admission.md](auth-kdf-admission.md)
 - Media Node resource pressure の一次対応: [media-node-resource-pressure.md](media-node-resource-pressure.md)
+- Media stack restart baseline の stable read 契約: [media-stack-restart-baseline.md](media-stack-restart-baseline.md)
 - resource pressure check の実装・status 契約: [resource-pressure-check-contract.md](resource-pressure-check-contract.md)
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
 - cgroup runtime pressure aggregate の opt-in 診断: [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md)
