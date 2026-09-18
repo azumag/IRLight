@@ -26,9 +26,10 @@ class HostSwapIoAggregateTest(unittest.TestCase):
             scripts.mkdir()
             shutil.copyfile(SCRIPT, scripts / "check-host-pressure.sh")
 
-            component = """#!/usr/bin/env bash
-exit "${IRLIGHT_TEST_COMPONENT_CODE:-0}"
-"""
+            component = (
+                "#!/usr/bin/env bash\n"
+                'exit "${IRLIGHT_TEST_COMPONENT_CODE:-0}"\n'
+            )
             for name in (
                 "check-disk-pressure.sh",
                 "check-memory-pressure.sh",
@@ -42,12 +43,11 @@ exit "${IRLIGHT_TEST_COMPONENT_CODE:-0}"
 
             swap = scripts / "check-swap-io-delta.sh"
             swap.write_text(
-                """#!/usr/bin/env bash
-set -eu
-[[ "${1:-}" == "${IRLIGHT_TEST_VMSTAT_PATH:-}" ]] || exit 3
-[[ "${2:-}" == "${IRLIGHT_TEST_BASELINE_PATH:-}" ]] || exit 3
-exit "${IRLIGHT_TEST_SWAP_CODE:-0}"
-""",
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                '[[ "${1:-}" == "${IRLIGHT_TEST_VMSTAT_PATH:-}" ]] || exit 3\n'
+                '[[ "${2:-}" == "${IRLIGHT_TEST_BASELINE_PATH:-}" ]] || exit 3\n'
+                'exit "${IRLIGHT_TEST_SWAP_CODE:-0}"\n',
                 encoding="utf-8",
             )
 
