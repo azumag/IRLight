@@ -4,17 +4,17 @@ Linux の NIC link / route が正常でも、受信パケットの softnet 処�
 
 ## 対象 signal
 
-各 CPU 行の第2 field `dropped` と第3 field `time_squeeze` を合計する。`dropped` の増加は softnet backlog 側で packet を処理できず捨てた活動を、`time_squeeze` の増加は softnet processing budget / time を使い切った活動を示す。どちらも host / network namespace 全体の signal であり、単独で特定 Session、destination、NIC、アプリケーションを原因と断定しない。
+各 CPU 行の第2 field `dropped` と第3 field `time_squeeze` を比較・合計する。`dropped` の増加は softnet backlog 側で packet を処理できず捨てた活動を、`time_squeeze` の増加は softnet processing budget / time を使い切った活動を示す。どちらも host / network namespace 全体の signal であり、単独で特定 Session、destination、NIC、アプリケーションを原因と断定しない。
 
 - 差分なし: `OK`
 - `dropped` または `time_squeeze` が増加: `WARNING`
-- current / baseline の欠落・読取不能、不正 record、counter reset: `UNKNOWN`
+- current / baseline の欠落・読取不能、不正 record、per-CPU counter reset、CPU record 数の変化: `UNKNOWN`
 
 この checker 単独では `CRITICAL` を返さない。重大度を上げる場合は NIC error/drop、CPU / PSI、route、ingest / egress、実際の Session 影響など別 signal と組み合わせて判断する。
 
 ## Baseline
 
-baseline は checker が作成・更新・削除しない。operator が診断対象と同じ host、network namespace、boot generation で snapshot を取得して明示的に渡す。
+baseline は checker が作成・更新・削除しない。operator が診断対象と同じ host、network namespace、boot generation、CPU topology で snapshot を取得して明示的に渡す。
 
 ```bash
 install -d -m 0755 /run/irlight-monitor
@@ -24,7 +24,7 @@ bash scripts/check-softnet-pressure-delta.sh \
   /run/irlight-monitor/softnet_stat.baseline
 ```
 
-boot や network namespace、baseline generation が不明な場合は古い snapshot を推測で再利用しない。counter が baseline より小さくなった場合は reset / generation mismatch として `UNKNOWN` に fail-closed する。CPU hotplug 等で record 構成が変わっても、checker は CPU identity を推測せず aggregate counter の単調性だけを評価する。
+boot / network namespace / CPU topology / baseline generation が不明な場合は古い snapshot を推測で再利用しない。各 CPU 行の `processed` / `dropped` / `time_squeeze` のいずれかが baseline より小さくなった場合は counter reset / generation mismatch として `UNKNOWN`、CPU record 数が変化した場合も `UNKNOWN` に fail-closed する。これにより、一部 CPU の reset が別 CPU の増加で aggregate 上は隠れるケースを正常扱いしない。
 
 環境変数でも current / baseline を指定できる。
 
