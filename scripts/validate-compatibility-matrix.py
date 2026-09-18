@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "docs" / "compatibility-matrix.json"
 MANUAL_REPORT_PREFIX = "docs/compatibility-reports/"
 MAX_MATRIX_BYTES = 256 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 ALLOWED_STATUSES = {"automated", "manual_verified", "not_tested"}
 ALLOWED_CATEGORIES = {
     "publisher_software",
@@ -78,6 +81,79 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
 
 def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_matrix_bytes(path: Path) -> bytes:
+    """Read one stable bounded regular file without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise ValueError("cannot inspect compatibility matrix") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("compatibility matrix must be a regular file")
+    if before.st_size > MAX_MATRIX_BYTES:
+        raise ValueError(f"compatibility matrix exceeds {MAX_MATRIX_BYTES}-byte limit")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("cannot open compatibility matrix") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError("compatibility matrix must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError("compatibility matrix changed while opening")
+        if opened.st_size > MAX_MATRIX_BYTES:
+            raise ValueError(f"compatibility matrix exceeds {MAX_MATRIX_BYTES}-byte limit")
+
+        before_read = os.fstat(fd)
+        raw = bytearray()
+        while len(raw) <= MAX_MATRIX_BYTES:
+            remaining = MAX_MATRIX_BYTES + 1 - len(raw)
+            try:
+                chunk = os.read(fd, min(_READ_CHUNK_BYTES, remaining))
+            except OSError as exc:
+                raise ValueError("cannot read compatibility matrix") from exc
+            if not chunk:
+                break
+            raw.extend(chunk)
+
+        after_read = os.fstat(fd)
+        if _file_identity(before_read) != _file_identity(after_read):
+            raise ValueError("compatibility matrix changed while reading")
+        try:
+            current = os.lstat(path)
+        except OSError as exc:
+            raise ValueError("compatibility matrix changed while reading") from exc
+        if not stat.S_ISREG(current.st_mode) or (
+            current.st_dev,
+            current.st_ino,
+        ) != (after_read.st_dev, after_read.st_ino):
+            raise ValueError("compatibility matrix changed while reading")
+        if len(raw) > MAX_MATRIX_BYTES:
+            raise ValueError(f"compatibility matrix exceeds {MAX_MATRIX_BYTES}-byte limit")
+        if len(raw) != after_read.st_size:
+            raise ValueError("compatibility matrix changed while reading")
+        return bytes(raw)
+    finally:
+        os.close(fd)
 
 
 def validate_matrix(matrix: dict[str, Any]) -> list[str]:
@@ -232,20 +308,19 @@ def validate_matrix(matrix: dict[str, Any]) -> list[str]:
 
 
 def load_matrix(path: Path) -> dict[str, Any]:
+    raw_bytes = _read_matrix_bytes(path)
     try:
-        size = path.stat().st_size
-    except OSError as exc:
-        raise ValueError(f"cannot stat compatibility matrix: {exc}") from exc
-    if size > MAX_MATRIX_BYTES:
-        raise ValueError(f"compatibility matrix exceeds {MAX_MATRIX_BYTES}-byte limit")
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("cannot read compatibility matrix: invalid UTF-8") from exc
 
     try:
         value = json.loads(
-            path.read_text(encoding="utf-8"),
+            raw,
             object_pairs_hook=_reject_duplicate_object_keys,
             parse_constant=_reject_nonstandard_json_constant,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise ValueError(f"cannot read compatibility matrix: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError("compatibility matrix root must be an object")
