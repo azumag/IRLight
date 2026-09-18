@@ -45,6 +45,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - IPv6 default route の targeted read-only 診断: [targeted-ipv6-default-route-diagnostics.md](targeted-ipv6-default-route-diagnostics.md)
 - link / IPv4 / IPv6 route の targeted egress 診断: [targeted-network-egress-health.md](targeted-network-egress-health.md)
 - network interface error / drop delta の targeted read-only 診断: [network-interface-error-monitoring.md](network-interface-error-monitoring.md)
+- Linux softnet drop / time_squeeze delta の targeted read-only 診断: [softnet-pressure-monitoring.md](softnet-pressure-monitoring.md)
 - UDP SNMP error delta の targeted read-only 診断: [udp-snmp-error-monitoring.md](udp-snmp-error-monitoring.md)
 - TCP SNMP retransmit delta の targeted read-only 診断: [tcp-snmp-retransmit-monitoring.md](tcp-snmp-retransmit-monitoring.md)
 - TCP connection attempt failure delta の targeted read-only 診断: [tcp-connection-attempt-failure-monitoring.md](tcp-connection-attempt-failure-monitoring.md)
