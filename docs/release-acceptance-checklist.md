@@ -9,6 +9,8 @@ python scripts/validate-release-acceptance-checklist.py
 python -m unittest tests.test_release_acceptance_checklist -v
 ```
 
+The canonical checklist input itself is bounded to 128 KiB and must be a stable regular file. The validator rejects a final symlink, FIFO/device/non-regular input, an oversized file, or a pathname that changes to a different inode while the bounded read is in progress. Invalid UTF-8 is reported as a validation failure rather than escaping as a traceback. These checks protect the release gate's input handling; they do not turn repository evidence into proof of an external or long-running test that was never actually performed.
+
 ## Status semantics
 
 - `pending`: required evidence has not yet been produced.
