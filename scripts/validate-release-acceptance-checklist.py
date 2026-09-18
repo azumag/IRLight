@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Validate the fail-closed IRLight pre-beta release acceptance checklist."""
+"""Validate the fail-closed IRLight pre-beta release acceptance checklist.
+
+The canonical checklist is a bounded regular-file input. The loader rejects
+symlinks and non-regular files, opens without following the final pathname,
+and verifies that both the opened file metadata and pathname identity remain
+stable across the bounded read.
+"""
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,12 +56,70 @@ def _reject_nonfinite_constant(value: str) -> None:
     raise ChecklistValidationError(f"non-standard JSON constant: {value}")
 
 
+def _open_checklist_readonly(path: Path) -> Any:
+    """Open one stable regular-file checklist without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise ChecklistValidationError("checklist could not be inspected") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ChecklistValidationError("checklist must be a regular file")
+    if before.st_size > MAX_CHECKLIST_BYTES:
+        raise ChecklistValidationError("checklist exceeds size limit")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ChecklistValidationError("checklist could not be opened") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ChecklistValidationError("checklist must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ChecklistValidationError("checklist changed while opening")
+        if opened.st_size > MAX_CHECKLIST_BYTES:
+            raise ChecklistValidationError("checklist exceeds size limit")
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
 def load_checklist(path: Path) -> dict[str, Any]:
     try:
-        if path.stat().st_size > MAX_CHECKLIST_BYTES:
+        with _open_checklist_readonly(path) as handle:
+            before_read = os.fstat(handle.fileno())
+            raw_bytes = handle.read(MAX_CHECKLIST_BYTES + 1)
+            after_read = os.fstat(handle.fileno())
+            if _file_identity(before_read) != _file_identity(after_read):
+                raise ChecklistValidationError("checklist changed while reading")
+            current = os.lstat(path)
+            if not stat.S_ISREG(current.st_mode) or (
+                current.st_dev,
+                current.st_ino,
+            ) != (after_read.st_dev, after_read.st_ino):
+                raise ChecklistValidationError("checklist changed while reading")
+        if len(raw_bytes) > MAX_CHECKLIST_BYTES:
             raise ChecklistValidationError("checklist exceeds size limit")
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        raw = raw_bytes.decode("utf-8")
+    except ChecklistValidationError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
         raise ChecklistValidationError("checklist could not be read") from exc
 
     try:
@@ -62,7 +128,9 @@ def load_checklist(path: Path) -> dict[str, Any]:
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_nonfinite_constant,
         )
-    except json.JSONDecodeError as exc:
+    except ChecklistValidationError:
+        raise
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise ChecklistValidationError("checklist is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ChecklistValidationError("checklist root must be an object")

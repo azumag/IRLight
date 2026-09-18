@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-release-acceptance-checklist.py"
@@ -301,6 +302,91 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             encoding="utf-8",
         )
         with self.assertRaisesRegex(module.ChecklistValidationError, "duplicate JSON key"):
+            module.load_checklist(path)
+
+    def test_checklist_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            link = root / "checklist.json"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(module.ChecklistValidationError, "regular file"):
+                module.load_checklist(link)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO support is unavailable")
+    def test_checklist_fifo_is_rejected_without_opening(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / "checklist.fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(module.ChecklistValidationError, "regular file"):
+                module.load_checklist(fifo)
+
+    def test_checklist_oversize_regular_file_is_rejected(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        path = Path(name)
+        self.addCleanup(path.unlink, missing_ok=True)
+        with path.open("wb") as handle:
+            handle.truncate(module.MAX_CHECKLIST_BYTES + 1)
+        with self.assertRaisesRegex(module.ChecklistValidationError, "size limit"):
+            module.load_checklist(path)
+
+    def test_checklist_path_replacement_during_read_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "checklist.json"
+            replacement = root / "replacement.json"
+            original.write_text(CHECKLIST.read_text(encoding="utf-8"), encoding="utf-8")
+            replacement.write_text(CHECKLIST.read_text(encoding="utf-8"), encoding="utf-8")
+            original_stat = os.lstat(original)
+            replacement_stat = os.lstat(replacement)
+            self.assertNotEqual(
+                (original_stat.st_dev, original_stat.st_ino),
+                (replacement_stat.st_dev, replacement_stat.st_ino),
+            )
+            with mock.patch.object(
+                module.os,
+                "lstat",
+                side_effect=[original_stat, replacement_stat],
+            ):
+                with self.assertRaisesRegex(
+                    module.ChecklistValidationError, "changed while reading"
+                ):
+                    module.load_checklist(original)
+
+    def test_checklist_in_place_change_during_read_is_rejected(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        path = Path(name)
+        self.addCleanup(path.unlink, missing_ok=True)
+        path.write_text(CHECKLIST.read_text(encoding="utf-8"), encoding="utf-8")
+        stable = path.stat()
+        mutated = mock.Mock(
+            st_mode=stable.st_mode,
+            st_dev=stable.st_dev,
+            st_ino=stable.st_ino,
+            st_size=stable.st_size,
+            st_mtime_ns=stable.st_mtime_ns + 1,
+            st_ctime_ns=stable.st_ctime_ns + 1,
+        )
+        with mock.patch.object(
+            module.os,
+            "fstat",
+            side_effect=[stable, stable, mutated],
+        ):
+            with self.assertRaisesRegex(
+                module.ChecklistValidationError, "changed while reading"
+            ):
+                module.load_checklist(path)
+
+    def test_invalid_utf8_checklist_is_reported_without_traceback(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        path = Path(name)
+        self.addCleanup(path.unlink, missing_ok=True)
+        path.write_bytes(b"\xff\xfe\x00")
+        with self.assertRaisesRegex(module.ChecklistValidationError, "could not be read"):
             module.load_checklist(path)
 
 
