@@ -26,13 +26,15 @@ IRLIGHT_DISK_PRESSURE status=OK usage_percent=52 available_kb=123456 inode_usage
 
 全体 `status` は block / inode のうち深刻な方を採用する。空き block が十分でも inode が枯渇すると新規ファイル作成に失敗するため、inode pressure も `WARNING` / `CRITICAL` の判定対象とする。
 
+さらに `df` の使用率表示だけを disk-full の根拠にしない。検証済み出力で `available_kb=0` または `available_inodes=0` が確認された場合は、表示上の使用率が critical 閾値未満でも実 allocation が枯渇しているため `CRITICAL` とする。これにより丸めや実装差で usage percentage と absolute available 値が食い違っても、実際の block / inode exhaustion を正常・warning に格下げしない。
+
 exit code は次の意味を持つ。
 
 | exit | status | meaning |
 | ---: | --- | --- |
 | 0 | `OK` | block / inode とも warning 閾値未満 |
 | 1 | `WARNING` | block または inode が warning 以上、どちらも critical 未満 |
-| 2 | `CRITICAL` | block または inode が critical 以上 |
+| 2 | `CRITICAL` | block または inode が critical 以上、または available block / inode が 0 |
 | 3 | `UNKNOWN` | path、閾値、`df` 実行または block / inode 出力を安全に評価できない |
 
 `UNKNOWN` を正常扱いしない。監視不能時は filesystem headroom を証明できないため、監視障害として通知する。inode 情報を取得できない filesystem も、値を推測して `OK` にせず `UNKNOWN` とする。
