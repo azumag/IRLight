@@ -7,9 +7,14 @@ into an unbounded read, a FIFO/device block, or a diagnostic leak.
 
 ## Boundary
 
-`apps/egress-gateway/runtime_secret_file.py` is the service-local reader used by
-`secret_inputs.py`. It enforces the following rules before a secret value reaches
-the media runtime:
+`apps/egress-gateway/egress_runtime_secret_file.py` is the service-local reader
+used by `secret_inputs.py`. The service-specific module name is intentional: the
+repository also contains a Node Agent secret reader and unittest discovery runs
+multiple service tests in one interpreter, so the modules must not alias through
+`sys.modules`.
+
+The Egress reader enforces the following rules before a secret value reaches the
+media runtime:
 
 - only a regular-file target is accepted;
 - symlink -> regular file remains supported for Docker/Kubernetes projected
@@ -48,7 +53,8 @@ those errors.
 `tests/test_egress_runtime_secret_files.py` covers regular files, projected
 symlinks, FIFO/directory rejection, the 64 KiB size boundary, invalid UTF-8,
 inspection-to-open replacement, in-read mutation, input fallback semantics,
-destination URL validation, diagnostic redaction, and production image wiring.
+destination URL validation, diagnostic redaction, unique module wiring, and the
+production image entrypoint contract.
 
 This change does not add secret rotation, KMS/envelope encryption, external
 provider probes, or any billable integration test.
