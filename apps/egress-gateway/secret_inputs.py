@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from runtime_secret_file import RuntimeSecretFileError, read_runtime_secret
+from egress_runtime_secret_file import RuntimeSecretFileError, read_runtime_secret
 
 
 _DEFAULT_INPUT_URI = "rtsp://mediamtx:8554/output/relay"
