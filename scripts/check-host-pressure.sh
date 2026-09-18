@@ -19,6 +19,9 @@ vmstat_baseline_path="${IRLIGHT_VMSTAT_BASELINE_PATH:-}"
 cpu_steal_mode="${IRLIGHT_HOST_CPU_STEAL_MODE:-disabled}"
 proc_stat_path="${IRLIGHT_PROC_STAT_PATH:-/proc/stat}"
 proc_stat_baseline_path="${IRLIGHT_PROC_STAT_BASELINE_PATH:-}"
+boot_generation_mode="${IRLIGHT_HOST_BOOT_GENERATION_MODE:-disabled}"
+boot_id_path="${IRLIGHT_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
+boot_id_baseline_path="${IRLIGHT_BOOT_ID_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_io_mode" in
@@ -35,6 +38,15 @@ case "$cpu_steal_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cpu_steal_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$boot_generation_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_boot_generation_mode\n'
     exit 3
     ;;
 esac
@@ -122,6 +134,13 @@ fi
 # baseline; missing or stale baselines fail closed in the component checker.
 if [[ "$cpu_steal_mode" == "enabled" ]]; then
   add_component "cpu_steal" "$script_dir/check-cpu-steal-delta.sh" "$proc_stat_path" "$proc_stat_baseline_path"
+fi
+
+# Boot generation is an operator-policy signal rather than a host-health verdict.
+# Keep it opt-in so planned reboots do not change the default aggregate contract.
+# When enabled, missing or invalid operator baselines fail closed in the checker.
+if [[ "$boot_generation_mode" == "enabled" ]]; then
+  add_component "boot_generation" "$script_dir/check-host-boot-generation.sh" "$boot_id_path" "$boot_id_baseline_path"
 fi
 
 component_statuses=()
