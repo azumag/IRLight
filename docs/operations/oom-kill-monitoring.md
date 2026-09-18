@@ -12,6 +12,20 @@ scripts/check-oom-kill-delta.sh /proc/vmstat /var/lib/irlight-observer/vmstat.ba
 
 path は positional argument のほか、`IRLIGHT_VMSTAT_PATH` と `IRLIGHT_VMSTAT_BASELINE_PATH` でも指定できます。baseline は checker が作成・更新・削除しません。採取・世代管理・rotation は監視基盤側で行ってください。
 
+## Host aggregate への opt-in
+
+baseline の世代管理を行える deployment では、host aggregate に OOM kill signal を明示的に追加できます。
+
+```bash
+IRLIGHT_HOST_OOM_KILL_MODE=enabled \
+IRLIGHT_VMSTAT_BASELINE_PATH=/var/lib/irlight-observer/vmstat.baseline \
+bash scripts/check-host-pressure.sh
+```
+
+既定値は `IRLIGHT_HOST_OOM_KILL_MODE=disabled` であり、既存の `IRLIGHT_HOST_PRESSURE` 出力契約は変えません。`enabled` の場合だけ `oom_kill_status=OK|CRITICAL|UNKNOWN` を追加し、aggregate の既存 severity ordering `CRITICAL > UNKNOWN > WARNING > OK` に参加させます。
+
+`enabled` なのに baseline が未設定・読取不能・別 generation 由来で counter reset が起きた場合は checker の `UNKNOWN` をそのまま aggregate へ伝播します。不正な mode 値も `UNKNOWN reason=invalid_oom_kill_mode` に fail closed します。aggregate 自身は baseline を作成・更新・削除しません。
+
 ## status 契約
 
 - `OK` / exit `0`: `oom_kill` counter に増加がない。
