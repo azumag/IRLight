@@ -28,7 +28,7 @@ exit code は他の resource-pressure checks と同じく `0=OK`, `1=WARNING`, `
 - aggregate `cpu` record の `steal` が baseline から増えていなければ `OK`。
 - 1 tick でも増えていれば `WARNING / cpu_steal_activity`。この閾値は targeted sampling の「活動あり」を表すためのもので、継続時間や provider 切替を自動判断する閾値ではない。
 - current / baseline が読めない、aggregate record がない、対象counterが不正、同じ aggregate record が重複している場合は `UNKNOWN`。
-- user / nice / system / idle / iowait / irq / softirq / steal のいずれかが baseline より減少した場合は、reboot・counter reset・別hostのbaseline等を安全に区別できないため `UNKNOWN / counter_reset` とする。
+- `steal` 自体が baseline より減少した場合は、reboot・counter reset・別hostのbaseline等を安全に区別できないため `UNKNOWN / counter_reset` とする。他の CPU counter は record の形式検証には使うが generation 判定には使わない。Linux では `iowait` が条件によって減少し得るため、全 CPU counter の単調増加を要求すると正常な host を誤って `UNKNOWN` にできてしまうためである。
 - `cpu0` など per-CPU record はこの check の判定には使用しない。host全体の aggregate counterだけを比較する。
 
 ## Baseline lifecycle
