@@ -16,6 +16,7 @@ threads_max_path="${9:-${IRLIGHT_THREADS_MAX_PATH:-/proc/sys/kernel/threads-max}
 swap_pressure_mode="${IRLIGHT_HOST_SWAP_PRESSURE_MODE:-disabled}"
 swap_meminfo_path="${IRLIGHT_SWAP_MEMINFO_PATH:-$meminfo_path}"
 swap_io_mode="${IRLIGHT_HOST_SWAP_IO_MODE:-disabled}"
+oom_kill_mode="${IRLIGHT_HOST_OOM_KILL_MODE:-disabled}"
 vmstat_path="${IRLIGHT_VMSTAT_PATH:-/proc/vmstat}"
 vmstat_baseline_path="${IRLIGHT_VMSTAT_BASELINE_PATH:-}"
 cpu_steal_mode="${IRLIGHT_HOST_CPU_STEAL_MODE:-disabled}"
@@ -40,6 +41,15 @@ case "$swap_io_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_swap_io_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$oom_kill_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_oom_kill_mode\n'
     exit 3
     ;;
 esac
@@ -145,6 +155,13 @@ fi
 # instead of silently treating an unknown generation as healthy.
 if [[ "$swap_io_mode" == "enabled" ]]; then
   add_component "swap_io" "$script_dir/check-swap-io-delta.sh" "$vmstat_path" "$vmstat_baseline_path"
+fi
+
+# OOM kills are a host-wide critical signal, but the counter is cumulative and
+# requires a same-generation operator baseline. Keep it opt-in so deployments
+# that do not manage that baseline preserve the existing aggregate contract.
+if [[ "$oom_kill_mode" == "enabled" ]]; then
+  add_component "oom_kill" "$script_dir/check-oom-kill-delta.sh" "$vmstat_path" "$vmstat_baseline_path"
 fi
 
 # CPU steal is provider/virtualization dependent and cumulative, so it remains
