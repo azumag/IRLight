@@ -17,6 +17,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY egress.py egress_policy.py destination_guard.py egress_entrypoint.py rtmp_session.py rtmp_sink.py runtime_timer_config.py runtime_secret_file.py secret_inputs.py ./
+COPY egress.py egress_policy.py destination_guard.py egress_entrypoint.py rtmp_session.py rtmp_sink.py runtime_timer_config.py egress_runtime_secret_file.py secret_inputs.py ./
 
 CMD ["python3", "-u", "/app/egress_entrypoint.py"]
