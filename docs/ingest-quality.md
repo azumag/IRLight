@@ -26,6 +26,8 @@ The sampler records:
 
 MediaMTX API, RTSP and metrics remain internal-only on production nodes.
 
+When `NODE_INGEST_SAMPLE_URL_FILE` is configured, the authenticated sample URL is read at sample time through the Node Agent runtime secret-file boundary. The resolved target must be a regular file, reads are bounded to 64 KiB, FIFO/device inputs are rejected before content reads, and projected-secret symlinks to regular files remain supported. An unreadable, oversized, invalid UTF-8, replaced, or mutated configured file fails closed as `MEDIA_SAMPLE_FAILED`; the sampler does not silently fall back to `NODE_INGEST_SAMPLE_URL`. The protected URL continues to be passed to ffprobe through stdin rather than argv.
+
 ## DEGRADED reasons
 
 - `VIDEO_TIMEOUT`: no meaningful video progress observed in the sample; this includes zero frames and a negligible residual burst across an otherwise full sample window
