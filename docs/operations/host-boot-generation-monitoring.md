@@ -32,6 +32,20 @@ IRLIGHT_BOOT_ID_BASELINE_PATH=/var/lib/irlight-monitor/boot_id.baseline \
 
 再起動をまたいで検知したい場合、baseline は `/run` のような reboot 時に消える場所へ置かない。逆に ephemeral host で generation を跨いだ比較が意味を持たない deployment では、この checker を無理に有効化しない。
 
+## Host aggregate への opt-in
+
+planned reboot でも `WARNING` になるため、既定では `check-host-pressure.sh` aggregate へ自動追加しない。同一 host の persistent baseline を運用側で管理し、この signal を host alert に含めたい deployment だけ明示的に有効化する。
+
+```bash
+IRLIGHT_HOST_BOOT_GENERATION_MODE=enabled \
+IRLIGHT_BOOT_ID_BASELINE_PATH=/var/lib/irlight-monitor/boot_id.baseline \
+  bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_HOST_BOOT_GENERATION_MODE` は `enabled` / `disabled` のみを受け付け、既定は `disabled`。不正値は aggregate 自体を `UNKNOWN reason=invalid_boot_generation_mode` にする。`enabled` 時は component 出力へ `boot_generation_status=OK|WARNING|UNKNOWN` が追加される。
+
+aggregate から有効化しても baseline の作成・更新、reboot、service restart、counter reset は行わない。baseline 未設定・読取不能・形式不正は component が `UNKNOWN` を返し、既存の `CRITICAL > UNKNOWN > WARNING > OK` の集約規則に従う。したがって、別 component に既知の CRITICAL がある場合は boot generation の UNKNOWN がそれを隠さない。
+
 ## Status contract
 
 | exit | status | reason | 意味 |
@@ -60,5 +74,6 @@ boot ID 本文や file path は通常出力しない。値そのものは creden
 - read-only diagnostic であり、reboot、service restart、sysctl、network 設定、counter reset、baseline 更新を行わない。
 - baseline 未設定・読取不能・形式不正を `OK` に丸めない。
 - `boot_generation_changed` は host 異常を単独で断定しない。planned reboot でも発生する。
-- deployment policy と persistent baseline が必要なため、既定の `check-host-pressure.sh` aggregate へ自動追加しない。
+- deployment policy と persistent baseline が必要なため、既定では `check-host-pressure.sh` aggregate へ自動追加しない。
+- aggregate へ追加する場合も `IRLIGHT_HOST_BOOT_GENERATION_MODE=enabled` の明示 opt-in を要求する。
 - 差分 counter の `counter_reset` を見たときは、boot generation の変更と合わせて判断し、単純に baseline を上書きして原因を消さない。
