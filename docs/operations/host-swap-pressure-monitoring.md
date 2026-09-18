@@ -2,7 +2,7 @@
 
 Issue #11 の host memory 診断を補完するため、Linux の `/proc/meminfo` にある `SwapTotal` / `SwapFree` と、`/proc/vmstat` にある累積 swap I/O counter を副作用なく確認する targeted checks を定義する。
 
-`MemAvailable` が十分でも swap pool が高使用率になっていることはあり、逆に swap を意図的に無効化している host もある。そのため usage check は既存の `check-host-pressure.sh` aggregate へ自動追加しない。swap I/O delta も既定では aggregate 無効のままとし、同一 boot generation の baseline を管理できる deployment だけ明示的に opt-in する。
+`MemAvailable` が十分でも swap pool が高使用率になっていることはあり、逆に swap を意図的に無効化している host もある。そのため usage check は既定の `check-host-pressure.sh` aggregate へ自動追加しない。swap policy が明確な deployment だけ明示的に opt-in できる。swap I/O delta も既定では aggregate 無効のままとし、同一 boot generation の baseline を管理できる deployment だけ明示的に opt-in する。
 
 ## Usage check
 
@@ -51,6 +51,22 @@ exit code:
 | 2 | `CRITICAL` | 使用率が critical 以上 |
 | 3 | `UNKNOWN` | meminfo / threshold を安全に評価できない |
 
+### Host aggregate opt-in (usage)
+
+swap を利用する deployment で host-wide usage pressure を aggregate の severity に含めたい場合だけ、明示的に有効化する。
+
+```bash
+IRLIGHT_HOST_SWAP_PRESSURE_MODE=enabled \
+IRLIGHT_SWAP_MEMINFO_PATH=/proc/meminfo \
+  bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_HOST_SWAP_PRESSURE_MODE` は `enabled` / `disabled` のみを受け付け、既定は `disabled`。既定時は従来の `IRLIGHT_HOST_PRESSURE` 出力を変更しない。`enabled` 時だけ `swap_pressure_status=OK|WARNING|CRITICAL|UNKNOWN` を追加し、既存の component timeout と `CRITICAL > UNKNOWN > WARNING > OK` の severity aggregation に参加させる。
+
+`IRLIGHT_SWAP_MEMINFO_PATH` を指定しない場合、aggregate が通常の memory check に使う meminfo path（第2引数、`IRLIGHT_MEMINFO_PATH`、または `/proc/meminfo`）を共有する。swap 専用 path を指定した場合はその値を standalone checker の第1引数として渡す。`IRLIGHT_SWAP_WARNING_PERCENT` / `IRLIGHT_SWAP_CRITICAL_PERCENT` も standalone checker と同じ契約で適用される。
+
+meminfo が読めない、不正、threshold が不正なら `swap_pressure_status=UNKNOWN` として fail-closed になる。無効な mode 値は aggregate 自体を `UNKNOWN reason=invalid_swap_pressure_mode` にする。aggregate は `swapon` / `swapoff`、swapfile 作成、sysctl/cgroup 設定変更などを行わない。
+
 ## Swap I/O delta companion
 
 swap pool の使用率が低くても短時間に swap-in / swap-out が繰り返されている場合があるため、`/proc/vmstat` の `pswpin` / `pswpout` を operator-managed baseline と比較する companion check を用意する。
@@ -75,7 +91,7 @@ IRLIGHT_SWAP_IO status=WARNING reason=swap_io_activity pswpin_delta=8 pswpout_de
 
 この WARNING は swap thrashing や user-visible latency を単独で証明しない。小さな background activity でも増加し得るため、PSI、memory pressure、swap 使用率、OOM、service latency と相関する targeted signal として扱う。deployment 固有の閾値や自動 remediation はこの checker では導入しない。
 
-### Host aggregate opt-in
+### Host aggregate opt-in (I/O delta)
 
 同一 boot generation の baseline を運用側で管理できる場合に限り、swap I/O companion を既存 host-pressure aggregate へ明示的に追加できる。
 
@@ -115,6 +131,7 @@ bash scripts/check-oom-kill-delta.sh /proc/vmstat <operator-managed-baseline>
 ```bash
 python -m unittest discover -s tests -p 'test_host_swap_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_swap_pressure_runbook_inventory.py' -v
+python -m unittest discover -s tests -p 'test_host_swap_pressure_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_swap_io_delta_check.py' -v
 python -m unittest discover -s tests -p 'test_host_swap_io_runbook_inventory.py' -v
 python -m unittest discover -s tests -p 'test_host_swap_io_aggregate.py' -v
