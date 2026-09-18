@@ -48,7 +48,7 @@ reboot / reprovision をまたぐ累積counter比較は無効なので、`script
 
 ## Host aggregate への opt-in
 
-既定の `check-host-pressure.sh` aggregate へは自動追加しない。bare metal、専有CPU、共有VPSでは `steal` の意味と許容値が異なり、baseline の更新周期も deployment policy に依存するためである。
+既定の `check-host-pressure.sh` aggregate へ自動追加しない。bare metal、専有CPU、共有VPSでは `steal` の意味と許容値が異なり、baseline の更新周期も deployment policy に依存するためである。
 
 CPU steal を監視対象にする deployment では明示的に opt-in できる。
 
