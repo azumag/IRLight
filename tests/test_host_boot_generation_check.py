@@ -46,6 +46,15 @@ class HostBootGenerationCheckTests(unittest.TestCase):
             "IRLIGHT_BOOT_GENERATION status=OK reason=same_boot\n",
         )
 
+    def test_single_line_without_trailing_newline_is_supported(self) -> None:
+        boot_id = "12345678-1234-4abc-8def-1234567890ab"
+        result = self.run_check(boot_id, boot_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "IRLIGHT_BOOT_GENERATION status=OK reason=same_boot\n",
+        )
+
     def test_hex_case_does_not_create_false_change(self) -> None:
         result = self.run_check(
             "ABCDEF12-3456-4ABC-8DEF-1234567890AB\n",
