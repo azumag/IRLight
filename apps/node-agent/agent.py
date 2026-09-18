@@ -37,6 +37,7 @@ from egress_status import read_egress_status
 from ingest_policy import IngestPolicyInspector
 from ingest_quality import IngestQualitySampler
 from relay_client import RelayClientObserver
+from runtime_secret_file import RuntimeSecretFileError, read_runtime_secret
 from supervisor import ComposeSupervisor, FakeSupervisor, MediaSupervisor
 
 
@@ -135,14 +136,16 @@ def _secret_from_file_or_env(name: str) -> str:
     """Read a secret from a file (``NAME_FILE``) or a plain env var.
 
     Prefer files: ``docker inspect`` cannot recover the value from a file.
+    An empty file keeps the historical env fallback, while an unreadable or
+    unsafe configured file fails closed without exposing its local path.
     """
     file_env = f"{name}_FILE"
     file_path = os.getenv(file_env)
     if file_path:
         try:
-            value = Path(file_path).read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError(f"cannot read {file_env}={file_path}: {exc}") from exc
+            value = read_runtime_secret(Path(file_path)).strip()
+        except RuntimeSecretFileError:
+            raise RuntimeError(f"cannot read {file_env}") from None
         if value:
             return value
     return _env(name)
