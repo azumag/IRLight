@@ -3,8 +3,8 @@
 
 The canonical checklist is a bounded regular-file input. The loader rejects
 symlinks and non-regular files, opens without following the final pathname,
-and verifies that the inspected pathname still identifies the opened inode
-after the bounded read.
+and verifies that both the opened file metadata and pathname identity remain
+stable across the bounded read.
 """
 
 from __future__ import annotations
@@ -90,16 +90,29 @@ def _open_checklist_readonly(path: Path) -> Any:
         raise
 
 
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
 def load_checklist(path: Path) -> dict[str, Any]:
     try:
         with _open_checklist_readonly(path) as handle:
+            before_read = os.fstat(handle.fileno())
             raw_bytes = handle.read(MAX_CHECKLIST_BYTES + 1)
-            opened = os.fstat(handle.fileno())
+            after_read = os.fstat(handle.fileno())
+            if _file_identity(before_read) != _file_identity(after_read):
+                raise ChecklistValidationError("checklist changed while reading")
             current = os.lstat(path)
             if not stat.S_ISREG(current.st_mode) or (
                 current.st_dev,
                 current.st_ino,
-            ) != (opened.st_dev, opened.st_ino):
+            ) != (after_read.st_dev, after_read.st_ino):
                 raise ChecklistValidationError("checklist changed while reading")
         if len(raw_bytes) > MAX_CHECKLIST_BYTES:
             raise ChecklistValidationError("checklist exceeds size limit")
