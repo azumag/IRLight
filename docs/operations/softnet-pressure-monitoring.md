@@ -10,6 +10,8 @@ Linux の NIC link / route が正常でも、受信パケットの softnet 処�
 - `dropped` または `time_squeeze` が増加: `WARNING`
 - current / baseline の欠落・読取不能、不正 record、per-CPU counter reset、CPU record 数の変化: `UNKNOWN`
 
+`UNKNOWN` の generation-safety reason は、per-CPU counter の減少を `counter_reset`、CPU record 数の変化を `cpu_topology_changed` として固定する。これらは pressure が無かったことを意味せず、baseline と current を安全に比較できないことを示す。
+
 この checker 単独では `CRITICAL` を返さない。重大度を上げる場合は NIC error/drop、CPU / PSI、route、ingest / egress、実際の Session 影響など別 signal と組み合わせて判断する。
 
 ## Baseline
