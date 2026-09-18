@@ -90,6 +90,20 @@ class DiskPressureCheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("status=CRITICAL", result.stdout)
 
+    def test_zero_available_blocks_are_critical_even_if_usage_percent_is_low(self) -> None:
+        result = self._run(usage=10, available=0, inode_usage=10, inode_available=900)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("usage_percent=10", result.stdout)
+        self.assertIn("available_kb=0", result.stdout)
+
+    def test_zero_available_inodes_are_critical_even_if_usage_percent_is_low(self) -> None:
+        result = self._run(usage=10, available=900, inode_usage=10, inode_available=0)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("inode_usage_percent=10", result.stdout)
+        self.assertIn("available_inodes=0", result.stdout)
+
     def test_inode_warning_affects_overall_status(self) -> None:
         result = self._run(usage=20, inode_usage=80, inode_available=200)
         self.assertEqual(result.returncode, 1)
