@@ -16,6 +16,9 @@ threads_max_path="${9:-${IRLIGHT_THREADS_MAX_PATH:-/proc/sys/kernel/threads-max}
 swap_io_mode="${IRLIGHT_HOST_SWAP_IO_MODE:-disabled}"
 vmstat_path="${IRLIGHT_VMSTAT_PATH:-/proc/vmstat}"
 vmstat_baseline_path="${IRLIGHT_VMSTAT_BASELINE_PATH:-}"
+cpu_steal_mode="${IRLIGHT_HOST_CPU_STEAL_MODE:-disabled}"
+proc_stat_path="${IRLIGHT_PROC_STAT_PATH:-/proc/stat}"
+proc_stat_baseline_path="${IRLIGHT_PROC_STAT_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_io_mode" in
@@ -23,6 +26,15 @@ case "$swap_io_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_swap_io_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cpu_steal_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cpu_steal_mode\n'
     exit 3
     ;;
 esac
@@ -103,6 +115,13 @@ add_component "task" "$script_dir/check-task-pressure.sh" "$loadavg_path" "$thre
 # instead of silently treating an unknown generation as healthy.
 if [[ "$swap_io_mode" == "enabled" ]]; then
   add_component "swap_io" "$script_dir/check-swap-io-delta.sh" "$vmstat_path" "$vmstat_baseline_path"
+fi
+
+# CPU steal is provider/virtualization dependent and cumulative, so it remains
+# opt-in. Operators that enable it must manage a same-generation /proc/stat
+# baseline; missing or stale baselines fail closed in the component checker.
+if [[ "$cpu_steal_mode" == "enabled" ]]; then
+  add_component "cpu_steal" "$script_dir/check-cpu-steal-delta.sh" "$proc_stat_path" "$proc_stat_baseline_path"
 fi
 
 component_statuses=()
