@@ -13,6 +13,8 @@ file_nr_path="${6:-${IRLIGHT_FILE_NR_PATH:-/proc/sys/fs/file-nr}}"
 conntrack_count_path="${7:-${IRLIGHT_CONNTRACK_COUNT_PATH:-/proc/sys/net/netfilter/nf_conntrack_count}}"
 conntrack_max_path="${8:-${IRLIGHT_CONNTRACK_MAX_PATH:-/proc/sys/net/netfilter/nf_conntrack_max}}"
 threads_max_path="${9:-${IRLIGHT_THREADS_MAX_PATH:-/proc/sys/kernel/threads-max}}"
+swap_pressure_mode="${IRLIGHT_HOST_SWAP_PRESSURE_MODE:-disabled}"
+swap_meminfo_path="${IRLIGHT_SWAP_MEMINFO_PATH:-$meminfo_path}"
 swap_io_mode="${IRLIGHT_HOST_SWAP_IO_MODE:-disabled}"
 vmstat_path="${IRLIGHT_VMSTAT_PATH:-/proc/vmstat}"
 vmstat_baseline_path="${IRLIGHT_VMSTAT_BASELINE_PATH:-}"
@@ -23,6 +25,15 @@ boot_generation_mode="${IRLIGHT_HOST_BOOT_GENERATION_MODE:-disabled}"
 boot_id_path="${IRLIGHT_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
 boot_id_baseline_path="${IRLIGHT_BOOT_ID_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
+
+case "$swap_pressure_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_swap_pressure_mode\n'
+    exit 3
+    ;;
+esac
 
 case "$swap_io_mode" in
   enabled|disabled)
@@ -121,6 +132,13 @@ add_component "psi" "$script_dir/check-psi-pressure.sh" "$psi_dir"
 add_component "file_handle" "$script_dir/check-file-handle-pressure.sh" "$file_nr_path"
 add_component "conntrack" "$script_dir/check-conntrack-pressure.sh" "$conntrack_count_path" "$conntrack_max_path"
 add_component "task" "$script_dir/check-task-pressure.sh" "$loadavg_path" "$threads_max_path"
+
+# Swap configuration is deployment policy: some hosts intentionally have no
+# swap while others rely on a finite pool. Keep usage pressure opt-in so the
+# default aggregate contract remains policy-neutral.
+if [[ "$swap_pressure_mode" == "enabled" ]]; then
+  add_component "swap_pressure" "$script_dir/check-host-swap-pressure.sh" "$swap_meminfo_path"
+fi
 
 # Swap I/O is cumulative, so it is intentionally opt-in. Enabling it without a
 # same-generation operator baseline fails closed through the component checker
