@@ -28,9 +28,15 @@ class HostBootGenerationRunbookInventoryTests(unittest.TestCase):
 
         self.assertIn("boot_generation_changed", text)
         self.assertIn("baseline は checker が作成・更新しない", text)
-        self.assertIn("既定の `check-host-pressure.sh` aggregate へ自動追加しない", text)
+        self.assertIn("既定では `check-host-pressure.sh` aggregate へ自動追加しない", text)
+        self.assertIn("IRLIGHT_HOST_BOOT_GENERATION_MODE=enabled", text)
         self.assertIn("status=WARNING reason=boot_generation_changed", script)
-        self.assertNotIn("check-host-boot-generation.sh", host_aggregate)
+        self.assertIn(
+            'boot_generation_mode="${IRLIGHT_HOST_BOOT_GENERATION_MODE:-disabled}"',
+            host_aggregate,
+        )
+        self.assertIn('add_component "boot_generation"', host_aggregate)
+        self.assertIn("check-host-boot-generation.sh", host_aggregate)
 
 
 if __name__ == "__main__":
