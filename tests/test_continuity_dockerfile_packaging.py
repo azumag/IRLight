@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import posixpath
 import shlex
 import unittest
 from pathlib import Path
@@ -45,8 +46,10 @@ def _runtime_local_dependencies(entrypoint: str) -> set[str]:
     return required
 
 
-def _copy_destination_is_workdir(destination: str) -> bool:
-    return destination in {".", "./", IMAGE_WORKDIR, f"{IMAGE_WORKDIR}/"}
+def _resolve_container_path(path: str, workdir: str) -> str:
+    if path.startswith("/"):
+        return posixpath.normpath(path)
+    return posixpath.normpath(posixpath.join(workdir, path))
 
 
 def _dockerfile_python_sources(dockerfile: str | None = None) -> set[str]:
@@ -54,24 +57,42 @@ def _dockerfile_python_sources(dockerfile: str | None = None) -> set[str]:
         DOCKERFILE.read_text(encoding="utf-8") if dockerfile is None else dockerfile
     ).replace("\\\n", " ")
     copied: set[str] = set()
+    workdir = "/"
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("FROM "):
+            # Only files copied into the final stage can satisfy the runtime
+            # packaging contract. A new stage starts with Docker's default
+            # working directory and an independent filesystem.
+            copied = set()
+            workdir = "/"
+            continue
+
+        if line.startswith("WORKDIR "):
+            tokens = shlex.split(line)
+            if len(tokens) == 2:
+                workdir = _resolve_container_path(tokens[1], workdir)
+            continue
+
         if not line.startswith("COPY "):
             continue
         tokens = shlex.split(line)
         if len(tokens) < 3 or any(token.startswith("--from=") for token in tokens[1:]):
             continue
 
-        destination = tokens[-1]
-        if not _copy_destination_is_workdir(destination):
+        destination = _resolve_container_path(tokens[-1], workdir)
+        if destination != IMAGE_WORKDIR:
             continue
 
         sources = [token for token in tokens[1:-1] if not token.startswith("--")]
         for source in sources:
             if source in {".", "./"}:
-                return {path.name for path in CONTINUITY_DIR.glob("*.py")}
-            if any(char in source for char in "*?["):
+                copied.update(path.name for path in CONTINUITY_DIR.glob("*.py"))
+            elif any(char in source for char in "*?["):
                 copied.update(
                     path.name
                     for path in CONTINUITY_DIR.glob("*.py")
@@ -104,12 +125,30 @@ class ContinuityDockerfilePackagingTests(unittest.TestCase):
         )
         self.assertEqual(copied, set())
 
+    def test_relative_copy_uses_current_workdir(self) -> None:
+        copied = _dockerfile_python_sources(
+            "WORKDIR /tmp/continuity\n"
+            "COPY runner.py standby_integrity.py make_default_standby.py ./\n"
+        )
+        self.assertEqual(copied, set())
+
     def test_directory_copy_to_workdir_packages_all_python_sources(self) -> None:
         copied = _dockerfile_python_sources("COPY . /app/\n")
         self.assertEqual(
             copied,
             {path.name for path in CONTINUITY_DIR.glob("*.py")},
         )
+
+    def test_copy_in_earlier_stage_does_not_satisfy_final_stage(self) -> None:
+        copied = _dockerfile_python_sources(
+            "FROM ubuntu AS builder\n"
+            "WORKDIR /app\n"
+            "COPY . ./\n"
+            "FROM ubuntu\n"
+            "WORKDIR /app\n"
+            "COPY runner.py ./\n"
+        )
+        self.assertEqual(copied, {"runner.py"})
 
 
 if __name__ == "__main__":
