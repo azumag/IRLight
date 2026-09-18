@@ -13,6 +13,7 @@ import json
 import math
 import os
 import secrets
+import stat
 import tempfile
 import threading
 import time
@@ -552,8 +553,8 @@ def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
         if not _is_sha256(access_digest):
             raise NodeStateError("Node state has an invalid access token digest")
 
-        status = node.get("status")
-        if status not in NODE_STATUSES:
+        status_value = node.get("status")
+        if status_value not in NODE_STATUSES:
             raise NodeStateError("Node state has an invalid status")
         desired_state = node.get("desired_state")
         if desired_state not in NODE_DESIRED_STATES:
@@ -697,6 +698,97 @@ def configured_token_digests() -> set[str]:
     return {hash_token(item.strip()) for item in raw.split(",") if item.strip()}
 
 
+MAX_ADMIN_TOKEN_FILE_BYTES = 64 * 1024
+_ADMIN_TOKEN_READ_CHUNK_BYTES = 64 * 1024
+
+
+class AdminTokenFileError(RuntimeError):
+    """Raised when the configured admin token file is not a stable UTF-8 regular file."""
+
+
+def _admin_token_snapshot(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _admin_token_unavailable() -> AdminTokenFileError:
+    return AdminTokenFileError("node admin token file is unavailable")
+
+
+def _read_admin_token_file(path: Path) -> str:
+    """Read one configured admin token through a bounded, stable file descriptor."""
+    try:
+        inspected = path.stat()
+    except OSError:
+        raise _admin_token_unavailable() from None
+
+    if not stat.S_ISREG(inspected.st_mode):
+        raise _admin_token_unavailable()
+    if inspected.st_size > MAX_ADMIN_TOKEN_FILE_BYTES:
+        raise _admin_token_unavailable()
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        raise _admin_token_unavailable() from None
+
+    try:
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                raise _admin_token_unavailable()
+            if _admin_token_snapshot(opened) != _admin_token_snapshot(inspected):
+                raise _admin_token_unavailable()
+            if opened.st_size > MAX_ADMIN_TOKEN_FILE_BYTES:
+                raise _admin_token_unavailable()
+
+            payload = bytearray()
+            remaining = MAX_ADMIN_TOKEN_FILE_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(_ADMIN_TOKEN_READ_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                payload.extend(chunk)
+                remaining -= len(chunk)
+
+            if len(payload) > MAX_ADMIN_TOKEN_FILE_BYTES:
+                raise _admin_token_unavailable()
+
+            after = os.fstat(fd)
+            try:
+                resolved_after = path.stat()
+            except OSError:
+                raise _admin_token_unavailable() from None
+            if (
+                _admin_token_snapshot(after) != _admin_token_snapshot(opened)
+                or _admin_token_snapshot(resolved_after) != _admin_token_snapshot(after)
+            ):
+                raise _admin_token_unavailable()
+        except AdminTokenFileError:
+            raise
+        except OSError:
+            raise _admin_token_unavailable() from None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    try:
+        return bytes(payload).decode("utf-8")
+    except UnicodeDecodeError:
+        raise _admin_token_unavailable() from None
+
+
 def configured_admin_token_digests() -> set[str]:
     values = [
         item.strip()
@@ -706,11 +798,11 @@ def configured_admin_token_digests() -> set[str]:
     token_file = os.getenv("NODE_INTERNAL_ADMIN_TOKEN_FILE", "").strip()
     if token_file:
         try:
-            value = Path(token_file).read_text(encoding="utf-8").strip()
-        except OSError as exc:
+            value = _read_admin_token_file(Path(token_file)).strip()
+        except AdminTokenFileError:
             raise HTTPException(
                 status_code=503, detail="node admin authentication is unavailable"
-            ) from exc
+            ) from None
         if value:
             values.append(value)
     return {hash_token(value) for value in values}
