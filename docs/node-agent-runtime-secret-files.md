@@ -21,6 +21,12 @@ Docker/Kubernetes の projected secret volume との互換性を保つため、*
 
 この変更は token rotation、KMS/envelope encryption、bootstrap token の発行・消費 semantics を変更しない。
 
+## `NODE_INGEST_SAMPLE_URL_FILE` の互換性
+
+`NODE_INGEST_SAMPLE_URL_FILE` が設定されている場合、ingest quality sampler は sample 実行時に同じ bounded reader を使って authenticated RTSP URL を読む。configured file を安全に読めない場合は `NODE_INGEST_SAMPLE_URL` へ fallback せず、従来どおり `MEDIA_SAMPLE_FAILED` として fail-closed にする。trim 後に空の file も従来どおり failure であり、fallback はしない。
+
+URL の値は ffprobe の argv には渡さず stdin の ffconcat input にだけ渡す既存契約を維持する。この変更は ingest 認証、sampling threshold、DEGRADED 判定、bootstrap lifecycle を変更しない。
+
 ## 残件
 
-Issue #418 のうち、この境界を適用したのは Node Agent の bootstrap token reader までである。authenticated ingest sample URL、Egress Gateway の destination/runtime secret、Control API の admin token reader は個別の既存 fallback semantics と image packaging を維持しながら順次移行する。
+Issue #418 のうち、この境界を適用したのは Node Agent の bootstrap token と authenticated ingest sample URL reader までである。Egress Gateway の destination/runtime secret と Control API の admin token reader は、個別の既存 fallback semantics と image packaging を維持しながら順次移行する。
