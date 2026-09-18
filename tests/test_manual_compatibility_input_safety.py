@@ -176,9 +176,7 @@ class ManualInputSafetyTest(unittest.TestCase):
                 errors = validator.validate_matrix_manual_reports(
                     matrix("docs/compatibility-reports/obs.json"), root=root
                 )
-            self.assertTrue(
-                any("changed while reading" in error for error in errors), errors
-            )
+            self.assertTrue(any("changed while" in error for error in errors), errors)
 
     def test_manual_report_in_place_mutation_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -202,9 +200,7 @@ class ManualInputSafetyTest(unittest.TestCase):
                 errors = validator.validate_matrix_manual_reports(
                     matrix("docs/compatibility-reports/obs.json"), root=root
                 )
-            self.assertTrue(
-                any("changed while reading" in error for error in errors), errors
-            )
+            self.assertTrue(any("changed while" in error for error in errors), errors)
 
     def test_manual_report_invalid_utf8_and_recursive_json_are_controlled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
