@@ -2,10 +2,46 @@
 
 from __future__ import annotations
 
+import math
 import os
+import stat
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+MAX_SECRET_FILE_BYTES = 64 * 1024
+
+
+def _read_secret_file(path: Path, *, file_env: str) -> str:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+
+    fd = os.open(path, flags)
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"secret file must be a regular file: {file_env}")
+        if metadata.st_size > MAX_SECRET_FILE_BYTES:
+            raise RuntimeError(f"secret file exceeds size limit: {file_env}")
+
+        payload = bytearray()
+        while len(payload) <= MAX_SECRET_FILE_BYTES:
+            chunk = os.read(fd, min(8192, MAX_SECRET_FILE_BYTES + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > MAX_SECRET_FILE_BYTES:
+            raise RuntimeError(f"secret file exceeds size limit: {file_env}")
+        try:
+            return bytes(payload).decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raise RuntimeError(f"secret file is not valid UTF-8: {file_env}") from None
+    finally:
+        os.close(fd)
 
 
 def read_secret_file_or_env(name: str, default: str) -> str:
@@ -22,21 +58,25 @@ def read_secret_file_or_env(name: str, default: str) -> str:
             wait_seconds = float(os.getenv("IRLIGHT_SECRET_WAIT_SECONDS", "60"))
         except ValueError:
             wait_seconds = 60.0
+        if not math.isfinite(wait_seconds):
+            wait_seconds = 60.0
         # Cap to 5 minutes to prevent a single env var from stalling startup indefinitely.
         wait_seconds = min(max(0.0, wait_seconds), 300.0)
         deadline = time.monotonic() + wait_seconds
         while True:
             try:
-                value = Path(file_path).read_text(encoding="utf-8").strip()
-            except OSError as exc:
+                value = _read_secret_file(Path(file_path), file_env=file_env)
+            except RuntimeError:
+                raise
+            except OSError:
                 if time.monotonic() < deadline:
                     time.sleep(0.1)
                     continue
-                raise RuntimeError(f"cannot read {file_env}={file_path}: {exc}") from exc
+                raise RuntimeError(f"cannot read secret file: {file_env}") from None
             if value:
                 return value
             if time.monotonic() >= deadline:
-                raise RuntimeError(f"empty secret file: {file_env}={file_path}")
+                raise RuntimeError(f"empty secret file: {file_env}")
             time.sleep(0.1)
     return os.getenv(name, default)
 
