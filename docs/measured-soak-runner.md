@@ -119,5 +119,9 @@ validate a `fail` report without claiming cleanup success.
 - Existing evidence directories are never reused or overwritten.
 - Measured media evidence and explicit unmeasured diagnostic mode are mutually
   exclusive.
+- The canonical validator accepts only a stable regular `report.json` up to
+  2 MiB. It rejects symlinks/special files and fails closed if the opened file
+  or final pathname is replaced or mutated while the bounded read is in
+  progress.
 - A soak that appears successful but fails to produce a validated report and
   summary is converted to wrapper failure instead of being reported green.

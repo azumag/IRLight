@@ -7,9 +7,9 @@ finite observations and verified cleanup, then emits deterministic deltas that
 can be reviewed or gated by a separately approved policy.
 
 Canonical report inputs are limited to 2 MiB and must be stable regular files.
-The loader rejects symlinks and non-regular files and pins the opened inode
-before reading so validation cannot block on a FIFO/device or silently switch
-to a different path target between inspection and open.
+The loader rejects symlinks and non-regular files, pins the opened inode, and
+rechecks file plus pathname identity after the bounded read so validation cannot
+block on a FIFO/device or silently accept bytes changed/replaced during reading.
 """
 
 from __future__ import annotations
@@ -69,6 +69,16 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
 def _open_report_readonly(path: Path) -> Any:
     """Open one stable regular-file report without following a final symlink."""
 
@@ -95,7 +105,7 @@ def _open_report_readonly(path: Path) -> Any:
         after = os.fstat(fd)
         if not stat.S_ISREG(after.st_mode):
             raise SoakReportError("report must be a regular file")
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        if _stat_identity(before) != _stat_identity(after):
             raise SoakReportError("report changed while opening")
         if after.st_size > MAX_REPORT_BYTES:
             raise SoakReportError(
@@ -107,16 +117,36 @@ def _open_report_readonly(path: Path) -> Any:
         raise
 
 
-def load_report(path: Path) -> dict[str, Any]:
+def _read_report_bytes(path: Path) -> bytes:
     try:
         with _open_report_readonly(path) as handle:
+            before_read = os.fstat(handle.fileno())
             raw_bytes = handle.read(MAX_REPORT_BYTES + 1)
-        if len(raw_bytes) > MAX_REPORT_BYTES:
-            raise SoakReportError(
-                f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
-            )
-        raw = raw_bytes.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+            after_read = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise SoakReportError(f"cannot read report: {exc}") from exc
+
+    if _stat_identity(before_read) != _stat_identity(after_read):
+        raise SoakReportError("report changed while reading")
+    if len(raw_bytes) > MAX_REPORT_BYTES:
+        raise SoakReportError(
+            f"report exceeds maximum size of {MAX_REPORT_BYTES} bytes"
+        )
+    try:
+        final_path = os.lstat(path)
+    except OSError as exc:
+        raise SoakReportError(f"cannot re-inspect report: {exc}") from exc
+    if not stat.S_ISREG(final_path.st_mode):
+        raise SoakReportError("report changed while reading")
+    if _stat_identity(final_path) != _stat_identity(after_read):
+        raise SoakReportError("report changed while reading")
+    return raw_bytes
+
+
+def load_report(path: Path) -> dict[str, Any]:
+    try:
+        raw = _read_report_bytes(path).decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise SoakReportError(f"cannot read report: {exc}") from exc
     try:
         value = json.loads(
@@ -124,7 +154,7 @@ def load_report(path: Path) -> dict[str, Any]:
             parse_constant=_reject_constant,
             object_pairs_hook=_strict_object,
         )
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise SoakReportError(f"invalid JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise SoakReportError("report root must be an object")
