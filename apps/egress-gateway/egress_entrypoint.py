@@ -7,10 +7,11 @@ from pathlib import Path
 import egress
 from rtmp_sink import destination_url_for_sink, parse_rtmp_sink_factory
 from runtime_timer_config import RuntimeTimerConfigError, finite_env_float
+from secret_inputs import read_destination_url as _read_secret_destination_url
+from secret_inputs import read_input_uri
 
 
 LOG = logging.getLogger("irlight.egress.entrypoint")
-_original_read_destination_url = egress.read_destination_url
 _FINITE_RUNTIME_TIMERS = (
     ("EGRESS_CONNECT_TIMEOUT_SECONDS", 15.0),
     ("EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0),
@@ -20,7 +21,7 @@ _FINITE_RUNTIME_TIMERS = (
 
 
 def _read_destination_url(path: Path) -> str:
-    url = _original_read_destination_url(path)
+    url = _read_secret_destination_url(path)
     try:
         sink_factory = parse_rtmp_sink_factory(os.getenv("EGRESS_RTMP_SINK_FACTORY"))
         return destination_url_for_sink(
@@ -50,6 +51,10 @@ def main() -> int:
         # generic as well so environment contents never reach logs.
         LOG.error("invalid finite egress runtime timer configuration")
         return 2
+    # Bind credential-bearing readers before egress.main() constructs the
+    # gateway. This keeps the GStreamer-heavy module independent from the
+    # testable secret-file boundary while covering the production entrypoint.
+    egress._read_input_uri = read_input_uri
     egress.read_destination_url = _read_destination_url
     return egress.main()
 
