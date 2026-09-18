@@ -128,7 +128,7 @@ def load_checklist(path: Path) -> dict[str, Any]:
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_nonfinite_constant,
         )
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ChecklistValidationError("checklist is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ChecklistValidationError("checklist root must be an object")
