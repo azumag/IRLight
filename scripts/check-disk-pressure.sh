@@ -87,9 +87,19 @@ if (( inode_usage_percent > 100 )); then
   unknown invalid_inode_df_output
 fi
 
+# `df` usage percentages are formatted values and must not be the only signal
+# for actual exhaustion. If the filesystem reports no allocatable blocks or
+# inodes, treat that as CRITICAL even when an unusual/rounded df percentage is
+# below the configured critical threshold. Compare the validated counters as
+# strings so leading zeroes cannot trigger Bash octal parsing.
+blocks_exhausted=false
+inodes_exhausted=false
+[[ "$available_kb" =~ ^0+$ ]] && blocks_exhausted=true
+[[ "$available_inodes" =~ ^0+$ ]] && inodes_exhausted=true
+
 status="OK"
 exit_code=0
-if (( usage_percent >= critical_percent || inode_usage_percent >= inode_critical_percent )); then
+if [[ "$blocks_exhausted" == true || "$inodes_exhausted" == true ]] || (( usage_percent >= critical_percent || inode_usage_percent >= inode_critical_percent )); then
   status="CRITICAL"
   exit_code=2
 elif (( usage_percent >= warning_percent || inode_usage_percent >= inode_warning_percent )); then
