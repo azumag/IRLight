@@ -6,10 +6,13 @@ The canonical machine-readable state is `docs/release-acceptance-checklist.json`
 
 ```sh
 python scripts/validate-release-acceptance-checklist.py
-python -m unittest tests.test_release_acceptance_checklist -v
+python -m unittest \
+  tests.test_release_acceptance_checklist \
+  tests.test_release_acceptance_checklist_depth \
+  -v
 ```
 
-The canonical checklist input itself is bounded to 128 KiB and must be a stable regular file. The validator rejects a final symlink, FIFO/device/non-regular input, an oversized file, or a pathname that changes to a different inode while the bounded read is in progress. Invalid UTF-8 is reported as a validation failure rather than escaping as a traceback. These checks protect the release gate's input handling; they do not turn repository evidence into proof of an external or long-running test that was never actually performed.
+The canonical checklist input itself is bounded to 128 KiB and must be a stable regular file. The validator rejects a final symlink, FIFO/device/non-regular input, an oversized file, or a pathname that changes to a different inode while the bounded read is in progress. Invalid UTF-8 and excessively nested JSON are reported as validation failures rather than escaping as tracebacks. These checks protect the release gate's input handling; they do not turn repository evidence into proof of an external or long-running test that was never actually performed.
 
 ## Status semantics
 
@@ -38,6 +41,6 @@ Before changing an item to `satisfied`:
 2. Reference only the repository files that directly support the claim. Do not commit stream keys, SRT passphrases, tokens, private keys, credential-bearing URLs, or raw logs containing secrets.
 3. Keep long-running acceptance evidence separate from normal PR smoke tests. `AGENTS.md` keeps ordinary Docker validation bounded; `six-hour-soak` requires a canonical passing soak report from an explicit run whose target and observed duration are both at least 21,600 seconds.
 4. For `node-capacity-load`, include the sanitized canonical capacity report generated from the real run; helper scripts or documentation alone are not sufficient evidence.
-5. Run the validator and focused unit test above. Normal pull-request CI remains the merge gate.
+5. Run the validator and focused unit tests above. Normal pull-request CI remains the merge gate.
 
 If an external device, account, hardware encoder, or paid platform is unavailable, leave the item `pending` or `blocked` and record the decision in the relevant Issue instead of manufacturing evidence.
