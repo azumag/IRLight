@@ -11,7 +11,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
 
 import gi
 
@@ -25,6 +24,7 @@ from destination_guard import (
 )
 from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
 from rtmp_sink import RTMP2_SINK_FACTORY, parse_rtmp_sink_factory, sink_progress
+from secret_inputs import read_destination_url, read_input_uri as _read_input_uri
 
 
 LOG = logging.getLogger("irlight.egress")
@@ -53,33 +53,6 @@ def env_int(name: str, default: int) -> int:
     return default if raw is None else int(raw)
 
 
-def _read_input_uri() -> str:
-    path_value = os.getenv("EGRESS_INPUT_URI_FILE", "").strip()
-    if not path_value:
-        return os.getenv("EGRESS_INPUT_URI", "rtsp://mediamtx:8554/output/relay")
-    try:
-        wait_seconds = float(os.getenv("IRLIGHT_SECRET_WAIT_SECONDS", "60"))
-    except ValueError:
-        wait_seconds = 60.0
-    wait_seconds = min(max(0.0, wait_seconds), 300.0)
-    deadline = time.monotonic() + wait_seconds
-    path = Path(path_value)
-    while True:
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            if time.monotonic() < deadline:
-                time.sleep(0.1)
-                continue
-            raise RuntimeError("egress input secret file is unavailable") from exc
-        parsed = urlsplit(value)
-        if parsed.scheme.lower() == "rtsp" and parsed.hostname:
-            return value
-        if time.monotonic() >= deadline:
-            raise RuntimeError("egress input URL is invalid")
-        time.sleep(0.1)
-
-
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -105,17 +78,6 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
-
-
-def read_destination_url(path: Path) -> str:
-    try:
-        value = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise RuntimeError("egress destination secret file is unavailable") from exc
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"rtmp", "rtmps"} or not parsed.hostname:
-        raise RuntimeError("egress destination URL is invalid")
-    return value
 
 
 @dataclass
