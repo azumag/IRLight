@@ -361,7 +361,7 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         path = Path(name)
         self.addCleanup(path.unlink, missing_ok=True)
         path.write_text(CHECKLIST.read_text(encoding="utf-8"), encoding="utf-8")
-        stable = os.fstat(os.open(path, os.O_RDONLY))
+        stable = path.stat()
         mutated = mock.Mock(
             st_mode=stable.st_mode,
             st_dev=stable.st_dev,
