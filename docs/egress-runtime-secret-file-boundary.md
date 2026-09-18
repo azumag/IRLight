@@ -1,6 +1,6 @@
 # Egress Gateway runtime secret-file boundary
 
-The production Egress Gateway reads credential-bearing RTSP input and RTMP/RTMPS
+The Egress Gateway reads credential-bearing RTSP input and RTMP/RTMPS
 destination URLs from files. Those paths are operator-controlled configuration,
 not public request parameters, but malformed mounts must not turn secret loading
 into an unbounded read, a FIFO/device block, or a diagnostic leak.
@@ -29,9 +29,14 @@ media runtime:
 - reader errors never contain the secret value, configured pathname, or a raw
   `OSError` chained cause.
 
-`egress_entrypoint.py` binds both credential-bearing readers before constructing
-`EgressGateway`. The production image starts through that entrypoint, and its
-Dockerfile packages both boundary modules explicitly.
+`egress.py` imports both credential-bearing readers directly from
+`secret_inputs.py`, so legacy direct execution (`python egress.py`) uses the same
+hardened file boundary instead of a second `Path.read_text()` implementation.
+`egress_entrypoint.py` still binds the readers before constructing
+`EgressGateway`; its destination wrapper additionally preserves the selected
+RTMP sink and librtmp timeout handling required by the production entrypoint.
+The production image starts through that entrypoint, and its Dockerfile packages
+both boundary modules explicitly.
 
 ## Existing semantics preserved
 
@@ -46,15 +51,16 @@ continues to be an invalid input URL rather than an environment fallback.
 
 The destination reader still distinguishes a validly read but invalid RTMP/RTMPS
 URL from a secret-file availability failure. The URL itself is never included in
-those errors.
+those errors. Production execution continues to apply the entrypoint's sink
+selection and librtmp timeout wrapper after the hardened destination read.
 
 ## Regression coverage
 
 `tests/test_egress_runtime_secret_files.py` covers regular files, projected
 symlinks, FIFO/directory rejection, the 64 KiB size boundary, invalid UTF-8,
 inspection-to-open replacement, in-read mutation, input fallback semantics,
-destination URL validation, diagnostic redaction, unique module wiring, and the
-production image entrypoint contract.
+destination URL validation, diagnostic redaction, direct-execution reader wiring,
+unique module wiring, and the production image entrypoint contract.
 
 This change does not add secret rotation, KMS/envelope encryption, external
 provider probes, or any billable integration test.
