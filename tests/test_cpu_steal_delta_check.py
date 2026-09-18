@@ -72,15 +72,22 @@ class CpuStealDeltaCheckTests(unittest.TestCase):
             "IRLIGHT_CPU_STEAL status=WARNING reason=cpu_steal_activity steal_ticks_delta=4\n",
         )
 
-    def test_counter_reset_is_unknown(self) -> None:
-        baseline = cpu_line(100, 1, 20, 1000, 2, 3, 4, 5)
-        current = cpu_line(99, 1, 25, 1100, 3, 4, 6, 9)
+    def test_steal_counter_reset_is_unknown(self) -> None:
+        baseline = cpu_line(100, 1, 20, 1000, 2, 3, 4, 9)
+        current = cpu_line(120, 1, 25, 1100, 3, 4, 6, 5)
         result = self.run_check(current, baseline)
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(
             result.stdout,
             "IRLIGHT_CPU_STEAL status=UNKNOWN reason=counter_reset\n",
         )
+
+    def test_iowait_decrease_does_not_fake_counter_reset(self) -> None:
+        baseline = cpu_line(100, 1, 20, 1000, 10, 3, 4, 5)
+        current = cpu_line(120, 1, 25, 1100, 2, 4, 6, 5)
+        result = self.run_check(current, baseline)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("steal_ticks_delta=0", result.stdout)
 
     def test_per_cpu_lines_are_ignored(self) -> None:
         baseline = cpu_line(100, 1, 20, 1000, 2, 3, 4, 5) + cpu_line(
