@@ -21,6 +21,8 @@ The normal unit suite also runs the same contract checks.
 
 The matrix itself is strict JSON with a closed top-level and entry schema and is limited to 256 KiB before parsing. Duplicate object keys and non-standard JSON constants (`NaN`, `Infinity`, `-Infinity`) are rejected, and `schema_version` must be the integer `1` rather than a JSON boolean. This keeps the compatibility ledger parser-independent and prevents undeclared fields from becoming an accidental support-claim channel.
 
+The matrix input is also a bounded regular-file trust boundary. The validator rejects a final symlink, FIFO, device, or other non-regular input before opening it; opens the file without following a final symlink where the platform supports that flag; reads at most 256 KiB plus one byte; and verifies device/inode/size/mtime/ctime plus the final pathname identity across the read. A matrix replaced or modified while validation is in progress therefore fails closed instead of being parsed from a different byte sequence than the one initially inspected.
+
 ## Manual execution worksheet
 
 Before serializing evidence, the tester may use the existing human-facing worksheet below to capture the observation. `WARN` is a triage result, not a verified compatibility claim: a warning must remain unverified until the evidence can be represented by the JSON schema below with report-level `PASS` and passing applicable checks.
