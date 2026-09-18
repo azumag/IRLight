@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import tempfile
@@ -89,6 +90,58 @@ class DestinationGuardTest(unittest.TestCase):
             with self.assertRaises(DestinationGuardError) as failure:
                 read_verified_peer_ip(path)
             self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+
+    def test_verified_peer_file_allows_symlink_to_regular_file(self) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks are not supported")
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "peer-target"
+            link = Path(directory) / "peer"
+            target.write_text("8.8.8.8\n", encoding="utf-8")
+            link.symlink_to(target.name)
+            self.assertEqual(read_verified_peer_ip(link), "8.8.8.8")
+
+    def test_verified_peer_file_rejects_fifo_without_blocking(self) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFOs are not supported")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peer"
+            os.mkfifo(path)
+            with self.assertRaises(DestinationGuardError) as failure:
+                read_verified_peer_ip(path)
+            self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+            self.assertTrue(failure.exception.terminal)
+
+    def test_verified_peer_file_rejects_oversized_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peer"
+            path.write_bytes(b"8" * 4097)
+            with self.assertRaises(DestinationGuardError) as failure:
+                read_verified_peer_ip(path)
+            self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+            self.assertIn("size limit", str(failure.exception))
+
+    def test_verified_peer_file_rejects_invalid_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peer"
+            path.write_bytes(b"\xff\xfe")
+            with self.assertRaises(DestinationGuardError) as failure:
+                read_verified_peer_ip(path)
+            self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+            self.assertNotIn(str(path), str(failure.exception))
+            self.assertIsNone(failure.exception.__cause__)
+
+    def test_verified_peer_file_read_error_redacts_path(self) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks are not supported")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peer-loop"
+            path.symlink_to(path.name)
+            with self.assertRaises(DestinationGuardError) as failure:
+                read_verified_peer_ip(path)
+            self.assertEqual(failure.exception.reason_code, "DESTINATION_GUARD_INVALID")
+            self.assertNotIn(str(path), str(failure.exception))
+            self.assertIsNone(failure.exception.__cause__)
 
 
 if __name__ == "__main__":
