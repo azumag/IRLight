@@ -10,6 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONTINUITY_DIR = ROOT / "apps" / "continuity"
 DOCKERFILE = CONTINUITY_DIR / "Dockerfile"
+IMAGE_WORKDIR = "/app"
+IMAGE_ENTRYPOINTS = (
+    "runner.py",
+    "make_default_standby.py",
+)
 
 
 def _runtime_local_dependencies(entrypoint: str) -> set[str]:
@@ -20,6 +25,8 @@ def _runtime_local_dependencies(entrypoint: str) -> set[str]:
         path = pending.pop()
         if path.name in required:
             continue
+        if not path.is_file():
+            raise AssertionError(f"Continuity image entrypoint/module does not exist: {path.name}")
         required.add(path.name)
 
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -38,18 +45,30 @@ def _runtime_local_dependencies(entrypoint: str) -> set[str]:
     return required
 
 
-def _dockerfile_python_sources() -> set[str]:
-    text = DOCKERFILE.read_text(encoding="utf-8").replace("\\\n", " ")
+def _copy_destination_is_workdir(destination: str) -> bool:
+    return destination in {".", "./", IMAGE_WORKDIR, f"{IMAGE_WORKDIR}/"}
+
+
+def _dockerfile_python_sources(dockerfile: str | None = None) -> set[str]:
+    text = (
+        DOCKERFILE.read_text(encoding="utf-8") if dockerfile is None else dockerfile
+    ).replace("\\\n", " ")
     copied: set[str] = set()
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line.startswith("COPY ") or "--from=" in line:
+        if not line.startswith("COPY "):
             continue
         tokens = shlex.split(line)
-        if len(tokens) < 3:
+        if len(tokens) < 3 or any(token.startswith("--from=") for token in tokens[1:]):
             continue
-        for source in tokens[1:-1]:
+
+        destination = tokens[-1]
+        if not _copy_destination_is_workdir(destination):
+            continue
+
+        sources = [token for token in tokens[1:-1] if not token.startswith("--")]
+        for source in sources:
             if source in {".", "./"}:
                 return {path.name for path in CONTINUITY_DIR.glob("*.py")}
             if any(char in source for char in "*?["):
@@ -65,15 +84,31 @@ def _dockerfile_python_sources() -> set[str]:
 
 
 class ContinuityDockerfilePackagingTests(unittest.TestCase):
-    def test_runner_runtime_local_modules_are_copied_into_image(self) -> None:
-        required = _runtime_local_dependencies("runner.py")
+    def test_image_entrypoint_local_modules_are_copied_into_workdir(self) -> None:
+        required: set[str] = set()
+        for entrypoint in IMAGE_ENTRYPOINTS:
+            required.update(_runtime_local_dependencies(entrypoint))
         copied = _dockerfile_python_sources()
 
         missing = sorted(required - copied)
         self.assertEqual(
             missing,
             [],
-            "Continuity Dockerfile omits runtime local module(s): " + ", ".join(missing),
+            "Continuity Dockerfile omits image local module(s) from /app: "
+            + ", ".join(missing),
+        )
+
+    def test_copy_to_other_destination_does_not_satisfy_contract(self) -> None:
+        copied = _dockerfile_python_sources(
+            "COPY runner.py standby_integrity.py make_default_standby.py /tmp/continuity/\n"
+        )
+        self.assertEqual(copied, set())
+
+    def test_directory_copy_to_workdir_packages_all_python_sources(self) -> None:
+        copied = _dockerfile_python_sources("COPY . /app/\n")
+        self.assertEqual(
+            copied,
+            {path.name for path in CONTINUITY_DIR.glob("*.py")},
         )
 
 
