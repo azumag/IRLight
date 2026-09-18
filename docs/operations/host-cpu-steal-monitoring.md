@@ -46,16 +46,31 @@ cp -- /proc/stat /var/lib/irlight-monitor/proc-stat.baseline
 
 reboot / reprovision をまたぐ累積counter比較は無効なので、`scripts/check-host-boot-generation.sh` と組み合わせる。`boot_generation_changed` または `counter_reset` が出た場合は、原因を記録してから新しい boot generation の baseline を明示的に採取する。古いbaselineを自動的に正常化しない。
 
+## Host aggregate への opt-in
+
+既定の `check-host-pressure.sh` aggregate へ自動追加しない。bare metal、専有CPU、共有VPSでは `steal` の意味と許容値が異なり、baseline の更新周期も deployment policy に依存するためである。
+
+CPU steal を監視対象にする deployment では明示的に opt-in できる。
+
+```bash
+IRLIGHT_HOST_CPU_STEAL_MODE=enabled \
+IRLIGHT_PROC_STAT_BASELINE_PATH=/var/lib/irlight-monitor/proc-stat.baseline \
+  bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_HOST_CPU_STEAL_MODE` の既定値は `disabled`。`enabled` のときだけ既存の bounded component runner 経由で `cpu_steal_status` が summary に追加される。baseline が未設定・読取不能・別 generation などで component が安全に評価できない場合は `UNKNOWN` を aggregate へ伝播し、黙って `OK` にしない。未知の mode 値も `invalid_cpu_steal_mode` として `UNKNOWN` に fail-closed する。
+
 ## 運用境界
 
 この診断は read-only であり、CPU affinity、scheduler、sysctl、process priority、service restart、instance resize、provider migration、failover 等を実行しない。CPU steal が継続する場合も、Media Node の profile、frame drop、A/V sync、egress stability、同時Session数と合わせて影響を確認する。
 
-既定の `check-host-pressure.sh` aggregate へ自動追加しない。bare metal、専有CPU、共有VPSでは `steal` の意味と許容値が異なり、baseline の更新周期も deployment policy に依存するためである。provider変更やinstance resizeは課金・配信影響を伴うので、この check の結果だけで自動実行しない。
+provider変更やinstance resizeは課金・配信影響を伴うので、この check や aggregate の結果だけで自動実行しない。
 
 ## 検証
 
 ```bash
 python -m unittest discover -s tests -p 'test_cpu_steal_delta_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cpu_steal_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_cpu_steal_runbook_inventory.py' -v
-bash -n scripts/check-cpu-steal-delta.sh
+bash -n scripts/check-cpu-steal-delta.sh scripts/check-host-pressure.sh
 ```

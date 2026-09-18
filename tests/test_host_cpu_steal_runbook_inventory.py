@@ -24,14 +24,26 @@ class HostCpuStealRunbookInventoryTests(unittest.TestCase):
     def test_runbook_keeps_targeted_read_only_contract(self) -> None:
         text = RUNBOOK.read_text(encoding="utf-8")
         script = SCRIPT.read_text(encoding="utf-8")
-        host_aggregate = HOST_AGGREGATE.read_text(encoding="utf-8")
 
         self.assertIn("cpu_steal_activity", text)
         self.assertIn("baseline は checker が作成・更新しない", text)
         self.assertIn("既定の `check-host-pressure.sh` aggregate へ自動追加しない", text)
         self.assertIn("check-host-boot-generation.sh", text)
         self.assertIn("status=WARNING reason=cpu_steal_activity", script)
-        self.assertNotIn("check-cpu-steal-delta.sh", host_aggregate)
+
+    def test_cpu_steal_aggregate_wiring_remains_explicit_opt_in(self) -> None:
+        aggregate = HOST_AGGREGATE.read_text(encoding="utf-8")
+        self.assertIn(
+            'cpu_steal_mode="${IRLIGHT_HOST_CPU_STEAL_MODE:-disabled}"',
+            aggregate,
+        )
+        self.assertIn(
+            'if [[ "$cpu_steal_mode" == "enabled" ]]; then\n'
+            '  add_component "cpu_steal" "$script_dir/check-cpu-steal-delta.sh" '
+            '"$proc_stat_path" "$proc_stat_baseline_path"\n'
+            'fi',
+            aggregate,
+        )
 
 
 if __name__ == "__main__":
