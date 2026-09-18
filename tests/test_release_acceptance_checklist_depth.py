@@ -38,6 +38,17 @@ class ReleaseAcceptanceChecklistDepthTests(unittest.TestCase):
             ):
                 module.load_checklist(path)
 
+    def test_parser_value_error_is_normalized(self) -> None:
+        path = self._write_temp(b"{}")
+
+        with mock.patch.object(
+            module.json, "loads", side_effect=ValueError("integer string too long")
+        ):
+            with self.assertRaisesRegex(
+                module.ChecklistValidationError, "checklist is not valid JSON"
+            ):
+                module.load_checklist(path)
+
     def test_deeply_nested_json_fails_closed(self) -> None:
         depth = 10_000
         raw = ("[" * depth + "0" + "]" * depth).encode("utf-8")
