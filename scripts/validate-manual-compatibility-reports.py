@@ -378,24 +378,21 @@ def _safe_report_path(root: Path, raw_path: str) -> Path | None:
     if relative.is_absolute() or any(part == ".." for part in relative.parts):
         return None
 
-    root_resolved = root.resolve()
-    report_root = root_resolved / MANUAL_REPORT_PREFIX.rstrip("/")
-    candidate = root_resolved / relative
     try:
-        candidate.parent.relative_to(report_root)
-    except ValueError:
+        root_resolved = root.resolve()
+        report_root = root_resolved / MANUAL_REPORT_PREFIX.rstrip("/")
+        candidate = root_resolved / relative
+        if report_root.resolve() != report_root:
+            return None
+        if candidate.parent.resolve() != candidate.parent:
+            return None
+        resolved_candidate = candidate.resolve()
+        resolved_candidate.relative_to(report_root)
+    except (OSError, RuntimeError, ValueError):
         return None
 
-    # Keep the final component unresolved so the bounded reader can reject a
-    # final symlink. Parent directory symlinks are rejected as boundary changes.
-    try:
-        if (
-            report_root.resolve() != report_root
-            or candidate.parent.resolve() != candidate.parent
-        ):
-            return None
-    except OSError:
-        return None
+    # Return the unresolved final component so the bounded reader can reject a
+    # final symlink rather than following it after containment validation.
     return candidate
 
 
