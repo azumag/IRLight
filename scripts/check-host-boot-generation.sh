@@ -23,7 +23,7 @@ read_boot_id() {
   [[ -f "$path" && -r "$path" ]] || unknown "$unavailable_reason"
 
   exec 3<"$path" || unknown "$unavailable_reason"
-  if ! IFS= read -r value <&3; then
+  if ! IFS= read -r value <&3 && [[ -z "$value" ]]; then
     exec 3<&-
     unknown "$invalid_reason"
   fi
