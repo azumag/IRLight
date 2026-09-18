@@ -355,6 +355,31 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
                 ):
                     module.load_checklist(original)
 
+    def test_checklist_in_place_change_during_read_is_rejected(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        path = Path(name)
+        self.addCleanup(path.unlink, missing_ok=True)
+        path.write_text(CHECKLIST.read_text(encoding="utf-8"), encoding="utf-8")
+        stable = os.fstat(os.open(path, os.O_RDONLY))
+        mutated = mock.Mock(
+            st_mode=stable.st_mode,
+            st_dev=stable.st_dev,
+            st_ino=stable.st_ino,
+            st_size=stable.st_size,
+            st_mtime_ns=stable.st_mtime_ns + 1,
+            st_ctime_ns=stable.st_ctime_ns + 1,
+        )
+        with mock.patch.object(
+            module.os,
+            "fstat",
+            side_effect=[stable, stable, mutated],
+        ):
+            with self.assertRaisesRegex(
+                module.ChecklistValidationError, "changed while reading"
+            ):
+                module.load_checklist(path)
+
     def test_invalid_utf8_checklist_is_reported_without_traceback(self) -> None:
         fd, name = tempfile.mkstemp(suffix=".json")
         os.close(fd)
