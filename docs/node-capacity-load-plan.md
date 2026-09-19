@@ -83,6 +83,21 @@ The CLI bindings above are convenient for an operator, but they are not durable 
 }
 ```
 
+To avoid hand-editing that binding, `scripts/render-node-capacity-coverage-manifest.py` can render the durable object directly from repository-relative evidence paths. It first runs the canonical coverage-manifest validator, then emits the report entries in the load plan's canonical scenario order, so incomplete coverage, mismatched reports, unsafe paths, or duplicate bindings fail before any JSON is emitted:
+
+```bash
+python3 scripts/render-node-capacity-coverage-manifest.py \
+  docs/evidence/node-capacity/capacity-load-plan.json \
+  --report normal-input=docs/evidence/node-capacity/normal-input-report.json \
+  --report all-holding=docs/evidence/node-capacity/all-holding-report.json \
+  --report reconnect-storm=docs/evidence/node-capacity/reconnect-storm-report.json \
+  --report asset-prefetch=docs/evidence/node-capacity/asset-prefetch-report.json \
+  --report api-dashboard=docs/evidence/node-capacity/api-dashboard-report.json \
+  > docs/evidence/node-capacity/coverage.json
+```
+
+The renderer is read-only apart from stdout and deliberately accepts only repository-relative references. It does not execute a load test, contact a provider, use credentials, choose a threshold or safety margin, or update scheduler inventory or production `max_sessions`.
+
 All paths are canonical repository-relative paths. Validate the durable object with:
 
 ```bash
