@@ -31,6 +31,8 @@ softnet_stat_baseline_path="${IRLIGHT_SOFTNET_STAT_BASELINE_PATH:-}"
 clock_sync_mode="${IRLIGHT_HOST_CLOCK_SYNC_MODE:-disabled}"
 network_link_mode="${IRLIGHT_HOST_NETWORK_LINK_MODE:-disabled}"
 network_interface_dir="${IRLIGHT_NETWORK_INTERFACE_DIR:-}"
+filesystem_readonly_mode="${IRLIGHT_HOST_FILESYSTEM_READONLY_MODE:-disabled}"
+filesystem_readonly_path="${IRLIGHT_FILESYSTEM_PATH:-$disk_path}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -101,6 +103,15 @@ case "$network_link_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_network_link_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$filesystem_readonly_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_filesystem_readonly_mode\n'
     exit 3
     ;;
 esac
@@ -231,6 +242,13 @@ fi
 # fail closed through the standalone checker.
 if [[ "$network_link_mode" == "enabled" ]]; then
   add_component "network_link" "$script_dir/check-network-link-health.sh" "$network_interface_dir"
+fi
+
+# A read-only remount is independent of block/inode capacity and makes writes
+# fail even when disk pressure remains healthy. Keep it opt-in so deployments
+# explicitly choose the filesystem path whose writeability matters.
+if [[ "$filesystem_readonly_mode" == "enabled" ]]; then
+  add_component "filesystem_readonly" "$script_dir/check-host-filesystem-readonly.sh" "$filesystem_readonly_path"
 fi
 
 component_statuses=()
