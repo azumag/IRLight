@@ -196,10 +196,8 @@ def validate_manifest(
         ):
             raise CapacityCoverageManifestError("scenario_id must be a canonical one-line string")
         if scenario_id in bindings:
-            raise CapacityCoverageManifestError(f"duplicate report binding for scenario: {scenario_id}")
-        bindings[scenario_id] = _validate_repo_file(
-            repo_root, entry["path"], f"report path for {scenario_id}"
-        )
+            raise CapacityCoverageManifestError("duplicate report binding for scenario")
+        bindings[scenario_id] = _validate_repo_file(repo_root, entry["path"], "report path")
 
     coverage_validator = _load_coverage_validator()
     try:
