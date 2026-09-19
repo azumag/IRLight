@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-import json
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_SESSIONS_VALIDATOR = Path(__file__).with_name(
@@ -52,29 +52,29 @@ def _repository_manifest_path(path: Path, *, repo_root: Path) -> tuple[Path, str
 
     try:
         root = repo_root.resolve(strict=True)
-        candidate = path if path.is_absolute() else root / path
-        resolved = candidate.resolve(strict=True)
-        relative = resolved.relative_to(root)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError) as exc:
+        raise CapacityProposalRenderError("repository root could not be resolved") from exc
+
+    try:
+        if path.is_absolute():
+            candidate = path
+            relative = candidate.relative_to(root)
+        else:
+            relative = path
+            candidate = root / relative
+    except ValueError as exc:
         raise CapacityProposalRenderError(
             "coverage manifest must be a repository file"
         ) from exc
 
-    if not relative.parts:
-        raise CapacityProposalRenderError("coverage manifest must be a repository file")
-
-    current = root
-    try:
-        for part in relative.parts:
-            current = current / part
-            if os.path.islink(current):
-                raise CapacityProposalRenderError(
-                    "coverage manifest path must not traverse symlinks"
-                )
-    except OSError as exc:
+    if (
+        not relative.parts
+        or any(part in ("", ".", "..") for part in relative.parts)
+        or relative.is_absolute()
+    ):
         raise CapacityProposalRenderError(
-            "coverage manifest could not be inspected"
-        ) from exc
+            "coverage manifest must use a canonical repository path"
+        )
 
     relative_text = relative.as_posix()
     if (
@@ -84,6 +84,24 @@ def _repository_manifest_path(path: Path, *, repo_root: Path) -> tuple[Path, str
         raise CapacityProposalRenderError(
             "coverage manifest must use a canonical repository path"
         )
+
+    current = root
+    try:
+        for part in relative.parts:
+            current = current / part
+            if os.path.islink(current):
+                raise CapacityProposalRenderError(
+                    "coverage manifest path must not traverse symlinks"
+                )
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except CapacityProposalRenderError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CapacityProposalRenderError(
+            "coverage manifest must be a repository file"
+        ) from exc
+
     return resolved, relative_text
 
 
