@@ -52,6 +52,12 @@ def normalize_report_bindings(
     return result
 
 
+def expected_report_scenario_prefix(profile_label: str, scenario_id: str) -> str:
+    """Return the machine-checkable prefix expected in a report scenario description."""
+
+    return f"profile={profile_label}; scenario={scenario_id};"
+
+
 def _validate_report(
     report_validator: ModuleType,
     path: Path,
@@ -107,9 +113,10 @@ def validate_coverage(
     for scenario_id in required_ids:
         report_summary = _validate_report(report_validator, report_bindings[scenario_id])
 
-        if profile_label not in report_summary["scenario"]:
+        expected_prefix = expected_report_scenario_prefix(profile_label, scenario_id)
+        if not report_summary["scenario"].startswith(expected_prefix):
             raise CapacityCoverageError(
-                f"scenario {scenario_id} report does not identify the plan profile label"
+                f"scenario {scenario_id} report is not bound to the plan profile and scenario"
             )
 
         planned_levels = list(scenarios_by_id[scenario_id]["session_counts"])
