@@ -24,6 +24,8 @@ RUN timeout --signal=TERM --kill-after=10s 120s \
     && rm -rf /var/lib/apt/lists/*
 COPY apps/control-api/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Shared by Control API readiness and the host-side mountpoint diagnostic.
+COPY mountinfo_identity.py ./
 # tests/test_control_api_image_packaging.py verifies that the static local-import
 # closure of each runtime entrypoint remains present in this explicit source list.
 COPY apps/control-api/app.py apps/control-api/node_internal.py \

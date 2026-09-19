@@ -44,6 +44,19 @@ class ControlApiImagePackagingTest(unittest.TestCase):
             + ", ".join(missing),
         )
 
+    def test_shared_mountinfo_parser_is_packaged_at_import_root(self) -> None:
+        state_mount_identity = (CONTROL_API_DIR / "state_mount_identity.py").read_text(
+            encoding="utf-8"
+        )
+        imported = _imported_top_level_modules(ast.parse(state_mount_identity))
+        self.assertIn("mountinfo_identity", imported)
+
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        self.assertRegex(
+            dockerfile,
+            r"(?m)^COPY[ \t]+mountinfo_identity\.py[ \t]+(?:\.|\./)[ \t]*$",
+        )
+
     def test_directory_copy_to_workdir_packages_all_python_sources(self) -> None:
         packaged = _packaged_python_sources("COPY apps/control-api/ ./\n")
         self.assertEqual(

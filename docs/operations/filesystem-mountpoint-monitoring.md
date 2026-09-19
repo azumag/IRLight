@@ -134,6 +134,8 @@ standalone checker の `CRITICAL reason=mountpoint_missing` / `mount_identity_mi
 
 `/proc/self/mountinfo` の mandatory fields と `-` separator を確認し、mountpoint field の kernel escape `\\011` / `\\012` / `\\040` / `\\134` を decode する。identity verification が有効な場合は、**対象 mountpoint の record に限って** root / mount source にも同じ decode を適用する。短い record、不正な mountpoint escape、不正な separator などがあれば、部分的な table を根拠に `OK` とせず `UNKNOWN` に fail-closed する。
 
+mountinfo field decode、exact mountpoint selection、source/root identity comparison の pure logic は repository root の `mountinfo_identity.py` に集約しており、standalone host checker と Control API `/readyz` の opt-in mount identity check が同じ実装を使う。consumer ごとの stdout / exit code と公開 HTTP 503 契約だけは各 adapter 側で維持する。
+
 presence-only では root / source を新たに解釈しない。identity opt-in を追加したことで、対象外 record の root / source 表現だけを理由に従来の presence 判定を壊さないためである。
 
 ## 限界
@@ -161,13 +163,17 @@ read-only flag は [`filesystem-readonly-monitoring.md`](filesystem-readonly-mon
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_filesystem_mountpoint_check.py' -v
+python3 -m unittest discover -s tests -p 'test_mountinfo_identity_parity.py' -v
 python3 -m unittest discover -s tests -p 'test_filesystem_mountpoint_runbook_contract.py' -v
 python3 -m unittest discover -s tests -p 'test_host_filesystem_mountpoint_aggregate.py' -v
 python3 -m unittest discover -s tests -p 'test_host_pressure_opt_in_matrix.py' -v
 python3 -m unittest discover -s tests -p 'test_operations_runbook_inventory.py' -v
 python3 -m py_compile \
+  mountinfo_identity.py \
   scripts/check-filesystem-mountpoint.py \
+  apps/control-api/state_mount_identity.py \
   tests/test_filesystem_mountpoint_check.py \
+  tests/test_mountinfo_identity_parity.py \
   tests/test_filesystem_mountpoint_runbook_contract.py \
   tests/test_host_filesystem_mountpoint_aggregate.py
 bash -n \
