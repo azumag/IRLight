@@ -120,6 +120,10 @@ def load_plan(path: Path) -> dict[str, Any]:
     return value
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
 def validate_plan(value: dict[str, Any]) -> dict[str, Any]:
     renderer = _load_renderer()
     profile_label = value.get("profile_label")
@@ -138,7 +142,7 @@ def validate_plan(value: dict[str, Any]) -> dict[str, Any]:
         expected = renderer.build_plan(profile_label, extras)
     except renderer.PlanError as exc:
         raise PlanValidationError(str(exc)) from exc
-    if value != expected:
+    if _canonical_json(value) != _canonical_json(expected):
         raise PlanValidationError("plan does not match the canonical renderer contract")
 
     return {
@@ -173,7 +177,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(
             "node capacity load-plan valid: "
-            f"profile={summary['profile_label']} "
             f"levels={','.join(str(value) for value in summary['session_counts'])} "
             f"scenarios={len(summary['scenario_ids'])}"
         )
