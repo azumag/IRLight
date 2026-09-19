@@ -34,6 +34,24 @@ class FilesystemMountpointCheckTest(unittest.TestCase):
             "IRLIGHT_FILESYSTEM_MOUNTPOINT_HEALTH status=OK mounted=true",
         )
 
+    def test_unrelated_non_utf8_mountpoint_does_not_hide_exact_target(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-mountpoint-") as temporary:
+            root = Path(temporary)
+            target = root / "state"
+            target.mkdir()
+            escaped = str(target).replace("\\", r"\134").replace(" ", r"\040")
+            mountinfo = root / "mountinfo"
+            mountinfo.write_bytes(
+                b"35 29 0:31 / /mnt/non-utf8-\xff rw - ext4 /dev/other rw\n"
+                + (_record(escaped) + "\n").encode("utf-8")
+            )
+            code, line = MODULE.evaluate(target, mountinfo)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            line,
+            "IRLIGHT_FILESYSTEM_MOUNTPOINT_HEALTH status=OK mounted=true",
+        )
+
     def test_parent_mount_does_not_make_subdirectory_a_mountpoint(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-mountpoint-") as temporary:
             root = Path(temporary)
