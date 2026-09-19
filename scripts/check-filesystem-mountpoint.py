@@ -11,16 +11,30 @@ mount root without changing the default presence-only contract.
 from __future__ import annotations
 
 import os
-import re
 import stat
 import sys
 from pathlib import Path
 
 
+# The operational script may be invoked from any working directory. Add the
+# checkout root explicitly so the shared parser remains available without
+# relying on cwd/PYTHONPATH side effects.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from mountinfo_identity import (  # noqa: E402
+    MountInfoError,
+    decode_mountinfo_field,
+    identity_matches,
+    normalize_expected_identity,
+    parse_mountinfo_entries,
+    select_exact_mounts,
+)
+
+
 PREFIX = "IRLIGHT_FILESYSTEM_MOUNTPOINT_HEALTH"
 _DEFAULT_MOUNTINFO = "/proc/self/mountinfo"
-_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
-_ALLOWED_ESCAPES = {"011", "012", "040", "134"}
 
 
 def _target_from_args(argv: list[str]) -> Path:
@@ -43,20 +57,11 @@ def _target_from_args(argv: list[str]) -> Path:
 
 
 def _decode_mountinfo_field(raw: str) -> str:
-    cursor = 0
-    decoded: list[str] = []
-    for match in _ESCAPE_RE.finditer(raw):
-        literal = raw[cursor : match.start()]
-        if "\\" in literal or match.group(1) not in _ALLOWED_ESCAPES:
-            raise ValueError("invalid mountinfo escape")
-        decoded.append(literal)
-        decoded.append(chr(int(match.group(1), 8)))
-        cursor = match.end()
-    tail = raw[cursor:]
-    if "\\" in tail:
-        raise ValueError("invalid mountinfo escape")
-    decoded.append(tail)
-    return "".join(decoded)
+    """Compatibility wrapper for existing focused tests/callers."""
+    try:
+        return decode_mountinfo_field(raw)
+    except MountInfoError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _decode_mountinfo_path(raw: str) -> str:
@@ -64,38 +69,12 @@ def _decode_mountinfo_path(raw: str) -> str:
 
 
 def _mount_entries(text: str) -> list[tuple[str, str, str]]:
-    if not text:
-        raise ValueError("empty mountinfo")
-
-    entries: list[tuple[str, str, str]] = []
-    for raw_line in text.splitlines():
-        if not raw_line:
-            raise ValueError("empty mountinfo record")
-        fields = raw_line.split()
-        if len(fields) < 10:
-            raise ValueError("short mountinfo record")
-        try:
-            separator = fields.index("-", 6)
-        except ValueError as exc:
-            raise ValueError("missing mountinfo separator") from exc
-        if separator + 3 >= len(fields):
-            raise ValueError("short mountinfo suffix")
-
-        mountpoint = _decode_mountinfo_path(fields[4])
-        if not mountpoint.startswith("/"):
-            raise ValueError("relative mount point")
-        # Preserve the legacy presence-only contract: root/source fields are
-        # opaque unless identity verification is explicitly enabled, so an
-        # unrelated record cannot make a presence check fail merely because
-        # one of those additional fields is unusual.
-        entries.append(
-            (
-                os.path.normpath(mountpoint),
-                fields[3],
-                fields[separator + 2],
-            )
-        )
-    return entries
+    """Compatibility wrapper over the shared parser's immutable entries."""
+    try:
+        entries = parse_mountinfo_entries(text)
+    except MountInfoError as exc:
+        raise ValueError(str(exc)) from exc
+    return [(entry.mountpoint, entry.raw_root, entry.raw_source) for entry in entries]
 
 
 def _mountpoints(text: str) -> set[str]:
@@ -103,25 +82,17 @@ def _mountpoints(text: str) -> set[str]:
 
 
 def _expected_identity_from_env() -> tuple[str | None, str | None]:
-    expected_source: str | None = None
-    expected_root: str | None = None
+    source_present = "IRLIGHT_EXPECTED_MOUNT_SOURCE" in os.environ
+    root_present = "IRLIGHT_EXPECTED_MOUNT_ROOT" in os.environ
+    if not source_present and not root_present:
+        return None, None
 
-    if "IRLIGHT_EXPECTED_MOUNT_SOURCE" in os.environ:
-        raw_source = os.environ["IRLIGHT_EXPECTED_MOUNT_SOURCE"]
-        if not raw_source or "\x00" in raw_source:
-            raise ValueError("invalid expected source")
-        expected_source = raw_source
-
-    if "IRLIGHT_EXPECTED_MOUNT_ROOT" in os.environ:
-        raw_root = os.environ["IRLIGHT_EXPECTED_MOUNT_ROOT"]
-        if not raw_root or "\x00" in raw_root:
-            raise ValueError("invalid expected root")
-        root = Path(raw_root)
-        if not root.is_absolute():
-            raise ValueError("expected root must be absolute")
-        expected_root = os.path.normpath(str(root))
-
-    return expected_source, expected_root
+    source = os.environ.get("IRLIGHT_EXPECTED_MOUNT_SOURCE") if source_present else None
+    root = os.environ.get("IRLIGHT_EXPECTED_MOUNT_ROOT") if root_present else None
+    try:
+        return normalize_expected_identity(source, root)
+    except MountInfoError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def evaluate(
@@ -147,12 +118,11 @@ def evaluate(
         # still letting us compare normal configured paths without rejecting an
         # otherwise unrelated mount record.
         text = mountinfo_path.read_text(encoding="utf-8", errors="surrogateescape")
-        entries = _mount_entries(text)
-    except (OSError, UnicodeError, ValueError):
+        entries = parse_mountinfo_entries(text)
+    except (OSError, UnicodeError, MountInfoError):
         return 3, f"{PREFIX} status=UNKNOWN reason=mountinfo_unavailable"
 
-    target = os.path.normpath(str(path))
-    matches = [entry for entry in entries if entry[0] == target]
+    matches = select_exact_mounts(entries, path)
     if not matches:
         return 2, f"{PREFIX} status=CRITICAL reason=mountpoint_missing"
 
@@ -161,18 +131,15 @@ def evaluate(
         return 3, f"{PREFIX} status=UNKNOWN reason=mountpoint_ambiguous"
 
     if identity_enabled:
-        _mountpoint, raw_root, raw_source = matches[0]
         try:
-            actual_root = _decode_mountinfo_path(raw_root)
-            actual_source = _decode_mountinfo_field(raw_source)
-            if not actual_root.startswith("/"):
-                raise ValueError("relative mount root")
-            actual_root = os.path.normpath(actual_root)
-        except ValueError:
+            matches_identity = identity_matches(
+                matches[0],
+                expected_source=expected_source,
+                expected_root=expected_root,
+            )
+        except MountInfoError:
             return 3, f"{PREFIX} status=UNKNOWN reason=mountinfo_unavailable"
-        if expected_source is not None and actual_source != expected_source:
-            return 2, f"{PREFIX} status=CRITICAL reason=mount_identity_mismatch"
-        if expected_root is not None and actual_root != expected_root:
+        if not matches_identity:
             return 2, f"{PREFIX} status=CRITICAL reason=mount_identity_mismatch"
 
     return 0, f"{PREFIX} status=OK mounted=true"
