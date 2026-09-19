@@ -42,10 +42,12 @@ python3 scripts/validate-node-capacity-plan-coverage.py capacity-load-plan.json 
   --json
 ```
 
-Every plan scenario must have exactly one explicit binding and each bound file must already satisfy the canonical capacity-report validator. The report's `scenario` text must contain the plan's exact `profile_label`, so evidence from a different media mix cannot be silently reused. Every concurrency level listed by the plan must be present in the bound report; additional measured levels are allowed when the harness needs to continue upward to find a failing boundary.
+Every plan scenario must have exactly one explicit binding and each bound file must already satisfy the canonical capacity-report validator. To bind a report to both the media mix and the scenario without changing the existing report schema, its human-readable `scenario` field must begin with the exact machine-checkable prefix `profile=<profile_label>; scenario=<scenario_id>;`; acceptance-policy detail can follow that prefix. Every concurrency level listed by the plan must be present in the bound report; additional measured levels are allowed when the harness needs to continue upward to find a failing boundary.
+
+For example, the `normal-input` report for a plan rendered with profile label `qa-mix-v1` can use `scenario: "profile=qa-mix-v1; scenario=normal-input; acceptance policy v1"`.
 
 A coverage set is coherent only when all reports use the same Node profile, exact software revision, and safety margin, and every scenario has a distinct measured `run_id`. The summary reports the conservative `recommended_max_sessions` as the minimum recommendation across the complete scenario set. This is a comparison/validation result only: it does not update scheduler inventory, decide the acceptance thresholds or safety margin, provision infrastructure, or execute traffic.
 
-The explicit `SCENARIO_ID=REPORT.json` binding is intentional. The existing capacity-report schema keeps `scenario` human-readable so it can describe the workload and acceptance policy; the coverage tool does not infer scenario identity from filenames or free-form prose.
+The explicit `SCENARIO_ID=REPORT.json` binding is intentional. The existing capacity-report schema keeps `scenario` human-readable so it can describe the workload and acceptance policy; the coverage tool does not infer scenario identity from filenames or arbitrary free-form prose.
 
 The resulting manifest is a plan, not evidence. A real harness must execute the planned load against the intended Node profile, record each measured trial with `record-node-capacity-trial.py`, assemble it with `assemble-node-capacity-report.py`, and validate the final capacity report. The release checklist must remain pending until measured evidence and an explicitly approved safety margin exist.
