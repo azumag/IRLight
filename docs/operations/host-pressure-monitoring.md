@@ -81,6 +81,7 @@ exit code は次の意味を持つ。
 | host clock synchronization | `IRLIGHT_HOST_CLOCK_SYNC_MODE` | `clock_sync_status` | `IRLIGHT_TIMEDATECTL_BIN` | — | baseline 不要。systemd / timedatectl を利用する deployment policy のみ opt-in | [host-clock-sync-monitoring.md](host-clock-sync-monitoring.md) |
 | production network link | `IRLIGHT_HOST_NETWORK_LINK_MODE` | `network_link_status` | `IRLIGHT_NETWORK_INTERFACE_DIR` | — | baseline 不要。production egress interface を operator が明示し、自動選択しない | [host-network-link-monitoring.md](host-network-link-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
+| filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
 
 全 mode は `enabled` / `disabled` のみを受け付け、未知値は component を黙って無効化せず aggregate 自体を `UNKNOWN` に fail-closed する。有効化した component は通常 component と同じ timeout 境界と `CRITICAL > UNKNOWN > WARNING > OK` に参加する。
 
@@ -148,6 +149,7 @@ python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
+python -m unittest discover -s tests -p 'test_host_filesystem_mountpoint_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_opt_in_matrix.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
@@ -158,5 +160,6 @@ bash -n \
   scripts/check-cgroup-pid-pressure.sh \
   scripts/check-network-link-health.sh \
   scripts/check-host-filesystem-readonly.sh \
+  scripts/check-host-filesystem-mountpoint.sh \
   scripts/check-host-pressure.sh
 ```

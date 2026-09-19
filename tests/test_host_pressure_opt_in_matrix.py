@@ -97,6 +97,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 None,
                 "filesystem-readonly-monitoring.md",
             ),
+            (
+                "IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE",
+                "filesystem_mountpoint_status",
+                "IRLIGHT_EXPECTED_MOUNTPOINT_PATH",
+                None,
+                "filesystem-mountpoint-monitoring.md",
+            ),
         )
 
         for mode, field, current_path, baseline_path, runbook in contracts:

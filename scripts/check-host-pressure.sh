@@ -33,6 +33,8 @@ network_link_mode="${IRLIGHT_HOST_NETWORK_LINK_MODE:-disabled}"
 network_interface_dir="${IRLIGHT_NETWORK_INTERFACE_DIR:-}"
 filesystem_readonly_mode="${IRLIGHT_HOST_FILESYSTEM_READONLY_MODE:-disabled}"
 filesystem_readonly_path="${IRLIGHT_FILESYSTEM_PATH:-$disk_path}"
+filesystem_mountpoint_mode="${IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE:-disabled}"
+filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-/state}}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -112,6 +114,15 @@ case "$filesystem_readonly_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_filesystem_readonly_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$filesystem_mountpoint_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_filesystem_mountpoint_mode\n'
     exit 3
     ;;
 esac
@@ -249,6 +260,13 @@ fi
 # explicitly choose the filesystem path whose writeability matters.
 if [[ "$filesystem_readonly_mode" == "enabled" ]]; then
   add_component "filesystem_readonly" "$script_dir/check-host-filesystem-readonly.sh" "$filesystem_readonly_path"
+fi
+
+# Losing an expected volume mount can silently fall through to a same-named
+# directory on the underlying root filesystem. Keep exact mountpoint presence
+# opt-in because only the deployment knows which paths must be independent mounts.
+if [[ "$filesystem_mountpoint_mode" == "enabled" ]]; then
+  add_component "filesystem_mountpoint" "$script_dir/check-host-filesystem-mountpoint.sh" "$filesystem_mountpoint_path"
 fi
 
 component_statuses=()
