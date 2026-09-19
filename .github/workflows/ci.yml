@@ -95,8 +95,32 @@ jobs:
           docker system df
           echo "::endgroup::"
       - name: Exercise Docker integration smoke suite
-        run: bash ./scripts/ci-docker-smoke-suite.sh
+        id: docker_smoke_suite
+        run: |
+          smoke_status=0
+          bash ./scripts/ci-docker-smoke-suite.sh || smoke_status=$?
+
+          if (( smoke_status != 0 )); then
+            evidence_dir="$RUNNER_TEMP/irlight-docker-smoke-diagnostics"
+            mkdir -p "$evidence_dir"
+            if [[ -s "$GITHUB_STEP_SUMMARY" ]]; then
+              cp -- "$GITHUB_STEP_SUMMARY" "$evidence_dir/summary.md"
+            else
+              printf '%s\n' 'Docker smoke summary unavailable.' >"$evidence_dir/summary-unavailable.txt"
+            fi
+          fi
+
+          exit "$smoke_status"
+      - name: Retain Docker smoke failure evidence
+        if: ${{ failure() && steps.docker_smoke_suite.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-smoke-failure-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/irlight-docker-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 3
       - name: Exercise measured soak evidence chain
+        id: measured_soak
         # The collector totals file descriptors from host /proc for container
         # processes. GitHub-hosted container processes are commonly root-owned,
         # so the otherwise read-only probe needs host process inspection access.
@@ -105,7 +129,7 @@ jobs:
             MEASURED_SOAK_DIAGNOSTIC_DIR="$RUNNER_TEMP/irlight-measured-soak-diagnostics" \
             bash ./scripts/smoke-measured-soak-evidence.sh
       - name: Retain measured soak failure evidence
-        if: failure()
+        if: ${{ failure() && steps.measured_soak.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: measured-soak-failure-evidence-${{ github.run_id }}-${{ github.run_attempt }}
