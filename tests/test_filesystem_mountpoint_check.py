@@ -339,6 +339,37 @@ class FilesystemMountpointCheckTest(unittest.TestCase):
             "IRLIGHT_FILESYSTEM_MOUNTPOINT_HEALTH status=OK mounted=true",
         )
 
+    def test_main_applies_identity_environment_to_mountinfo_record(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-mountpoint-") as temporary:
+            root = Path(temporary)
+            target = root / "state"
+            target.mkdir()
+            mountinfo = root / "mountinfo"
+            mountinfo.write_text(
+                _record(
+                    _escape(str(target)),
+                    root="/volumes/state",
+                    source="/dev/mapper/irlight-state",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "IRLIGHT_EXPECTED_MOUNTPOINT_PATH": str(target),
+                    "IRLIGHT_MOUNTINFO_PATH": str(mountinfo),
+                    "IRLIGHT_EXPECTED_MOUNT_SOURCE": "/dev/mapper/irlight-state",
+                    "IRLIGHT_EXPECTED_MOUNT_ROOT": "/volumes/state",
+                },
+                clear=True,
+            ), mock.patch("builtins.print") as output:
+                code = MODULE.main(["check"])
+        self.assertEqual(code, 0)
+        output.assert_called_once_with(
+            "IRLIGHT_FILESYSTEM_MOUNTPOINT_HEALTH status=OK mounted=true"
+        )
+
     def test_environment_precedence_over_state_dir(self) -> None:
         with mock.patch.dict(
             MODULE.os.environ,
