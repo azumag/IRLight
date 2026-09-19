@@ -2,7 +2,7 @@
 
 Issue #11 の timestamp / correlation 信頼性を補完するため、Linux host の systemd time synchronization 状態を副作用なく確認する targeted check を定義する。
 
-Session event、認証期限、TLS 証明書時刻、障害時系列の相関では host clock の大きなずれが診断を難しくする。一方、IRLight が NTP daemon や provider の時刻同期方針を勝手に変更するべきではないため、この check は状態を読むだけとし、既定の `check-host-pressure.sh` aggregate には自動追加しない。
+Session event、認証期限、TLS 証明書時刻、障害時系列の相関では host clock の大きなずれが診断を難しくする。一方、IRLight が NTP daemon や provider の時刻同期方針を勝手に変更するべきではないため、この check は状態を読むだけとし、既定の `check-host-pressure.sh` aggregate では無効にしておく。systemd / `timedatectl` を監視対象として明示できる deployment だけ opt-in する。
 
 ## Check
 
@@ -28,13 +28,28 @@ IRLIGHT_HOST_CLOCK_SYNC status=WARNING reason=ntp_unsynchronized ntp_synchronize
 IRLIGHT_HOST_CLOCK_SYNC status=UNKNOWN reason=timedatectl_timeout
 ```
 
+## Host aggregate opt-in
+
+`check-host-pressure.sh` から clock sync を集約したい deployment は明示的に有効化する。
+
+```bash
+IRLIGHT_HOST_CLOCK_SYNC_MODE=enabled \
+bash scripts/check-host-pressure.sh
+```
+
+既定値は `IRLIGHT_HOST_CLOCK_SYNC_MODE=disabled` であり、既存の `IRLIGHT_HOST_PRESSURE` 出力契約は変えない。`enabled` の場合だけ `clock_sync_status=OK|WARNING|UNKNOWN` を追加し、通常 component と同じ `CRITICAL > UNKNOWN > WARNING > OK` の severity ordering に参加する。未知の mode 値は aggregate 自体を `UNKNOWN reason=invalid_clock_sync_mode` にして fail-closed する。
+
+aggregate は `scripts/check-host-clock-sync.sh` の薄い adapter を介して既存 Python checker を呼ぶ。adapter 自身は状態を変更せず、`python3` が利用できない場合も component 実行失敗として `UNKNOWN` になる。checker の `IRLIGHT_TIMEDATECTL_BIN` と `IRLIGHT_CLOCK_SYNC_TIMEOUT_SECONDS` はそのまま利用できる。
+
+aggregate にはさらに `IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS` の外側 timeout がある。clock checker 側の timeout を既定 3 秒より長く変更する場合は、外側 timeout も意図した上限以上に設定する。どちらかで時間切れになっても正常扱いせず `UNKNOWN` とする。
+
 ## Safety boundary
 
 - read-only diagnostic であり、NTP の enable/disable、時刻補正、daemon restart、`timedatectl set-ntp`、provider 設定変更を行わない。
 - `timedatectl` の stderr、実行ファイル path、内部例外を通常出力へ転記しない。
 - `ntp_unsynchronized` 単独で Session 障害や provider 障害を断定しない。event timestamp の不整合、TLS/auth の時刻依存エラー、node heartbeat 等と相関して判断する。
 - systemd / `timedatectl` を使わない host は `UNKNOWN` になり得るため、deployment ごとの time-sync mechanism を確認してから監視へ組み込む。
-- この checker 自身は remediation を実行しない。NTP source、chrony/systemd-timesyncd/provider agent 等の選択は運用判断として別途行う。
+- この checker と aggregate adapter 自身は remediation を実行しない。NTP source、chrony/systemd-timesyncd/provider agent 等の選択は運用判断として別途行う。
 
 ## Operator response
 
