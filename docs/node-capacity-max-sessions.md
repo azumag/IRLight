@@ -34,6 +34,19 @@ python3 scripts/render-node-capacity-max-sessions-proposal.py \
 
 The renderer runs the same canonical guardrail before emitting anything and additionally requires the coverage manifest itself to resolve to a canonical, symlink-free path inside the repository. The artifact records the repository-relative coverage-manifest path, deployment identity, candidate and measured recommendation, remaining headroom, report count, and safety margin. It does not apply the candidate to any scheduler or Node.
 
-The proposal path is a provenance reference, not a cryptographic content pin. Preserve the rendered proposal and referenced coverage manifest in the same reviewed Git revision (or otherwise preserve the exact immutable revision containing both) so a later reviewer cannot accidentally associate the proposal with a different version of the evidence at the same path.
+## Revalidate a persisted proposal
 
-This guardrail and renderer are intentionally separate from applying a production capacity change. Wiring a measured value into the real scheduler / Node inventory must preserve the repository's deployment and review controls, and should reference the exact coverage manifest and proposal revision used for the decision.
+Before using a persisted proposal in a deployment review, `scripts/validate-node-capacity-max-sessions-proposal.py` can reconstruct the canonical proposal from its referenced measured evidence and require an exact match:
+
+```bash
+python3 scripts/validate-node-capacity-max-sessions-proposal.py \
+  docs/evidence/node-capacity/max-sessions-proposal.json \
+  --node-profile 'cx42-equivalent / 4 vCPU / 8 GiB / qa-image-v1' \
+  --software-revision 0123456789abcdef0123456789abcdef01234567
+```
+
+The persisted proposal must be a regular, symlink-free repository file with bounded valid UTF-8 JSON, no duplicate keys, the exact schema-v1 field set, and strict JSON types. The validator reruns the canonical renderer against the referenced coverage manifest and the explicitly supplied deployment identity, then compares canonical JSON values. This catches edited candidate or derived values, stale recommendation/headroom/report-count/safety-margin fields, Boolean-for-integer substitutions, unexpected fields, and reuse against a different Node profile or software revision. Successful plain-text output contains numeric capacity values only; evidence- and operator-controlled strings are not reflected into validation errors.
+
+The proposal path is a provenance reference, not a cryptographic content pin. Preserve the rendered proposal and referenced coverage manifest in the same reviewed Git revision (or otherwise preserve the exact immutable revision containing both) so a later reviewer cannot accidentally associate the proposal with a different version of the evidence at the same path. Revalidation proves consistency with the evidence currently present at that repository path; it does not prove that the evidence bytes are identical to a historical revision.
+
+This guardrail, renderer, and persisted-proposal validator are intentionally separate from applying a production capacity change. Wiring a measured value into the real scheduler / Node inventory must preserve the repository's deployment and review controls, and should reference the exact coverage manifest and proposal revision used for the decision.
