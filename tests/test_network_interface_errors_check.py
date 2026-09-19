@@ -27,20 +27,24 @@ class NetworkInterfaceErrorsCheckTest(unittest.TestCase):
         missing_current: str | None = None,
         missing_baseline: str | None = None,
         use_environment: bool = False,
+        baseline_alias_current: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="irlight-network-interface-errors-") as temporary:
             root = Path(temporary)
             current_dir = root / "current"
             baseline_dir = root / "baseline"
             current_dir.mkdir()
-            baseline_dir.mkdir()
+            if baseline_alias_current:
+                baseline_dir.symlink_to(current_dir, target_is_directory=True)
+            else:
+                baseline_dir.mkdir()
 
             current_values = values() if current is None else current
             baseline_values = values() if baseline is None else baseline
             for key in COUNTERS:
                 if key != missing_current:
                     (current_dir / key).write_text(current_values[key] + "\n", encoding="utf-8")
-                if key != missing_baseline:
+                if not baseline_alias_current and key != missing_baseline:
                     (baseline_dir / key).write_text(baseline_values[key] + "\n", encoding="utf-8")
 
             env = os.environ.copy()
@@ -115,6 +119,14 @@ class NetworkInterfaceErrorsCheckTest(unittest.TestCase):
         self.assertEqual(
             result.stdout.strip(),
             "IRLIGHT_NETWORK_INTERFACE_ERRORS status=UNKNOWN reason=baseline_stats_unavailable",
+        )
+
+    def test_baseline_directory_must_not_alias_current_directory(self) -> None:
+        result = self._run(baseline_alias_current=True)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_NETWORK_INTERFACE_ERRORS status=UNKNOWN reason=baseline_matches_current",
         )
 
     def test_malformed_counter_is_unknown(self) -> None:
