@@ -160,6 +160,25 @@ class NodeCapacityCoverageManifestTests(unittest.TestCase):
             ):
                 MODULE.load_manifest(path)
 
+    def test_untrusted_duplicate_json_key_is_not_echoed_in_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "coverage.json"
+            malicious_key = "bad\x1b[31m"
+            path.write_text(
+                json.dumps({malicious_key: 1})[:-1]
+                + ","
+                + json.dumps(malicious_key)
+                + ":2}",
+                encoding="utf-8",
+            )
+            with self.assertRaises(MODULE.CapacityCoverageManifestError) as context:
+                MODULE.load_manifest(path)
+
+        message = str(context.exception)
+        self.assertEqual(message, "duplicate JSON key")
+        self.assertNotIn("\x1b", message)
+        self.assertNotIn(malicious_key, message)
+
     def test_manifest_symlink_and_special_file_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
