@@ -65,7 +65,7 @@
       "required": true,
       "status": "pending",
       "evidence": [],
-      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target; satisfied also requires a repository capacity report accepted by the canonical capacity validator."
+      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target; satisfied requires a repository coverage manifest that binds the canonical load plan to one canonical measured report for every required scenario."
     },
     {
       "id": "beta-release-checklist",
@@ -76,7 +76,9 @@
         "docs/release-acceptance-checklist.md",
         "docs/release-acceptance-checklist.json",
         "scripts/validate-release-acceptance-checklist.py",
-        "tests/test_release_acceptance_checklist.py"
+        "scripts/validate-node-capacity-coverage-manifest.py",
+        "tests/test_release_acceptance_checklist.py",
+        "tests/test_node_capacity_coverage_manifest.py"
       ],
       "notes": "This fail-closed checklist is machine-validated and remains not ready until every other required item is satisfied."
     }
