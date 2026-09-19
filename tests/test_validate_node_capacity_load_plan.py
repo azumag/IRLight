@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import os
 import pathlib
 import sys
 import tempfile
@@ -46,7 +45,7 @@ class NodeCapacityLoadPlanValidationTests(unittest.TestCase):
             ["normal-input", "all-holding", "reconnect-storm", "asset-prefetch", "api-dashboard"],
         )
 
-    def test_tampered_scenario_and_missing_baseline_fail_closed(self) -> None:
+    def test_tampered_scenario_missing_baseline_and_typed_values_fail_closed(self) -> None:
         plan = RENDERER.build_plan("720p30 3Mbps")
         plan["scenarios"][0]["description"] = "changed"
         with self.assertRaisesRegex(VALIDATOR.PlanValidationError, "canonical renderer contract"):
@@ -56,6 +55,16 @@ class NodeCapacityLoadPlanValidationTests(unittest.TestCase):
         plan["session_counts"] = [2, 4, 8]
         for scenario in plan["scenarios"]:
             scenario["session_counts"] = [2, 4, 8]
+        with self.assertRaisesRegex(VALIDATOR.PlanValidationError, "canonical renderer contract"):
+            VALIDATOR.validate_plan(plan)
+
+        plan = RENDERER.build_plan("720p30 3Mbps")
+        plan["schema_version"] = True
+        with self.assertRaisesRegex(VALIDATOR.PlanValidationError, "canonical renderer contract"):
+            VALIDATOR.validate_plan(plan)
+
+        plan = RENDERER.build_plan("720p30 3Mbps")
+        plan["scenarios"][0]["session_counts"][0] = True
         with self.assertRaisesRegex(VALIDATOR.PlanValidationError, "canonical renderer contract"):
             VALIDATOR.validate_plan(plan)
 
@@ -124,6 +133,17 @@ class NodeCapacityLoadPlanValidationTests(unittest.TestCase):
             with redirect_stderr(stderr):
                 self.assertEqual(VALIDATOR.main([str(path)]), 2)
             self.assertIn("validation failed", stderr.getvalue())
+
+    def test_plain_text_success_does_not_echo_operator_profile_label(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = pathlib.Path(raw_tmp)
+            label = "profile-\x1b[31m-controlled"
+            path = self._write_plan(tmp, RENDERER.build_plan(label))
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(VALIDATOR.main([str(path)]), 0)
+            self.assertNotIn(label, stdout.getvalue())
+            self.assertNotIn("\x1b", stdout.getvalue())
 
     def test_validator_has_no_load_execution_or_network_imports(self) -> None:
         source = VALIDATOR_PATH.read_text(encoding="utf-8")
