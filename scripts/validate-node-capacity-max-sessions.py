@@ -2,10 +2,12 @@
 """Validate a proposed Media Node max_sessions against complete measured coverage.
 
 This is a read-only decision guardrail. It validates the durable Node-capacity
-coverage manifest with the repository's canonical validator, then rejects a
-proposed max_sessions value that exceeds the conservative recommendation
-supported by that complete scenario set. It never edits scheduler inventory,
-chooses a safety margin, executes load, or contacts a provider.
+coverage manifest with the repository's canonical validator, binds that
+evidence to an explicitly supplied Node profile and software revision, then
+rejects a proposed max_sessions value that exceeds the conservative
+recommendation supported by that complete scenario set. It never edits
+scheduler inventory, chooses a safety margin, executes load, or contacts a
+provider.
 """
 
 from __future__ import annotations
@@ -52,13 +54,38 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
+def _expected_node_profile(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > 300:
+        raise CapacityMaxSessionsError(
+            "expected node_profile must be a non-empty string up to 300 characters"
+        )
+    return value
+
+
+def _expected_revision(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 40
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise CapacityMaxSessionsError(
+            "expected software_revision must be a lowercase 40-character Git commit SHA"
+        )
+    return value
+
+
 def validate_max_sessions(
     manifest_path: Path,
     candidate_max_sessions: object,
     *,
+    expected_node_profile: object,
+    expected_software_revision: object,
     repo_root: Path = ROOT,
 ) -> dict[str, Any]:
     candidate = _positive_int(candidate_max_sessions, "candidate max_sessions")
+    target_profile = _expected_node_profile(expected_node_profile)
+    target_revision = _expected_revision(expected_software_revision)
+
     manifest_validator = _load_coverage_manifest_validator()
     try:
         coverage = manifest_validator.validate_manifest_file(
@@ -74,11 +101,6 @@ def validate_max_sessions(
         coverage.get("recommended_max_sessions"),
         "measured recommendation",
     )
-    if candidate > recommendation:
-        raise CapacityMaxSessionsError(
-            "candidate max_sessions exceeds the measured recommendation"
-        )
-
     report_count = _positive_int(coverage.get("report_count"), "coverage report_count")
     margin = _positive_int(
         coverage.get("safety_margin_percent"),
@@ -90,6 +112,19 @@ def validate_max_sessions(
         raise CapacityMaxSessionsError("coverage software_revision is invalid")
     if not isinstance(node_profile, str) or not node_profile:
         raise CapacityMaxSessionsError("coverage node_profile is invalid")
+
+    if node_profile != target_profile:
+        raise CapacityMaxSessionsError(
+            "coverage node_profile does not match the proposed deployment"
+        )
+    if revision != target_revision:
+        raise CapacityMaxSessionsError(
+            "coverage software_revision does not match the proposed deployment"
+        )
+    if candidate > recommendation:
+        raise CapacityMaxSessionsError(
+            "candidate max_sessions exceeds the measured recommendation"
+        )
 
     return {
         "valid": True,
@@ -117,6 +152,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="proposed positive scheduler/Node inventory max_sessions",
     )
     parser.add_argument(
+        "--node-profile",
+        required=True,
+        help="exact Node profile of the proposed deployment",
+    )
+    parser.add_argument(
+        "--software-revision",
+        required=True,
+        help="exact lowercase 40-character Git commit SHA of the proposed deployment",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit a deterministic JSON summary",
@@ -127,7 +172,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        summary = validate_max_sessions(args.manifest, args.max_sessions)
+        summary = validate_max_sessions(
+            args.manifest,
+            args.max_sessions,
+            expected_node_profile=args.node_profile,
+            expected_software_revision=args.software_revision,
+        )
     except (CapacityMaxSessionsError, OSError) as exc:
         print(f"node capacity max_sessions invalid: {exc}", file=sys.stderr)
         return 2
