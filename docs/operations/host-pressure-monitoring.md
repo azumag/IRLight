@@ -78,6 +78,7 @@ exit code は次の意味を持つ。
 | CPU steal delta | `IRLIGHT_HOST_CPU_STEAL_MODE` | `cpu_steal_status` | `IRLIGHT_PROC_STAT_PATH` | `IRLIGHT_PROC_STAT_BASELINE_PATH` | 同一 host / boot generation の operator-managed baseline | [host-cpu-steal-monitoring.md](host-cpu-steal-monitoring.md) |
 | boot generation | `IRLIGHT_HOST_BOOT_GENERATION_MODE` | `boot_generation_status` | `IRLIGHT_BOOT_ID_PATH` | `IRLIGHT_BOOT_ID_BASELINE_PATH` | persistent operator-managed baseline。planned reboot でも `WARNING` になる | [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) |
 | softnet drop / time_squeeze delta | `IRLIGHT_HOST_SOFTNET_MODE` | `softnet_status` | `IRLIGHT_SOFTNET_STAT_PATH` | `IRLIGHT_SOFTNET_STAT_BASELINE_PATH` | 同一 host / boot / network namespace / CPU topology の operator-managed baseline | [softnet-pressure-monitoring.md](softnet-pressure-monitoring.md) |
+| host clock synchronization | `IRLIGHT_HOST_CLOCK_SYNC_MODE` | `clock_sync_status` | `IRLIGHT_TIMEDATECTL_BIN` | — | baseline 不要。systemd / timedatectl を利用する deployment policy のみ opt-in | [host-clock-sync-monitoring.md](host-clock-sync-monitoring.md) |
 
 全 mode は `enabled` / `disabled` のみを受け付け、未知値は component を黙って無効化せず aggregate 自体を `UNKNOWN` に fail-closed する。有効化した component は通常 component と同じ timeout 境界と `CRITICAL > UNKNOWN > WARNING > OK` に参加する。
 
