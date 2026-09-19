@@ -13,15 +13,30 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
-from mountinfo_identity import (
-    MountInfoError,
-    identity_matches,
-    normalize_expected_identity,
-    parse_mountinfo_entries,
-    select_exact_mounts,
-)
+try:
+    from mountinfo_identity import (
+        MountInfoError,
+        identity_matches,
+        normalize_expected_identity,
+        parse_mountinfo_entries,
+        select_exact_mounts,
+    )
+except ModuleNotFoundError:
+    # Local development commonly starts uvicorn from apps/control-api. Docker
+    # packages the shared module at /app, while a source checkout keeps it at
+    # repository root; support both without depending on the caller's cwd.
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(_REPO_ROOT))
+    from mountinfo_identity import (  # type: ignore[no-redef]
+        MountInfoError,
+        identity_matches,
+        normalize_expected_identity,
+        parse_mountinfo_entries,
+        select_exact_mounts,
+    )
 
 
 _DEFAULT_MOUNTINFO = Path("/proc/self/mountinfo")
