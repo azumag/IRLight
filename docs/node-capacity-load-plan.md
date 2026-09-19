@@ -50,4 +50,49 @@ A coverage set is coherent only when all reports use the same Node profile, exac
 
 The explicit `SCENARIO_ID=REPORT.json` binding is intentional. The existing capacity-report schema keeps `scenario` human-readable so it can describe the workload and acceptance policy; the coverage tool does not infer scenario identity from filenames or arbitrary free-form prose.
 
-The resulting manifest is a plan, not evidence. A real harness must execute the planned load against the intended Node profile, record each measured trial with `record-node-capacity-trial.py`, assemble it with `assemble-node-capacity-report.py`, and validate the final capacity report. The release checklist must remain pending until measured evidence and an explicitly approved safety margin exist.
+## Persist complete coverage as release evidence
+
+The CLI bindings above are convenient for an operator, but they are not durable evidence by themselves. Once the real sanitized plan and all measured reports have been committed to the repository, persist the binding in a small schema-v1 coverage manifest:
+
+```json
+{
+  "schema_version": 1,
+  "load_plan": "docs/evidence/node-capacity/capacity-load-plan.json",
+  "reports": [
+    {
+      "scenario_id": "normal-input",
+      "path": "docs/evidence/node-capacity/normal-input-report.json"
+    },
+    {
+      "scenario_id": "all-holding",
+      "path": "docs/evidence/node-capacity/all-holding-report.json"
+    },
+    {
+      "scenario_id": "reconnect-storm",
+      "path": "docs/evidence/node-capacity/reconnect-storm-report.json"
+    },
+    {
+      "scenario_id": "asset-prefetch",
+      "path": "docs/evidence/node-capacity/asset-prefetch-report.json"
+    },
+    {
+      "scenario_id": "api-dashboard",
+      "path": "docs/evidence/node-capacity/api-dashboard-report.json"
+    }
+  ]
+}
+```
+
+All paths are canonical repository-relative paths. Validate the durable object with:
+
+```bash
+python3 scripts/validate-node-capacity-coverage-manifest.py \
+  docs/evidence/node-capacity/coverage.json \
+  --json
+```
+
+The manifest validator is read-only. It rejects duplicate keys, unknown fields, non-canonical or escaping paths, symlinked referenced paths, non-regular files, oversized/unstable manifest input, and incomplete or inconsistent scenario coverage. It then reuses the canonical plan-coverage validator, so every planned scenario and load level, exact profile/scenario prefix, common Node profile/revision/safety margin, and distinct measured `run_id` are rechecked from the referenced files rather than trusted from a previously printed CLI summary.
+
+A single valid capacity report is therefore not complete Node-capacity release evidence. When `node-capacity-load` is marked `satisfied`, the release-acceptance checklist requires at least one valid durable coverage manifest. The plan and report files can also be listed as supplementary evidence, but the coverage manifest is the machine-checkable binding that closes the scenario matrix.
+
+The load plan itself is still not measured evidence. A real harness must execute the planned load against the intended Node profile, record each measured trial with `record-node-capacity-trial.py`, assemble it with `assemble-node-capacity-report.py`, validate the final reports, and only then commit the sanitized coverage manifest that references those artifacts. None of these validators approve a media mix, acceptance threshold, safety margin, provider cost, or production `max_sessions`; those remain explicit operational decisions.
