@@ -34,7 +34,7 @@ network_interface_dir="${IRLIGHT_NETWORK_INTERFACE_DIR:-}"
 filesystem_readonly_mode="${IRLIGHT_HOST_FILESYSTEM_READONLY_MODE:-disabled}"
 filesystem_readonly_path="${IRLIGHT_FILESYSTEM_PATH:-$disk_path}"
 filesystem_mountpoint_mode="${IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE:-disabled}"
-filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-$disk_path}}"
+filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-/state}}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
