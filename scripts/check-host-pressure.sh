@@ -28,6 +28,7 @@ boot_id_baseline_path="${IRLIGHT_BOOT_ID_BASELINE_PATH:-}"
 softnet_mode="${IRLIGHT_HOST_SOFTNET_MODE:-disabled}"
 softnet_stat_path="${IRLIGHT_SOFTNET_STAT_PATH:-/proc/net/softnet_stat}"
 softnet_stat_baseline_path="${IRLIGHT_SOFTNET_STAT_BASELINE_PATH:-}"
+clock_sync_mode="${IRLIGHT_HOST_CLOCK_SYNC_MODE:-disabled}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -80,6 +81,15 @@ case "$softnet_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_softnet_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$clock_sync_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_clock_sync_mode\n'
     exit 3
     ;;
 esac
@@ -195,6 +205,13 @@ fi
 # must explicitly manage a same-generation baseline before it affects summary.
 if [[ "$softnet_mode" == "enabled" ]]; then
   add_component "softnet" "$script_dir/check-softnet-pressure-delta.sh" "$softnet_stat_path" "$softnet_stat_baseline_path"
+fi
+
+# Clock synchronization depends on the host's time-sync mechanism and deployment
+# policy. Keep the systemd/timedatectl check opt-in; unsupported hosts fail closed
+# through the adapter/checker instead of being inferred healthy.
+if [[ "$clock_sync_mode" == "enabled" ]]; then
+  add_component "clock_sync" "$script_dir/check-host-clock-sync.sh"
 fi
 
 component_statuses=()
