@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGGREGATE = ROOT / "scripts" / "check-host-pressure.sh"
 RUNBOOK = ROOT / "docs" / "operations" / "host-pressure-monitoring.md"
+INDEX = ROOT / "docs" / "operations" / "README.md"
 
 
 class HostPressureOptInMatrixTests(unittest.TestCase):
@@ -99,6 +100,14 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
         self.assertIn("aggregate は baseline を作成・更新・削除しない", matrix)
         self.assertIn("host-boot-generation-monitoring.md", matrix)
         self.assertIn("自動実行しない", matrix)
+
+    def test_operations_index_links_host_pressure_matrix(self) -> None:
+        index = INDEX.read_text(encoding="utf-8")
+        self.assertIn(
+            "[host-pressure-monitoring.md](host-pressure-monitoring.md)",
+            index,
+        )
+        self.assertIn("opt-in component matrix", index)
 
 
 if __name__ == "__main__":
