@@ -93,7 +93,11 @@ def evaluate(path: Path, mountinfo_path: Path) -> tuple[int, str]:
         return 3, f"{PREFIX} status=UNKNOWN reason=target_symlink"
 
     try:
-        text = mountinfo_path.read_text(encoding="utf-8")
+        # Linux pathnames are byte strings and mountinfo may contain bytes that
+        # are not valid UTF-8. surrogateescape preserves them losslessly while
+        # still letting us compare normal configured paths without rejecting an
+        # otherwise unrelated mount record.
+        text = mountinfo_path.read_text(encoding="utf-8", errors="surrogateescape")
         mountpoints = _mountpoints(text)
     except (OSError, UnicodeError, ValueError):
         return 3, f"{PREFIX} status=UNKNOWN reason=mountinfo_unavailable"
