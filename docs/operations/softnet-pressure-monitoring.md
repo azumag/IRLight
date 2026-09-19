@@ -36,6 +36,21 @@ IRLIGHT_SOFTNET_STAT_BASELINE_PATH=/run/irlight-monitor/softnet_stat.baseline \
   bash scripts/check-softnet-pressure-delta.sh
 ```
 
+## Host aggregate への opt-in
+
+既定の `check-host-pressure.sh` aggregate では softnet signal を無効にしておく。累積 counter は boot / network namespace / CPU topology と operator-managed baseline の整合が必要であり、baseline を管理していない deployment の既定出力を変えないためである。
+
+同一 generation の baseline を用意した host では、明示的に opt-in できる。
+
+```bash
+IRLIGHT_HOST_SOFTNET_MODE=enabled \
+IRLIGHT_SOFTNET_STAT_PATH=/proc/net/softnet_stat \
+IRLIGHT_SOFTNET_STAT_BASELINE_PATH=/run/irlight-monitor/softnet_stat.baseline \
+  bash scripts/check-host-pressure.sh
+```
+
+有効化時は `softnet_status=OK|WARNING|UNKNOWN` が aggregate 出力に加わり、既存の `CRITICAL > UNKNOWN > WARNING > OK` の優先順位へ統合される。baseline 欠落・破損、counter reset、CPU topology 変更は `UNKNOWN` として fail-closed する。`IRLIGHT_HOST_SOFTNET_MODE` が `enabled` / `disabled` 以外なら aggregate 自体を `UNKNOWN reason=invalid_softnet_mode` にする。aggregate も baseline を作成・更新・削除しない。
+
 ## Safety boundary
 
 checker は `/proc/net/softnet_stat` と baseline を read-only で読むだけで、sysctl、qdisc、route、interface、socket、service、process、provider resource を変更しない。baseline の自動更新もしない。出力には pathname、CPU identity、interface、destination、Session ID、credential を含めない。
@@ -46,5 +61,6 @@ checker は `/proc/net/softnet_stat` と baseline を read-only で読むだけ�
 
 ```bash
 python -m unittest discover -s tests -p 'test_softnet_pressure_delta_check.py' -v
-bash -n scripts/check-softnet-pressure-delta.sh
+python -m unittest discover -s tests -p 'test_host_softnet_aggregate.py' -v
+bash -n scripts/check-softnet-pressure-delta.sh scripts/check-host-pressure.sh
 ```
