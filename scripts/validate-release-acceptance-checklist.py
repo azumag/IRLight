@@ -20,7 +20,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKLIST = ROOT / "docs" / "release-acceptance-checklist.json"
 SOAK_REPORT_VALIDATOR = ROOT / "scripts" / "validate-soak-report.py"
-CAPACITY_REPORT_VALIDATOR = ROOT / "scripts" / "validate-node-capacity-report.py"
+CAPACITY_COVERAGE_MANIFEST_VALIDATOR = (
+    ROOT / "scripts" / "validate-node-capacity-coverage-manifest.py"
+)
 MAX_CHECKLIST_BYTES = 128 * 1024
 MIN_SIX_HOUR_SOAK_SECONDS = 6 * 60 * 60
 
@@ -174,11 +176,11 @@ def _load_soak_report_validator() -> Any:
     )
 
 
-def _load_capacity_report_validator() -> Any:
+def _load_capacity_coverage_manifest_validator() -> Any:
     return _load_report_validator(
-        CAPACITY_REPORT_VALIDATOR,
-        "irlight_release_capacity_report_validator",
-        "Node capacity report",
+        CAPACITY_COVERAGE_MANIFEST_VALIDATOR,
+        "irlight_release_capacity_coverage_manifest_validator",
+        "Node capacity coverage manifest",
     )
 
 
@@ -220,15 +222,15 @@ def _validate_six_hour_soak_evidence(evidence_paths: list[str]) -> None:
 
 
 def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
-    """Require a canonical capacity report before capacity can be marked satisfied."""
+    """Require durable complete-scenario capacity coverage before satisfaction."""
 
-    validator = _load_capacity_report_validator()
+    validator = _load_capacity_coverage_manifest_validator()
     failures: list[str] = []
     for path_text in evidence_paths:
         candidate = ROOT / path_text
         try:
-            validator.validate_report(validator.load_report(candidate))
-        except (validator.CapacityReportError, OSError, UnicodeError) as exc:
+            validator.validate_manifest_file(candidate, repo_root=ROOT)
+        except (validator.CapacityCoverageManifestError, OSError, UnicodeError) as exc:
             failures.append(f"{path_text}: {exc}")
             continue
         return
@@ -238,7 +240,7 @@ def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
         detail = f" ({detail})"
     raise ChecklistValidationError(
         "node-capacity-load: satisfied status requires at least one canonical "
-        f"Node capacity report{detail}"
+        f"Node capacity coverage manifest{detail}"
     )
 
 
