@@ -11,7 +11,7 @@ A successful readiness response is:
 {"status":"ready"}
 ```
 
-If required authority cannot be inspected safely, `/readyz` returns HTTP 503 with only the fixed public reason code `STATE_AUTHORITY_UNAVAILABLE`. The response does not include a state path, raw JSON, secret, parser error, or validation detail.
+If required authority cannot be inspected safely, `/readyz` returns HTTP 503 with only the fixed public reason code `STATE_AUTHORITY_UNAVAILABLE`. The response does not include a state path, raw JSON, secret, parser error, mount source, or validation detail.
 
 ## What readiness checks
 
@@ -28,28 +28,56 @@ For each canonical authority, both the JSON file and its durable initialization 
 
 Session, entitlement, Destination-secret, ingest, and other lazily initialized stores are intentionally not made deployment-readiness dependencies by this change. Their existing request paths remain fail-closed. Promote one of those stores into `/readyz` only when its deployment lifecycle is explicitly mandatory; otherwise a brand-new environment could be reported unavailable merely because an optional/lazy feature has never been used.
 
+### Optional mount identity pinning
+
+Authority contents alone cannot prove that `STATE_DIR` still refers to the operator-intended volume. A missing volume can expose a same-named directory on the container root filesystem, and syntactically valid state copied there could otherwise look ready. Deployments that have a stable mount identity can opt `/readyz` into an exact `/proc/self/mountinfo` source/root check.
+
+For the Control Plane state root, configure one or both of:
+
+```text
+IRLIGHT_READYZ_STATE_EXPECTED_MOUNT_SOURCE
+IRLIGHT_READYZ_STATE_EXPECTED_MOUNT_ROOT
+```
+
+For a distinct `NODE_STATE_DIR`, configure one or both of:
+
+```text
+IRLIGHT_READYZ_NODE_STATE_EXPECTED_MOUNT_SOURCE
+IRLIGHT_READYZ_NODE_STATE_EXPECTED_MOUNT_ROOT
+```
+
+The presence of either variable opts that root into identity verification; there is no implicit expected source. The target must be an exact, unique mountpoint. A missing mountpoint, source/root mismatch, ambiguous duplicate mountpoint record, invalid expectation, unreadable mountinfo, or symlink target makes `/readyz` return the same fixed `STATE_AUTHORITY_UNAVAILABLE` 503 response. Configured or observed mount identity values are not reflected to the client.
+
+When none of these variables is present, the existing readiness behavior is unchanged and `/readyz` does not read mountinfo. This is intentional because the correct source/root is deployment-specific and must not be guessed. The standalone host diagnostic in [`filesystem-mountpoint-monitoring.md`](filesystem-mountpoint-monitoring.md) remains useful for monitoring outside the API process.
+
+An identity match proves only the current mount-namespace source/root tuple for the configured path. It does **not** prove provider volume ownership, provider volume ID, backup generation, restore epoch, or authority generation. Those require separate provider/backup evidence and must not be inferred from a successful readiness response.
+
 ## Read-only contract
 
-Readiness does not call normal store lock/getter methods because those code paths may create directories, lock files, initialization markers, or first-run JSON. The inspector only opens existing regular files read-only and validates their contents. It does not:
+Readiness does not call normal store lock/getter methods because those code paths may create directories, lock files, initialization markers, or first-run JSON. The inspector only opens existing regular files read-only and validates their contents. Optional mount identity verification reads `/proc/self/mountinfo` only. It does not:
 
 - create missing state or markers;
 - create lock files;
 - repair or migrate authority;
+- mount, remount, or unmount filesystems;
+- write probe files;
 - delete provider resources;
 - clear corrupt data;
 - remove initialization fuses.
 
-The configured state roots are opened without following symlinks and pinned by file descriptor for the duration of the inspection. Each authority file and initialization marker is likewise opened without following symlinks and remains pinned through payload validation. Immediately before accepting a check, readiness verifies that the pathname still names the same regular-file inode. If a normal atomic writer replaces an authority or marker while inspection is in progress, the check fails closed instead of reporting a stale pre-replacement snapshot as ready. No store lock is created or acquired for this purpose, so a concurrent writer can cause a transient non-ready result rather than being blocked indefinitely.
+The configured state roots are opened without following symlinks and pinned by file descriptor for the duration of the authority inspection. Each authority file and initialization marker is likewise opened without following symlinks and remains pinned through payload validation. Immediately before accepting a check, readiness verifies that the pathname still names the same regular-file inode. If a normal atomic writer replaces an authority or marker while inspection is in progress, the check fails closed instead of reporting a stale pre-replacement snapshot as ready. No store lock is created or acquired for this purpose, so a concurrent writer can cause a transient non-ready result rather than being blocked indefinitely.
 
 The legacy bootstrap-token ledger predates mandatory initialization markers, so a valid ledger without a marker remains compatible. That marker absence is still part of the inspected snapshot: if a writer creates the marker while the legacy ledger is being validated, readiness fails closed rather than reporting `OK` from the pre-initialization view. Once a marker already exists, it is pinned and identity-checked like the canonical authority markers.
 
-This property is covered by tests that compare file contents, mtimes, and the file set before and after a readiness check, together with deterministic replacement-race tests for authority files, initialization markers, and the legacy marker-appearance transition.
+This property is covered by tests that compare file contents, mtimes, and the file set before and after a readiness check, together with deterministic replacement-race tests for authority files, initialization markers, and the legacy marker-appearance transition. Mount identity tests separately verify opt-in compatibility, exact source/root matching, missing/ambiguous mounts, symlink rejection, and public error redaction.
 
 ## Deployment use
 
 Keep the container/process liveness probe on `/healthz`. Use `/readyz` for traffic readiness and alerts that should stop new work when authoritative state is unavailable. Do not convert a `/readyz` failure into an automatic volume reset or `docker compose down -v` action.
 
 A 503 means an operator should inspect the mounted state and initialization markers from a controlled maintenance context. Preserve the affected files before recovery. Writers, including a separate reaper, should be quiesced before restoring authority.
+
+If mount identity pinning is enabled, derive the expected source/root from the deployment definition and a known-good host/container mount namespace. Do not copy an observed value from a currently failing host merely to make readiness green. Planned storage migration should update the deployment expectation and storage configuration together under the normal maintenance procedure.
 
 ## Administrative inspection
 
@@ -69,7 +97,7 @@ Example shape:
 {"checks":[{"authority":"control","reason":null,"status":"OK"},{"authority":"catalog","reason":"required state contains invalid JSON","status":"UNAVAILABLE"}],"status":"UNAVAILABLE"}
 ```
 
-Use this only to identify which local authority requires investigation. It deliberately has no repair, restore, marker deletion, provider cleanup, or credential-reset option.
+Use this only to identify which local authority requires investigation. It deliberately has no repair, restore, marker deletion, provider cleanup, or credential-reset option. The CLI intentionally remains an authority-content inspector; `/readyz` mount identity pinning is deployment-specific and is not silently applied to arbitrary offline snapshot directories.
 
 A backup restore can be compared against a protected reference without changing either tree by following [`state-restore-drill.md`](state-restore-drill.md). The comparison is intentionally limited to startup authority and does not authorize production restore or provider reconciliation.
 
