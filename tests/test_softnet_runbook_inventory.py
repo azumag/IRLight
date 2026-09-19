@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = ROOT / "docs" / "operations" / "README.md"
 RUNBOOK = ROOT / "docs" / "operations" / "softnet-pressure-monitoring.md"
+HOST_AGGREGATE = ROOT / "scripts" / "check-host-pressure.sh"
 
 
 class SoftnetRunbookInventoryTests(unittest.TestCase):
@@ -27,6 +28,14 @@ class SoftnetRunbookInventoryTests(unittest.TestCase):
         self.assertIn("cpu_topology_changed", (ROOT / "scripts" / "check-softnet-pressure-delta.sh").read_text(encoding="utf-8"))
         self.assertIn("counter_reset", text)
         self.assertIn("sysctl、qdisc、route、interface、socket、service、process、provider resource を変更しない", text)
+
+    def test_softnet_host_aggregate_is_explicit_opt_in(self) -> None:
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        aggregate = HOST_AGGREGATE.read_text(encoding="utf-8")
+        self.assertIn("IRLIGHT_HOST_SOFTNET_MODE=enabled", runbook)
+        self.assertIn('softnet_mode="${IRLIGHT_HOST_SOFTNET_MODE:-disabled}"', aggregate)
+        self.assertIn('add_component "softnet"', aggregate)
+        self.assertIn("invalid_softnet_mode", aggregate)
 
 
 if __name__ == "__main__":
