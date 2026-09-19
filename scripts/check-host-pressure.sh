@@ -29,6 +29,8 @@ softnet_mode="${IRLIGHT_HOST_SOFTNET_MODE:-disabled}"
 softnet_stat_path="${IRLIGHT_SOFTNET_STAT_PATH:-/proc/net/softnet_stat}"
 softnet_stat_baseline_path="${IRLIGHT_SOFTNET_STAT_BASELINE_PATH:-}"
 clock_sync_mode="${IRLIGHT_HOST_CLOCK_SYNC_MODE:-disabled}"
+network_link_mode="${IRLIGHT_HOST_NETWORK_LINK_MODE:-disabled}"
+network_interface_dir="${IRLIGHT_NETWORK_INTERFACE_DIR:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -90,6 +92,15 @@ case "$clock_sync_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_clock_sync_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$network_link_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_network_link_mode\n'
     exit 3
     ;;
 esac
@@ -212,6 +223,14 @@ fi
 # through the adapter/checker instead of being inferred healthy.
 if [[ "$clock_sync_mode" == "enabled" ]]; then
   add_component "clock_sync" "$script_dir/check-host-clock-sync.sh"
+fi
+
+# The production egress interface is topology-specific (physical NIC, bond,
+# bridge, VLAN, or virtual device). Never guess it. Operators may explicitly
+# opt a chosen sysfs interface directory into the aggregate; missing targets
+# fail closed through the standalone checker.
+if [[ "$network_link_mode" == "enabled" ]]; then
+  add_component "network_link" "$script_dir/check-network-link-health.sh" "$network_interface_dir"
 fi
 
 component_statuses=()

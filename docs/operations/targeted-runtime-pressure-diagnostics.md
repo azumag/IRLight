@@ -2,7 +2,7 @@
 
 Issue #11 の host-level pressure 監視を補完するため、監視対象 workload / network link / route / resolver 設定を明示できる場合だけ使う read-only companion checks を提供する。
 
-`check-host-pressure.sh` の `OK` は個別 cgroup / process の上限や、特定の production network interface・その IPv4 egress route・ローカル resolver 設定が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state、同 interface の IPv4 default route、ローカル resolver 設定の存在と構文を別々に確認する。
+`check-host-pressure.sh` の既定の `OK` は個別 cgroup / process の上限や、特定の production network interface・その IPv4 egress route・ローカル resolver 設定が利用可能であることを意味しない。この手順では cgroup v2 の PSI stall、単一 process の file descriptor soft limit への接近、明示した Linux network interface の operational state、同 interface の IPv4 default route、ローカル resolver 設定の存在と構文を別々に確認する。
 
 ## cgroup v2 PSI
 
@@ -60,7 +60,9 @@ host 全体の CPU / memory / PSI が正常でも、配信経路に使う NIC �
 bash scripts/check-network-link-health.sh /sys/class/net/<interface>
 ```
 
-`IRLIGHT_NETWORK_INTERFACE_DIR` でも対象 directory を指定できる。Linux kernel が公開する `operstate` を read-only で読み、次の固定 contract で評価する。
+`IRLIGHT_NETWORK_INTERFACE_DIR` でも対象 directory を指定できる。production egress interface を運用側で確定できる場合は、`IRLIGHT_HOST_NETWORK_LINK_MODE=enabled` と組み合わせて host aggregate に opt-in できる。対象を自動選択せず、詳細は [host-network-link-monitoring.md](host-network-link-monitoring.md) を参照する。
+
+Linux kernel が公開する `operstate` を read-only で読み、次の固定 contract で評価する。
 
 - `up`: `OK`
 - `dormant` / `testing`: `WARNING`。L1 が存在しても通常 traffic を流せる状態とは断定しない

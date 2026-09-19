@@ -83,6 +83,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 None,
                 "host-clock-sync-monitoring.md",
             ),
+            (
+                "IRLIGHT_HOST_NETWORK_LINK_MODE",
+                "network_link_status",
+                "IRLIGHT_NETWORK_INTERFACE_DIR",
+                None,
+                "host-network-link-monitoring.md",
+            ),
         )
 
         for mode, field, current_path, baseline_path, runbook in contracts:

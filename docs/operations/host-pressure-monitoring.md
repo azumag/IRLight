@@ -68,7 +68,7 @@ exit code は次の意味を持つ。
 
 ## Optional host signals
 
-累積counterやdeployment policyに依存する signal は、既定の aggregate 出力を変えないためすべて `disabled` で開始する。必要な baseline / generation 管理を行う deployment だけ明示的に有効化する。
+累積counter、deployment policy、または明示的な監視対象選択に依存する signal は、既定の aggregate 出力を変えないためすべて `disabled` で開始する。必要な baseline / generation 管理や target 選択を行う deployment だけ明示的に有効化する。
 
 | signal | opt-in mode | aggregate field | current path env | baseline path env | baseline / generation contract | standalone runbook |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -79,12 +79,13 @@ exit code は次の意味を持つ。
 | boot generation | `IRLIGHT_HOST_BOOT_GENERATION_MODE` | `boot_generation_status` | `IRLIGHT_BOOT_ID_PATH` | `IRLIGHT_BOOT_ID_BASELINE_PATH` | persistent operator-managed baseline。planned reboot でも `WARNING` になる | [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) |
 | softnet drop / time_squeeze delta | `IRLIGHT_HOST_SOFTNET_MODE` | `softnet_status` | `IRLIGHT_SOFTNET_STAT_PATH` | `IRLIGHT_SOFTNET_STAT_BASELINE_PATH` | 同一 host / boot / network namespace / CPU topology の operator-managed baseline | [softnet-pressure-monitoring.md](softnet-pressure-monitoring.md) |
 | host clock synchronization | `IRLIGHT_HOST_CLOCK_SYNC_MODE` | `clock_sync_status` | `IRLIGHT_TIMEDATECTL_BIN` | — | baseline 不要。systemd / timedatectl を利用する deployment policy のみ opt-in | [host-clock-sync-monitoring.md](host-clock-sync-monitoring.md) |
+| production network link | `IRLIGHT_HOST_NETWORK_LINK_MODE` | `network_link_status` | `IRLIGHT_NETWORK_INTERFACE_DIR` | — | baseline 不要。production egress interface を operator が明示し、自動選択しない | [host-network-link-monitoring.md](host-network-link-monitoring.md) |
 
 全 mode は `enabled` / `disabled` のみを受け付け、未知値は component を黙って無効化せず aggregate 自体を `UNKNOWN` に fail-closed する。有効化した component は通常 component と同じ timeout 境界と `CRITICAL > UNKNOWN > WARNING > OK` に参加する。
 
 baseline が必要な component では、aggregate は baseline を作成・更新・削除しない。baseline 欠落、読取不能、counter reset、世代不整合などを安全に評価できない場合は component の `UNKNOWN` をそのまま伝播する。累積counterの baseline を更新する前に [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) で boot generation を確認し、予期しない reboot の証跡を自動更新で消さない。
 
-opt-in signal の結果だけを根拠に swap 設定変更、baseline refresh、service/process restart、Node drain、provider migration、instance resize、failover 等を自動実行しない。詳細な意味・個別の安全境界は表の standalone runbook を参照する。
+opt-in signal の結果だけを根拠に swap 設定変更、baseline refresh、network interface変更、service/process restart、Node drain、provider migration、instance resize、failover 等を自動実行しない。詳細な意味・個別の安全境界は表の standalone runbook を参照する。
 
 ## Targeted cgroup v2 PID check
 
@@ -144,6 +145,7 @@ python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_opt_in_matrix.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
@@ -152,5 +154,6 @@ bash -n \
   scripts/check-conntrack-pressure.sh \
   scripts/check-task-pressure.sh \
   scripts/check-cgroup-pid-pressure.sh \
+  scripts/check-network-link-health.sh \
   scripts/check-host-pressure.sh
 ```
