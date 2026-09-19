@@ -25,6 +25,9 @@ proc_stat_baseline_path="${IRLIGHT_PROC_STAT_BASELINE_PATH:-}"
 boot_generation_mode="${IRLIGHT_HOST_BOOT_GENERATION_MODE:-disabled}"
 boot_id_path="${IRLIGHT_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
 boot_id_baseline_path="${IRLIGHT_BOOT_ID_BASELINE_PATH:-}"
+softnet_mode="${IRLIGHT_HOST_SOFTNET_MODE:-disabled}"
+softnet_stat_path="${IRLIGHT_SOFTNET_STAT_PATH:-/proc/net/softnet_stat}"
+softnet_stat_baseline_path="${IRLIGHT_SOFTNET_STAT_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -68,6 +71,15 @@ case "$boot_generation_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_boot_generation_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$softnet_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_softnet_mode\n'
     exit 3
     ;;
 esac
@@ -176,6 +188,13 @@ fi
 # When enabled, missing or invalid operator baselines fail closed in the checker.
 if [[ "$boot_generation_mode" == "enabled" ]]; then
   add_component "boot_generation" "$script_dir/check-host-boot-generation.sh" "$boot_id_path" "$boot_id_baseline_path"
+fi
+
+# softnet dropped/time_squeeze counters are cumulative and tied to CPU topology
+# and boot/network-namespace generation. Keep the signal opt-in so operators
+# must explicitly manage a same-generation baseline before it affects summary.
+if [[ "$softnet_mode" == "enabled" ]]; then
+  add_component "softnet" "$script_dir/check-softnet-pressure-delta.sh" "$softnet_stat_path" "$softnet_stat_baseline_path"
 fi
 
 component_statuses=()
