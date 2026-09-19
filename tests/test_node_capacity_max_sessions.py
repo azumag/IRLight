@@ -26,6 +26,7 @@ sys.modules[RENDERER_SPEC.name] = RENDERER
 RENDERER_SPEC.loader.exec_module(RENDERER)
 
 PROFILE = "720p30/1080p30 mix qa-v1"
+NODE_PROFILE = "linux-x86_64 4 vCPU 8 GiB"
 REVISION = "0123456789abcdef0123456789abcdef01234567"
 SCENARIO_IDS = [scenario_id for scenario_id, _description in RENDERER.SCENARIOS]
 
@@ -49,7 +50,7 @@ def make_report(scenario_id: str, run_number: int) -> dict[str, object]:
     return {
         "schema_version": 1,
         "run_id": str(uuid.UUID(int=run_number)),
-        "node_profile": "linux-x86_64 4 vCPU 8 GiB",
+        "node_profile": NODE_PROFILE,
         "software_revision": REVISION,
         "scenario": f"profile={PROFILE}; scenario={scenario_id}; approved test policy",
         "safety_margin_percent": 25,
@@ -89,15 +90,28 @@ class NodeCapacityMaxSessionsTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
         return manifest_path
 
+    def validate(
+        self,
+        manifest_path: pathlib.Path,
+        candidate: object,
+        root: pathlib.Path,
+        *,
+        node_profile: object = NODE_PROFILE,
+        software_revision: object = REVISION,
+    ) -> dict[str, object]:
+        return MODULE.validate_max_sessions(
+            manifest_path,
+            candidate,
+            expected_node_profile=node_profile,
+            expected_software_revision=software_revision,
+            repo_root=root,
+        )
+
     def test_candidate_equal_to_measured_recommendation_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             manifest_path = self.write_evidence(root)
-            summary = MODULE.validate_max_sessions(
-                manifest_path,
-                3,
-                repo_root=root,
-            )
+            summary = self.validate(manifest_path, 3, root)
 
         self.assertTrue(summary["valid"])
         self.assertEqual(summary["candidate_max_sessions"], 3)
@@ -105,16 +119,13 @@ class NodeCapacityMaxSessionsTests(unittest.TestCase):
         self.assertEqual(summary["headroom_sessions"], 0)
         self.assertEqual(summary["report_count"], len(SCENARIO_IDS))
         self.assertEqual(summary["software_revision"], REVISION)
+        self.assertEqual(summary["node_profile"], NODE_PROFILE)
 
     def test_more_conservative_candidate_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             manifest_path = self.write_evidence(root)
-            summary = MODULE.validate_max_sessions(
-                manifest_path,
-                2,
-                repo_root=root,
-            )
+            summary = self.validate(manifest_path, 2, root)
 
         self.assertEqual(summary["candidate_max_sessions"], 2)
         self.assertEqual(summary["recommended_max_sessions"], 3)
@@ -128,11 +139,49 @@ class NodeCapacityMaxSessionsTests(unittest.TestCase):
                 MODULE.CapacityMaxSessionsError,
                 "exceeds the measured recommendation",
             ):
-                MODULE.validate_max_sessions(
+                self.validate(manifest_path, 4, root)
+
+    def test_deployment_profile_and_revision_must_match_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest_path = self.write_evidence(root)
+            with self.assertRaisesRegex(
+                MODULE.CapacityMaxSessionsError,
+                "node_profile does not match",
+            ):
+                self.validate(
                     manifest_path,
-                    4,
-                    repo_root=root,
+                    1,
+                    root,
+                    node_profile="different-node-profile",
                 )
+            with self.assertRaisesRegex(
+                MODULE.CapacityMaxSessionsError,
+                "software_revision does not match",
+            ):
+                self.validate(
+                    manifest_path,
+                    1,
+                    root,
+                    software_revision="f" * 40,
+                )
+
+    def test_invalid_expected_revision_fails_before_evidence_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest_path = self.write_evidence(root)
+            for revision in ("short", "A" * 40, True):
+                with self.subTest(revision=revision):
+                    with self.assertRaisesRegex(
+                        MODULE.CapacityMaxSessionsError,
+                        "lowercase 40-character",
+                    ):
+                        self.validate(
+                            manifest_path,
+                            1,
+                            root,
+                            software_revision=revision,
+                        )
 
     def test_non_positive_and_boolean_candidates_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -144,11 +193,7 @@ class NodeCapacityMaxSessionsTests(unittest.TestCase):
                         MODULE.CapacityMaxSessionsError,
                         "positive integer",
                     ):
-                        MODULE.validate_max_sessions(
-                            manifest_path,
-                            candidate,
-                            repo_root=root,
-                        )
+                        self.validate(manifest_path, candidate, root)
 
     def test_incomplete_coverage_is_rejected_without_echoing_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -160,11 +205,7 @@ class NodeCapacityMaxSessionsTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaises(MODULE.CapacityMaxSessionsError) as context:
-                MODULE.validate_max_sessions(
-                    manifest_path,
-                    1,
-                    repo_root=root,
-                )
+                self.validate(manifest_path, 1, root)
 
         self.assertEqual(str(context.exception), "coverage manifest is invalid")
         self.assertNotIn("\x1b", str(context.exception))
