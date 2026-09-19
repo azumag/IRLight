@@ -25,6 +25,20 @@ IRLIGHT_FILESYSTEM_PATH=/state \
 python3 scripts/check-filesystem-readonly.py
 ```
 
+## Host-pressure aggregate opt-in
+
+既定の `check-host-pressure.sh` 出力は変更しない。writeability が必要な filesystem を deployment が明示できる場合だけ、次の opt-in で `filesystem_readonly_status` を aggregate に追加する。
+
+```bash
+IRLIGHT_HOST_FILESYSTEM_READONLY_MODE=enabled \
+IRLIGHT_FILESYSTEM_PATH=/state \
+bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_FILESYSTEM_PATH` を省略した場合は aggregate の disk path を同じ対象として使う。mode は `enabled` / `disabled` のみを受け付け、不正値は aggregate 全体を `UNKNOWN reason=invalid_filesystem_readonly_mode` に fail-closed する。有効時は他 component と同じ bounded timeout と `CRITICAL > UNKNOWN > WARNING > OK` の優先順位に参加する。
+
+aggregate は mount/remount、write probe、file 作成、復旧操作を追加で行わず、standalone checker を薄い shell adapter から呼び出すだけである。
+
 ## 判定
 
 Python の `os.statvfs()` が返す filesystem flag の `ST_RDONLY` だけを read-only 判定に使う。probe file の create/delete、mount、remount、fsck、permission 変更は行わない。
@@ -78,8 +92,11 @@ write probe を行わないため、read-write mount 上で特定 directory だ�
 ```bash
 python3 -m unittest discover -s tests -p 'test_filesystem_readonly_check.py' -v
 python3 -m unittest discover -s tests -p 'test_filesystem_readonly_runbook_contract.py' -v
+python3 -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
 python3 -m py_compile \
   scripts/check-filesystem-readonly.py \
   tests/test_filesystem_readonly_check.py \
-  tests/test_filesystem_readonly_runbook_contract.py
+  tests/test_filesystem_readonly_runbook_contract.py \
+  tests/test_host_filesystem_readonly_aggregate.py
+bash -n scripts/check-host-filesystem-readonly.sh scripts/check-host-pressure.sh
 ```
