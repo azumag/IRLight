@@ -68,6 +68,22 @@ exit code は既存診断と同じ契約を使う。
 
 `WARNING` は使用しない。
 
+## Host-pressure aggregate opt-in
+
+既定の `check-host-pressure.sh` 出力は変更しない。deployment が「この path は独立した mountpoint でなければならない」と明示できる場合だけ、次の opt-in で `filesystem_mountpoint_status` を aggregate に追加する。
+
+```bash
+IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE=enabled \
+IRLIGHT_EXPECTED_MOUNTPOINT_PATH=/state \
+bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_EXPECTED_MOUNTPOINT_PATH` を省略した場合は standalone checker と同じく `STATE_DIR`、さらに未指定なら `/state` を対象にする。aggregate の disk path 引数は mountpoint target の fallback には使わない。容量・inode を確認したい filesystem と「独立 mount が必須な path」は別の契約だからである。
+
+opt-in は `enabled` / `disabled` のみを受け付ける。未知値は component を無効化して続行せず、aggregate を `UNKNOWN reason=invalid_filesystem_mountpoint_mode` に fail-closed する。有効化後は他 component と同じ timeout 境界と `CRITICAL > UNKNOWN > WARNING > OK` の優先順位に参加する。
+
+standalone checker の `CRITICAL reason=mountpoint_missing` は aggregate では `filesystem_mountpoint_status=CRITICAL`、評価不能は `filesystem_mountpoint_status=UNKNOWN` として伝播する。aggregate 自体も mount/remount、volume attach、directory 作成などの復旧処理は行わない。
+
 ## mountinfo の扱い
 
 `/proc/self/mountinfo` の mandatory fields と `-` separator を確認し、mountpoint field の kernel escape `\\011` / `\\012` / `\\040` / `\\134` のみを decode する。短い record、不正 escape、不正な separator などがあれば、部分的な table を根拠に `OK` とせず `UNKNOWN` に fail-closed する。
@@ -98,9 +114,15 @@ read-only flag は [`filesystem-readonly-monitoring.md`](filesystem-readonly-mon
 ```bash
 python3 -m unittest discover -s tests -p 'test_filesystem_mountpoint_check.py' -v
 python3 -m unittest discover -s tests -p 'test_filesystem_mountpoint_runbook_contract.py' -v
+python3 -m unittest discover -s tests -p 'test_host_filesystem_mountpoint_aggregate.py' -v
+python3 -m unittest discover -s tests -p 'test_host_pressure_opt_in_matrix.py' -v
 python3 -m unittest discover -s tests -p 'test_operations_runbook_inventory.py' -v
 python3 -m py_compile \
   scripts/check-filesystem-mountpoint.py \
   tests/test_filesystem_mountpoint_check.py \
-  tests/test_filesystem_mountpoint_runbook_contract.py
+  tests/test_filesystem_mountpoint_runbook_contract.py \
+  tests/test_host_filesystem_mountpoint_aggregate.py
+bash -n \
+  scripts/check-host-filesystem-mountpoint.sh \
+  scripts/check-host-pressure.sh
 ```
