@@ -62,7 +62,9 @@ def make_report(
         "run_id": str(uuid.UUID(int=run_number)),
         "node_profile": node_profile,
         "software_revision": revision,
-        "scenario": f"{PROFILE}; scenario={scenario_id}; approved test policy",
+        "scenario": (
+            f"profile={PROFILE}; scenario={scenario_id}; approved test policy"
+        ),
         "safety_margin_percent": margin,
         "trials": trials,
         "notes": "test fixture",
@@ -128,24 +130,34 @@ class NodeCapacityPlanCoverageTests(unittest.TestCase):
             ):
                 MODULE.validate_coverage(plan_path, reports)
 
-    def test_report_must_identify_plan_profile_label(self) -> None:
-        with tempfile.TemporaryDirectory() as tempdir:
-            root = pathlib.Path(tempdir)
-            plan_path, reports = self.write_fixture_set(root)
-            report = make_report(SCENARIO_IDS[0], 1)
-            report["scenario"] = "different media profile; approved policy"
-            reports[SCENARIO_IDS[0]].write_text(
-                json.dumps(report, sort_keys=True), encoding="utf-8"
-            )
-            with self.assertRaisesRegex(
-                MODULE.CapacityCoverageError, "does not identify the plan profile label"
-            ):
-                MODULE.validate_coverage(plan_path, reports)
+    def test_report_must_bind_exact_profile_and_scenario(self) -> None:
+        cases = (
+            "profile=different media profile; scenario=normal-input; approved policy",
+            f"profile={PROFILE}; scenario=all-holding; approved policy",
+        )
+        for scenario_text in cases:
+            with self.subTest(scenario_text=scenario_text):
+                with tempfile.TemporaryDirectory() as tempdir:
+                    root = pathlib.Path(tempdir)
+                    plan_path, reports = self.write_fixture_set(root)
+                    report = make_report(SCENARIO_IDS[0], 1)
+                    report["scenario"] = scenario_text
+                    reports[SCENARIO_IDS[0]].write_text(
+                        json.dumps(report, sort_keys=True), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(
+                        MODULE.CapacityCoverageError,
+                        "not bound to the plan profile and scenario",
+                    ):
+                        MODULE.validate_coverage(plan_path, reports)
 
     def test_reports_must_use_one_node_revision_and_margin(self) -> None:
         cases = (
             ({"node_profile": "different node"}, "different node profiles"),
-            ({"software_revision": "fedcba9876543210fedcba9876543210fedcba98"}, "different software revisions"),
+            (
+                {"software_revision": "fedcba9876543210fedcba9876543210fedcba98"},
+                "different software revisions",
+            ),
             ({"safety_margin_percent": 20}, "different safety margins"),
         )
         for override, expected_error in cases:
