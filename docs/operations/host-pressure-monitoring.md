@@ -66,6 +66,25 @@ exit code は次の意味を持つ。
 
 集約時の優先順位は `CRITICAL > UNKNOWN > WARNING > OK` とする。既知のcriticalを別componentの診断失敗で隠さない一方、criticalがない場合のUNKNOWNは正常・warningへ推測補完しない。
 
+## Optional host signals
+
+累積counterやdeployment policyに依存する signal は、既定の aggregate 出力を変えないためすべて `disabled` で開始する。必要な baseline / generation 管理を行う deployment だけ明示的に有効化する。
+
+| signal | opt-in mode | aggregate field | current path env | baseline path env | baseline / generation contract | standalone runbook |
+| --- | --- | --- | --- | --- | --- | --- |
+| host swap usage | `IRLIGHT_HOST_SWAP_PRESSURE_MODE` | `swap_pressure_status` | `IRLIGHT_SWAP_MEMINFO_PATH`（未指定時は aggregate の meminfo path） | — | baseline 不要。swap を使うかどうか自体は deployment policy | [host-swap-pressure-monitoring.md](host-swap-pressure-monitoring.md) |
+| swap I/O delta | `IRLIGHT_HOST_SWAP_IO_MODE` | `swap_io_status` | `IRLIGHT_VMSTAT_PATH` | `IRLIGHT_VMSTAT_BASELINE_PATH` | 同一 host / boot generation の operator-managed baseline | [host-swap-pressure-monitoring.md](host-swap-pressure-monitoring.md) |
+| OOM kill delta | `IRLIGHT_HOST_OOM_KILL_MODE` | `oom_kill_status` | `IRLIGHT_VMSTAT_PATH` | `IRLIGHT_VMSTAT_BASELINE_PATH` | 同一 host / boot generation の operator-managed baseline | [oom-kill-monitoring.md](oom-kill-monitoring.md) |
+| CPU steal delta | `IRLIGHT_HOST_CPU_STEAL_MODE` | `cpu_steal_status` | `IRLIGHT_PROC_STAT_PATH` | `IRLIGHT_PROC_STAT_BASELINE_PATH` | 同一 host / boot generation の operator-managed baseline | [host-cpu-steal-monitoring.md](host-cpu-steal-monitoring.md) |
+| boot generation | `IRLIGHT_HOST_BOOT_GENERATION_MODE` | `boot_generation_status` | `IRLIGHT_BOOT_ID_PATH` | `IRLIGHT_BOOT_ID_BASELINE_PATH` | persistent operator-managed baseline。planned reboot でも `WARNING` になる | [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) |
+| softnet drop / time_squeeze delta | `IRLIGHT_HOST_SOFTNET_MODE` | `softnet_status` | `IRLIGHT_SOFTNET_STAT_PATH` | `IRLIGHT_SOFTNET_STAT_BASELINE_PATH` | 同一 host / boot / network namespace / CPU topology の operator-managed baseline | [softnet-pressure-monitoring.md](softnet-pressure-monitoring.md) |
+
+全 mode は `enabled` / `disabled` のみを受け付け、未知値は component を黙って無効化せず aggregate 自体を `UNKNOWN` に fail-closed する。有効化した component は通常 component と同じ timeout 境界と `CRITICAL > UNKNOWN > WARNING > OK` に参加する。
+
+baseline が必要な component では、aggregate は baseline を作成・更新・削除しない。baseline 欠落、読取不能、counter reset、世代不整合などを安全に評価できない場合は component の `UNKNOWN` をそのまま伝播する。累積counterの baseline を更新する前に [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) で boot generation を確認し、予期しない reboot の証跡を自動更新で消さない。
+
+opt-in signal の結果だけを根拠に swap 設定変更、baseline refresh、service/process restart、Node drain、provider migration、instance resize、failover 等を自動実行しない。詳細な意味・個別の安全境界は表の standalone runbook を参照する。
+
 ## Targeted cgroup v2 PID check
 
 system-wide task pressure だけでは、service/container に設定された cgroup v2 の PID 上限枯渇は検知できない。監視対象の cgroup が明確な場合は、対象 cgroup の `pids.current` と `pids.max` を指定して read-only の companion check を実行する。
@@ -124,6 +143,7 @@ python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_pressure_opt_in_matrix.py' -v
 bash -n \
   scripts/check-load-pressure.sh \
   scripts/check-psi-pressure.sh \
