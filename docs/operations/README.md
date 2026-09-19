@@ -41,6 +41,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - resource pressure check の実装・status 契約: [resource-pressure-check-contract.md](resource-pressure-check-contract.md)
 - Linux host pressure aggregate と opt-in component matrix: [host-pressure-monitoring.md](host-pressure-monitoring.md)
 - filesystem read-only mount state の read-only 診断: [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md)
+- expected filesystem mountpoint presence の read-only 診断: [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md)
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
 - cgroup runtime pressure aggregate の opt-in 診断: [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md)
 - cgroup PSI / process FD の targeted read-only 診断: [targeted-runtime-pressure-diagnostics.md](targeted-runtime-pressure-diagnostics.md)
