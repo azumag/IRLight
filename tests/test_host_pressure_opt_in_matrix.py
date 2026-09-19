@@ -76,6 +76,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "IRLIGHT_SOFTNET_STAT_BASELINE_PATH",
                 "softnet-pressure-monitoring.md",
             ),
+            (
+                "IRLIGHT_HOST_CLOCK_SYNC_MODE",
+                "clock_sync_status",
+                "IRLIGHT_TIMEDATECTL_BIN",
+                None,
+                "host-clock-sync-monitoring.md",
+            ),
         )
 
         for mode, field, current_path, baseline_path, runbook in contracts:
