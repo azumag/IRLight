@@ -28,7 +28,9 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise CapacityCoverageManifestError(f"duplicate JSON key: {key}")
+            # JSON object keys are evidence-controlled input. Do not echo a raw key into
+            # operator/CI stderr because it may contain terminal control characters.
+            raise CapacityCoverageManifestError("duplicate JSON key")
         result[key] = value
     return result
 
