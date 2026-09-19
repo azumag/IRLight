@@ -45,6 +45,14 @@ read_counter() {
 [[ -n "$current_stats_dir" && -d "$current_stats_dir" && -r "$current_stats_dir" ]] || unknown current_stats_unavailable
 [[ -n "$baseline_stats_dir" && -d "$baseline_stats_dir" && -r "$baseline_stats_dir" ]] || unknown baseline_stats_unavailable
 
+# A live sysfs statistics directory cannot also be its own baseline: every
+# delta would remain zero and silently mask new errors/drops. Bash -ef compares
+# the underlying directory inode, so equivalent paths and symlink aliases are
+# rejected without introducing a realpath/readlink dependency.
+if [[ "$current_stats_dir" -ef "$baseline_stats_dir" ]]; then
+  unknown baseline_matches_current
+fi
+
 declare -A current=()
 declare -A baseline=()
 declare -A delta=()

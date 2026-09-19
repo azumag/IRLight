@@ -32,6 +32,8 @@ done
 
 baseline は **同じ interface generation** に対してだけ再利用します。VM / NIC の再作成、interface の再生成、driver reset 等で counter が小さくなった場合、診断は `UNKNOWN reason=counter_reset` に fail-closed します。その状態を「改善」と解釈せず、interface generation と変更履歴を確認してから新しい baseline を取得してください。
 
+current と baseline に同じ directory を指定すると live counter 自身との差分が常に0になり、新しい error/drop を恒久的に隠してしまいます。この誤設定を正常扱いしないため、同一 directory を直接指定した場合だけでなく symlink 等で同じ directory inode を指す場合も `UNKNOWN reason=baseline_matches_current` に fail-closed します。baseline は必ず current の sysfs statistics directory とは別の operator-managed directory に保存してください。
+
 baseline 更新は監視周期の設計に依存します。異常検知直後に自動で baseline を上書きすると継続中の障害を隠すため、alert の acknowledgement / recovery 契約と分離してください。
 
 ## 実行
@@ -65,7 +67,7 @@ interface 名や path は出力しません。監視側は実行対象との対�
 | 0 | `OK` | error/drop counter の新規増加なし |
 | 1 | `WARNING` | `rx_dropped` / `tx_dropped` の新規増加あり、error の増加なし |
 | 2 | `CRITICAL` | `rx_errors` / `tx_errors` の新規増加あり |
-| 3 | `UNKNOWN` | current/baseline を安全に読めない、record が不正、または counter reset を検出 |
+| 3 | `UNKNOWN` | current/baseline を安全に読めない、current と baseline が同じ directory、record が不正、または counter reset を検出 |
 
 `CRITICAL` は `WARNING` より優先します。例えば drop と error が同時に増えた場合は `CRITICAL` です。
 
