@@ -39,7 +39,19 @@ filesystem が read-only の場合は `CRITICAL`:
 IRLIGHT_FILESYSTEM_MOUNT_HEALTH status=CRITICAL reason=filesystem_read_only read_only=true
 ```
 
-対象を安全に `statvfs` できない場合や platform が `ST_RDONLY` を提供しない場合は、正常と推測せず `UNKNOWN` にする。出力には対象 path や内部例外文字列を反射しない。
+対象を安全に `statvfs` できない場合は `UNKNOWN`:
+
+```text
+IRLIGHT_FILESYSTEM_MOUNT_HEALTH status=UNKNOWN reason=path_unavailable
+```
+
+platform が `ST_RDONLY` を提供せず判定できない場合も、正常と推測せず固定 reason で `UNKNOWN` にする。
+
+```text
+IRLIGHT_FILESYSTEM_MOUNT_HEALTH status=UNKNOWN reason=readonly_flag_unavailable
+```
+
+出力には対象 path や内部例外文字列を反射しない。
 
 exit code は既存診断と同じ契約を使う。
 
@@ -65,7 +77,9 @@ write probe を行わないため、read-write mount 上で特定 directory だ�
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_filesystem_readonly_check.py' -v
+python3 -m unittest discover -s tests -p 'test_filesystem_readonly_runbook_contract.py' -v
 python3 -m py_compile \
   scripts/check-filesystem-readonly.py \
-  tests/test_filesystem_readonly_check.py
+  tests/test_filesystem_readonly_check.py \
+  tests/test_filesystem_readonly_runbook_contract.py
 ```
