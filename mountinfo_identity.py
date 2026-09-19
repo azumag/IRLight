@@ -120,15 +120,13 @@ def identity_matches(
     expected_source: str | None,
     expected_root: str | None,
 ) -> bool:
-    """Compare one selected record with an already configured expectation.
+    """Compare one selected record with a caller-validated expectation.
 
     Both actual identity fields are decoded whenever identity checking is
     enabled, matching the existing fail-closed consumer contract even if only
-    one expected field is configured.
+    one expected field is configured. Validation of expected values is kept
+    separate so each consumer preserves its existing public error mapping.
     """
-    expected_source, expected_root = normalize_expected_identity(
-        expected_source, expected_root
-    )
     actual_root = decode_mountinfo_field(entry.raw_root)
     actual_source = decode_mountinfo_field(entry.raw_source)
     if not actual_root.startswith("/"):
