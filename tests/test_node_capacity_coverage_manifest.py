@@ -131,6 +131,23 @@ class NodeCapacityCoverageManifestTests(unittest.TestCase):
             ):
                 MODULE.validate_manifest(payload, repo_root=root)
 
+    def test_untrusted_scenario_id_is_not_echoed_in_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            _manifest_path, payload = self.write_evidence(root)
+            malicious_id = "normal-input\x1b[31m"
+            first = payload["reports"][0]
+            second = payload["reports"][1]
+            first["scenario_id"] = malicious_id
+            second["scenario_id"] = malicious_id
+            with self.assertRaises(MODULE.CapacityCoverageManifestError) as context:
+                MODULE.validate_manifest(payload, repo_root=root)
+
+        message = str(context.exception)
+        self.assertIn("duplicate report binding", message)
+        self.assertNotIn("\x1b", message)
+        self.assertNotIn(malicious_id, message)
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "coverage.json"
