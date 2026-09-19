@@ -4,8 +4,11 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
+import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -83,6 +86,90 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             encoding="utf-8",
         )
         return report_path
+
+    def _write_capacity_coverage_evidence(self) -> tuple[Path, Path]:
+        directory = Path(tempfile.mkdtemp(prefix=".release-capacity-coverage-", dir=ROOT))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+
+        renderer_path = ROOT / "scripts" / "render-node-capacity-load-plan.py"
+        renderer_spec = importlib.util.spec_from_file_location(
+            f"release_capacity_renderer_{uuid.uuid4().hex}", renderer_path
+        )
+        assert renderer_spec is not None and renderer_spec.loader is not None
+        renderer = importlib.util.module_from_spec(renderer_spec)
+        sys.modules[renderer_spec.name] = renderer
+        renderer_spec.loader.exec_module(renderer)
+
+        profile = "720p30/1080p30 mix release-test-v1"
+        revision = "0123456789abcdef0123456789abcdef01234567"
+        plan_path = directory / "plan.json"
+        plan_path.write_text(
+            json.dumps(renderer.build_plan(profile), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        bindings: list[dict[str, str]] = []
+        first_report: Path | None = None
+        for index, (scenario_id, _description) in enumerate(renderer.SCENARIOS, start=1):
+            report_path = directory / f"{scenario_id}.json"
+            if first_report is None:
+                first_report = report_path
+            trials = []
+            for sessions in (1, 2, 4, 8):
+                outcome = "fail" if sessions == 8 else "pass"
+                trials.append(
+                    {
+                        "concurrent_sessions": sessions,
+                        "duration_seconds": 300.0,
+                        "outcome": outcome,
+                        "cpu_peak_percent": float(sessions * 20),
+                        "memory_rss_peak_bytes": sessions * 100_000_000,
+                        "egress_peak_bps": float(sessions * 5_000_000),
+                        "failed_sessions": 1 if outcome == "fail" else 0,
+                        "unexpected_reconnects": 0,
+                    }
+                )
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "run_id": str(uuid.UUID(int=index)),
+                        "node_profile": "unit-test node profile",
+                        "software_revision": revision,
+                        "scenario": (
+                            f"profile={profile}; scenario={scenario_id}; approved acceptance policy"
+                        ),
+                        "safety_margin_percent": 25,
+                        "trials": trials,
+                        "notes": "synthetic validator fixture only",
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bindings.append(
+                {
+                    "scenario_id": scenario_id,
+                    "path": report_path.relative_to(ROOT).as_posix(),
+                }
+            )
+
+        manifest_path = directory / "coverage.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "load_plan": plan_path.relative_to(ROOT).as_posix(),
+                    "reports": bindings,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert first_report is not None
+        return manifest_path, first_report
 
     def test_repository_checklist_is_valid_and_not_ready(self) -> None:
         payload = self._canonical()
@@ -193,64 +280,34 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         item["evidence"] = ["docs/node-capacity-load-evidence.md"]
 
         with self.assertRaisesRegex(
-            module.ChecklistValidationError, "canonical Node capacity report"
+            module.ChecklistValidationError, "canonical Node capacity coverage manifest"
         ):
             module.validate_checklist(payload)
 
-    def test_node_capacity_satisfied_accepts_valid_canonical_report(self) -> None:
+    def test_node_capacity_satisfied_rejects_single_canonical_report(self) -> None:
+        _manifest_path, report_path = self._write_capacity_coverage_evidence()
         payload = self._canonical()
         item = next(
             entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
         )
-        fd, name = tempfile.mkstemp(
-            prefix=".release-capacity-test-",
-            suffix=".json",
-            dir=ROOT,
-        )
-        os.close(fd)
-        report_path = Path(name)
-        self.addCleanup(report_path.unlink, missing_ok=True)
-        report_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "run_id": "8f75d865-5e7c-4ffd-a5dc-e73fab5f39e1",
-                    "node_profile": "unit-test node profile",
-                    "software_revision": "0123456789abcdef0123456789abcdef01234567",
-                    "scenario": "unit-test approved acceptance policy",
-                    "safety_margin_percent": 25,
-                    "trials": [
-                        {
-                            "concurrent_sessions": 2,
-                            "duration_seconds": 120,
-                            "outcome": "pass",
-                            "cpu_peak_percent": 50.0,
-                            "memory_rss_peak_bytes": 1000,
-                            "egress_peak_bps": 1000.0,
-                            "failed_sessions": 0,
-                            "unexpected_reconnects": 0,
-                        },
-                        {
-                            "concurrent_sessions": 4,
-                            "duration_seconds": 120,
-                            "outcome": "fail",
-                            "cpu_peak_percent": 90.0,
-                            "memory_rss_peak_bytes": 2000,
-                            "egress_peak_bps": 2000.0,
-                            "failed_sessions": 1,
-                            "unexpected_reconnects": 0,
-                        },
-                    ],
-                    "notes": "unit-test evidence",
-                }
-            )
-            + "\n",
-            encoding="utf-8",
+        item["status"] = "satisfied"
+        item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
+
+        with self.assertRaisesRegex(
+            module.ChecklistValidationError, "canonical Node capacity coverage manifest"
+        ):
+            module.validate_checklist(payload)
+
+    def test_node_capacity_satisfied_accepts_complete_coverage_manifest(self) -> None:
+        manifest_path, _report_path = self._write_capacity_coverage_evidence()
+        payload = self._canonical()
+        item = next(
+            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
         )
         item["status"] = "satisfied"
         item["evidence"] = [
             "docs/node-capacity-load-evidence.md",
-            report_path.relative_to(ROOT).as_posix(),
+            manifest_path.relative_to(ROOT).as_posix(),
         ]
 
         module.validate_checklist(payload)
