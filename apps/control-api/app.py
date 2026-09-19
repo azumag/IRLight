@@ -28,6 +28,11 @@ from node_internal import ensure_state as ensure_node_state
 from node_internal import router as node_internal_router
 from session_api import router as session_router
 from session_event_policy import UserEventBodyLimitMiddleware
+from state_mount_identity import (
+    StateMountIdentityError,
+    check_state_mount_identity,
+    expected_mount_identity_from_env,
+)
 from state_readiness import StateReadinessError, check_state_readiness
 from state_safety import load_json_authority
 
@@ -132,15 +137,40 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _check_readyz_mount_identity(node_state_dir: Path) -> None:
+    state_identity = expected_mount_identity_from_env(
+        "IRLIGHT_READYZ_STATE_EXPECTED_MOUNT_SOURCE",
+        "IRLIGHT_READYZ_STATE_EXPECTED_MOUNT_ROOT",
+    )
+    if state_identity is not None:
+        check_state_mount_identity(
+            STATE_DIR,
+            expected_source=state_identity[0],
+            expected_root=state_identity[1],
+        )
+
+    node_identity = expected_mount_identity_from_env(
+        "IRLIGHT_READYZ_NODE_STATE_EXPECTED_MOUNT_SOURCE",
+        "IRLIGHT_READYZ_NODE_STATE_EXPECTED_MOUNT_ROOT",
+    )
+    if node_identity is not None:
+        check_state_mount_identity(
+            node_state_dir,
+            expected_source=node_identity[0],
+            expected_root=node_identity[1],
+        )
+
+
 @app.get("/readyz")
 def readyz() -> dict[str, str]:
     node_state_dir = Path(os.getenv("NODE_STATE_DIR", str(STATE_DIR)))
     try:
         check_state_readiness(state_dir=STATE_DIR, node_state_dir=node_state_dir)
-    except StateReadinessError as exc:
+        _check_readyz_mount_identity(node_state_dir)
+    except (StateReadinessError, StateMountIdentityError) as exc:
         # Keep public diagnostics deliberately coarse. Operators can inspect
         # the mounted authority offline; clients must not receive paths, state,
-        # credentials, or parser/validation exception details.
+        # credentials, mount identity, or parser/validation exception details.
         raise HTTPException(
             status_code=503,
             detail={"code": STATE_AUTHORITY_UNAVAILABLE_CODE},
