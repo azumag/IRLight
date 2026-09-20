@@ -35,11 +35,9 @@ class SmokeComposeSecretDiagnosticsTest(unittest.TestCase):
     def test_known_port_collision_is_normalized_without_echoing_matching_line(self) -> None:
         self.assertIn("grep -Eiq", self.wrapper)
         self.assertIn('"$raw_log"', self.wrapper)
-        self.assertIn(
-            'echo "docker compose failed: port is already allocated" >&2',
-            self.wrapper,
-        )
+        self.assertIn('echo "host port is already allocated" >&2', self.wrapper)
         self.assertNotIn('grep -Ei ', self.wrapper)
+        self.assertNotIn('echo "docker compose', self.wrapper)
 
     def test_wrapper_forwards_termination_to_core_cleanup(self) -> None:
         self.assertIn("trap 'forward_signal 130' INT", self.wrapper)
