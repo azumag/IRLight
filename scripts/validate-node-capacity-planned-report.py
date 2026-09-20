@@ -25,6 +25,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+READ_CHUNK_BYTES = 64 * 1024
+
 
 class PlannedReportValidationError(ValueError):
     """Raised when a persisted report is not bound to canonical run provenance."""
@@ -94,9 +96,20 @@ def _load_stable_report(path: Path, report_validator: ModuleType) -> dict[str, A
         if opened.st_size > report_validator.MAX_REPORT_BYTES:
             raise PlannedReportValidationError("persisted capacity report exceeds size limit")
 
-        raw = os.read(fd, report_validator.MAX_REPORT_BYTES + 1)
-        if len(raw) > report_validator.MAX_REPORT_BYTES:
-            raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            remaining_probe = report_validator.MAX_REPORT_BYTES + 1 - total
+            if remaining_probe <= 0:
+                raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+            chunk = os.read(fd, min(READ_CHUNK_BYTES, remaining_probe))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > report_validator.MAX_REPORT_BYTES:
+                raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+        raw = b"".join(chunks)
 
         after_read = os.fstat(fd)
         try:
