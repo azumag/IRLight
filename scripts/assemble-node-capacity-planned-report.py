@@ -115,7 +115,8 @@ def _load_run_manifest(path: Path, plan_validator: ModuleType) -> dict[str, Any]
         raise PlannedReportError("run manifest is not valid JSON") from exc
     if not isinstance(value, dict) or set(value) != RUN_MANIFEST_FIELDS:
         raise PlannedReportError("run manifest has an unexpected shape")
-    if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
+    schema_version = value["schema_version"]
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
         raise PlannedReportError("run manifest has an unsupported schema version")
     if not _is_sha256(value["plan_sha256"]) or not _is_sha256(value["trials_sha256"]):
         raise PlannedReportError("run manifest has an invalid digest")
@@ -123,7 +124,8 @@ def _load_run_manifest(path: Path, plan_validator: ModuleType) -> dict[str, Any]
         raise PlannedReportError("run manifest has an invalid profile label")
     if not isinstance(value["scenario_id"], str) or not value["scenario_id"]:
         raise PlannedReportError("run manifest has an invalid scenario id")
-    if value["failure_policy"] not in {"stop", "continue"}:
+    failure_policy = value["failure_policy"]
+    if not isinstance(failure_policy, str) or failure_policy not in {"stop", "continue"}:
         raise PlannedReportError("run manifest has an invalid failure policy")
     if not _positive_int_list(value["planned_load_levels"]):
         raise PlannedReportError("run manifest has invalid planned load levels")
