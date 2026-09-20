@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -129,6 +130,30 @@ class CapacityReportAssemblyTest(unittest.TestCase):
             path.mkdir()
             with self.assertRaisesRegex(CapacityAssemblyError, "regular file"):
                 MODULE.load_trials_snapshot(path)
+
+    def test_snapshot_rejects_path_replacement_during_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "trials.jsonl"
+            replacement = root / "replacement.jsonl"
+            path.write_text(json.dumps(trial(1, "pass")) + "\n", encoding="utf-8")
+            replacement.write_text(
+                json.dumps(trial(2, "pass")) + "\n",
+                encoding="utf-8",
+            )
+            original_stat = os.lstat(path)
+            replacement_stat = os.lstat(replacement)
+            self.assertNotEqual(
+                (original_stat.st_dev, original_stat.st_ino),
+                (replacement_stat.st_dev, replacement_stat.st_ino),
+            )
+            with mock.patch.object(
+                MODULE.os,
+                "lstat",
+                side_effect=[original_stat, replacement_stat],
+            ):
+                with self.assertRaisesRegex(CapacityAssemblyError, "changed while reading"):
+                    MODULE.load_trials_snapshot(path)
 
     def test_canonical_validator_rejects_invalid_boundary(self) -> None:
         with self.assertRaisesRegex(CapacityAssemblyError, "assembled report is invalid"):
