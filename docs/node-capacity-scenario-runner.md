@@ -85,19 +85,19 @@ runner は plan にある concurrency level を昇順にだけ実行し、plan �
 
 ## 次の evidence chain
 
-raw trial を取得した後は、既存 tooling を使います。
+raw trial を取得した後は、complete coverage 用 report では canonical plan を再検証する plan-bound assembler を使います。これにより、`stop` policy や harness failure で残った partial JSONL を complete scenario report として扱いません。詳細は [`node-capacity-planned-report.md`](node-capacity-planned-report.md) を参照してください。
 
 ```text
 run-node-capacity-scenario.py
   -> *.trials.jsonl
-  -> assemble-node-capacity-report.py
+  -> assemble-node-capacity-planned-report.py
   -> measured scenario report
   -> render-node-capacity-coverage-manifest.py
   -> render-node-capacity-max-sessions-proposal.py
   -> write-node-capacity-review-bundle.py
 ```
 
-report assembly では `run_id`、Node profile、software revision、scenario、operator が選んだ safety margin を明示します。coverage manifest へ進めるには各 scenario の planned load level がすべて測定済みである必要があります。review bundle まで進めることで proposal だけでなく coverage manifest、load plan、全 measured reports の exact bytes を digest で固定できます。
+report assembly では `run_id`、Node profile、software revision、scenario、operator が選んだ safety margin を明示します。plan-bound assembler は raw trial の load level が canonical scenario plan と完全一致することも確認します。coverage manifest へ進めるには各 scenario の planned load level がすべて測定済みである必要があります。review bundle まで進めることで proposal だけでなく coverage manifest、load plan、全 measured reports の exact bytes を digest で固定できます。
 
 ## Safety boundary
 
