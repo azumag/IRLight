@@ -24,6 +24,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -45,6 +46,7 @@ RESULT_FIELDS = {
     "unexpected_reconnects",
 }
 FAILURE_POLICIES = ("stop", "continue")
+REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ScenarioRunError(ValueError):
@@ -271,6 +273,23 @@ def _validate_manifest_output(path: Path, trials_jsonl: Path) -> None:
         raise ScenarioRunError("run manifest path cannot be resolved safely") from exc
 
 
+def _validate_run_identity(
+    node_profile: str | None,
+    software_revision: str | None,
+) -> tuple[str, str]:
+    if (
+        not isinstance(node_profile, str)
+        or not node_profile.strip()
+        or len(node_profile) > 300
+    ):
+        raise ScenarioRunError("run manifest requires a valid node profile")
+    if not isinstance(software_revision, str) or not REVISION_RE.fullmatch(software_revision):
+        raise ScenarioRunError(
+            "run manifest requires a lowercase 40-character software revision"
+        )
+    return node_profile, software_revision
+
+
 def _write_run_manifest(path: Path, manifest: dict[str, Any]) -> None:
     writer = _load_script(
         "assemble-node-capacity-report.py",
@@ -301,6 +320,8 @@ def run_scenario(
     timeout_seconds: float,
     failure_policy: str,
     run_manifest: Path | None = None,
+    node_profile: str | None = None,
+    software_revision: str | None = None,
 ) -> dict[str, Any]:
     if not runner_command or not runner_command[0]:
         raise ScenarioRunError("runner command must not be empty")
@@ -310,8 +331,17 @@ def run_scenario(
         raise ScenarioRunError("trials JSONL already exists; use a new evidence path")
     if not trials_jsonl.parent.exists():
         raise ScenarioRunError("trials JSONL parent directory does not exist")
+
+    bound_node_profile: str | None = None
+    bound_software_revision: str | None = None
     if run_manifest is not None:
         _validate_manifest_output(run_manifest, trials_jsonl)
+        bound_node_profile, bound_software_revision = _validate_run_identity(
+            node_profile,
+            software_revision,
+        )
+    elif node_profile is not None or software_revision is not None:
+        raise ScenarioRunError("run identity requires --run-manifest")
 
     validator = _load_script(
         "validate-node-capacity-load-plan.py",
@@ -373,11 +403,17 @@ def run_scenario(
         "completed_plan": recorded_levels == planned_levels,
     }
     if run_manifest is not None:
+        # The identity was validated before executing any load, so these values
+        # cannot be absent here without an internal programming error.
+        assert bound_node_profile is not None
+        assert bound_software_revision is not None
         manifest = {
             "schema_version": 1,
             "plan_sha256": _canonical_digest(plan),
             "profile_label": plan["profile_label"],
             "scenario_id": scenario_id,
+            "node_profile": bound_node_profile,
+            "software_revision": bound_software_revision,
             "failure_policy": failure_policy,
             "planned_load_levels": planned_levels,
             "tested_load_levels": recorded_levels,
@@ -398,8 +434,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--run-manifest",
         type=Path,
         help=(
-            "Persist an exclusive schema-v1 sidecar binding the validated plan and "
-            "normalized raw trials by SHA-256."
+            "Persist an exclusive schema-v1 sidecar binding the validated plan, "
+            "normalized raw trials, node profile, and software revision."
+        ),
+    )
+    parser.add_argument(
+        "--node-profile",
+        help="Measured Node identity; required when --run-manifest is used.",
+    )
+    parser.add_argument(
+        "--software-revision",
+        help=(
+            "Measured lowercase 40-character Git revision; required when "
+            "--run-manifest is used."
         ),
     )
     parser.add_argument("--timeout-seconds", type=_positive_finite_float, required=True)
@@ -434,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             failure_policy=args.failure_policy,
             run_manifest=args.run_manifest,
+            node_profile=args.node_profile,
+            software_revision=args.software_revision,
         )
     except (ScenarioRunError, OSError, UnicodeError) as exc:
         print(f"node capacity scenario run failed: {exc}", file=sys.stderr)
