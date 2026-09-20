@@ -41,10 +41,16 @@ def _trial(sessions: int, outcome: str) -> dict[str, object]:
 
 
 class PlannedNodeCapacityReportTests(unittest.TestCase):
-    def _fixture(self, directory: pathlib.Path, levels: list[int]) -> tuple[pathlib.Path, pathlib.Path]:
+    def _fixture(
+        self,
+        directory: pathlib.Path,
+        levels: list[int],
+        *,
+        profile_label: str = "720p30 3Mbps",
+    ) -> tuple[pathlib.Path, pathlib.Path]:
         plan = directory / "plan.json"
         plan.write_text(
-            json.dumps(PLAN_RENDERER.build_plan("720p30 3Mbps"), ensure_ascii=False),
+            json.dumps(PLAN_RENDERER.build_plan(profile_label), ensure_ascii=False),
             encoding="utf-8",
         )
         trials = directory / "normal-input.trials.jsonl"
@@ -67,14 +73,21 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
             notes="fixture",
         )
 
-    def test_complete_canonical_ladder_assembles_report(self) -> None:
+    def test_complete_canonical_ladder_assembles_profile_bound_report(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = pathlib.Path(raw_directory)
-            plan, trials = self._fixture(directory, [1, 2, 4, 8])
+            plan, trials = self._fixture(
+                directory,
+                [1, 2, 4, 8],
+                profile_label="720p30 3Mbps",
+            )
 
             report = self._assemble(plan, trials)
 
-            self.assertEqual(report["scenario"], "normal-input")
+            self.assertEqual(
+                report["scenario"],
+                "profile=720p30 3Mbps; scenario=normal-input;",
+            )
             self.assertEqual(
                 [trial["concurrent_sessions"] for trial in report["trials"]],
                 [1, 2, 4, 8],
