@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -54,6 +56,78 @@ def _canonical_json(value: Any) -> str:
     )
 
 
+def _identity(snapshot: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        snapshot.st_dev,
+        snapshot.st_ino,
+        snapshot.st_size,
+        snapshot.st_mtime_ns,
+        snapshot.st_ctime_ns,
+    )
+
+
+def _load_stable_report(path: Path, report_validator: ModuleType) -> dict[str, Any]:
+    """Parse one bounded report while pinning the public path to the opened inode."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise PlannedReportValidationError("persisted capacity report cannot be inspected") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise PlannedReportValidationError("persisted capacity report must be a regular file")
+    if before.st_size > report_validator.MAX_REPORT_BYTES:
+        raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise PlannedReportValidationError("persisted capacity report cannot be opened") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise PlannedReportValidationError("persisted capacity report must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise PlannedReportValidationError("persisted capacity report changed while opening")
+        if opened.st_size > report_validator.MAX_REPORT_BYTES:
+            raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+
+        raw = os.read(fd, report_validator.MAX_REPORT_BYTES + 1)
+        if len(raw) > report_validator.MAX_REPORT_BYTES:
+            raise PlannedReportValidationError("persisted capacity report exceeds size limit")
+
+        after_read = os.fstat(fd)
+        try:
+            after_path = os.lstat(path)
+        except OSError as exc:
+            raise PlannedReportValidationError(
+                "persisted capacity report changed while reading"
+            ) from exc
+        if not stat.S_ISREG(after_path.st_mode):
+            raise PlannedReportValidationError("persisted capacity report changed while reading")
+        if _identity(opened) != _identity(after_read) or _identity(opened) != _identity(after_path):
+            raise PlannedReportValidationError("persisted capacity report changed while reading")
+    finally:
+        os.close(fd)
+
+    try:
+        text = raw.decode("utf-8")
+        value = json.loads(
+            text,
+            parse_constant=report_validator._reject_constant,  # noqa: SLF001
+            object_pairs_hook=report_validator._strict_object,  # noqa: SLF001
+        )
+    except report_validator.CapacityReportError as exc:
+        raise PlannedReportValidationError("persisted capacity report is invalid") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise PlannedReportValidationError("persisted capacity report is invalid") from exc
+    if not isinstance(value, dict):
+        raise PlannedReportValidationError("persisted capacity report is invalid")
+    return value
+
+
 def _validate_scenario_id(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -85,8 +159,8 @@ def validate_planned_report(
         "irlight_node_capacity_planned_assembler_for_provenance",
     )
 
+    report = _load_stable_report(report_path, report_validator)
     try:
-        report = report_validator.load_report(report_path)
         summary = report_validator.validate_report(report)
     except report_validator.CapacityReportError as exc:
         raise PlannedReportValidationError("persisted capacity report is invalid") from exc
@@ -146,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             run_manifest_path=args.run_manifest,
             scenario_id=args.scenario,
         )
-    except (PlannedReportValidationError, OSError, UnicodeError, ValueError) as exc:
+    except (PlannedReportValidationError, OSError, UnicodeError, ValueError, RecursionError) as exc:
         # Paths, profile labels, and scenario IDs are operator/evidence controlled.
         # All validation errors above are intentionally fixed strings.
         print(f"planned Node capacity report invalid: {exc}", file=sys.stderr)
