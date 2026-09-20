@@ -65,7 +65,7 @@
       "required": true,
       "status": "pending",
       "evidence": [],
-      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target; satisfied requires a repository coverage manifest that binds the canonical load plan to one canonical measured report for every required scenario."
+      "notes": "max_sessions must be based on measured load with an explicit safety margin, not a guessed target; satisfied requires a schema-v2 provenance-bound repository coverage manifest that binds the canonical load plan, canonical measured reports, raw trials, and run manifests for every required scenario."
     },
     {
       "id": "beta-release-checklist",
