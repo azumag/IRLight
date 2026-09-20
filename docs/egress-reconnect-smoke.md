@@ -39,6 +39,10 @@ stage token に secret 値や外部入力は含めません。再接続 timeout�
 - `target-recovery-no-restart`: user stop 後の target 復旧で gateway が再起動した
 - `unsafe-destination-terminal`: unsafe destination が terminal exit contract を満たさなかった
 - `unsafe-destination-failed` / `unsafe-destination-reason`: `FAILED / DESTINATION_UNSAFE` 契約を満たさなかった
-- `secret-redaction-terminal-output` / `secret-redaction-logs`: terminal output または logs に generated secret が露出した
+- `secret-redaction-terminal-output`: terminal guard output に generated secret が露出した
+- `secret-redaction-logs-read`: Egress Gateway logs を完全に取得できず、secret 不在を証明できなかった
+- `secret-redaction-logs`: 取得済み logs に generated secret が露出した
+
+Stop / terminal smoke の失敗時 diagnostics も、run-local private file に一度収集した後、初期 stream key と unsafe-destination 用の generated secret の両方を `<redacted>` に置換してから CI へ出します。status timeout や unexpected terminal exit の payload も同じ redactor を通し、redactor または log read が失敗した場合に raw payload へフォールバックしません。
 
 stage token は hard-coded ASCII token に限定し、secret や外部入力を workflow annotation へ反射しません。既存の retry、timeout、status、reason-code assertion は診断追加のために緩和しません。

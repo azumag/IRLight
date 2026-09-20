@@ -9,6 +9,7 @@ tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-stop-terminal.override.yml"
 secret_file="$tmp_dir/egress_url"
 stream_key="ci-egress-stop-secret-$RANDOM"
+unsafe_secret=""
 export EGRESS_SECRET_FILE="$secret_file"
 
 cat >"$secret_file" <<EOF
@@ -60,17 +61,46 @@ emit_failure_stage() {
   printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
 }
 
+redact_generated_secrets() {
+  python3 -c '
+import sys
+
+data = sys.stdin.buffer.read()
+for raw in sys.argv[1:]:
+    if raw:
+        data = data.replace(raw.encode("utf-8"), b"<redacted>")
+sys.stdout.buffer.write(data)
+' "$stream_key" "$unsafe_secret"
+}
+
+emit_redacted_compose_logs() {
+  local service="$1"
+  local tail_lines="$2"
+  local raw_file="$tmp_dir/${service}.failure.log"
+  local logs_rc=0
+
+  "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
+  if ! redact_generated_secrets <"$raw_file" >&2; then
+    echo "failed to redact $service diagnostics; output withheld" >&2
+    return 1
+  fi
+  if (( logs_rc != 0 )); then
+    echo "failed to read $service diagnostics: rc=$logs_rc" >&2
+    return "$logs_rc"
+  fi
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps -a >&2 || true
-    echo "--- continuity logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 continuity >&2 || true
-    echo "--- egress gateway logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-gateway >&2 || true
-    echo "--- target logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 egress-target >&2 || true
+    echo "--- continuity logs (redacted) ---" >&2
+    emit_redacted_compose_logs continuity 120 || true
+    echo "--- egress gateway logs (redacted) ---" >&2
+    emit_redacted_compose_logs egress-gateway 160 || true
+    echo "--- target logs (redacted) ---" >&2
+    emit_redacted_compose_logs egress-target 120 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -104,7 +134,12 @@ raise SystemExit(0 if value.get("status") == expected else 1)
     fi
     sleep 1
   done
-  echo "egress status did not become $expected; last=$payload" >&2
+  local safe_payload
+  if safe_payload="$(printf '%s' "$payload" | redact_generated_secrets 2>/dev/null)"; then
+    echo "egress status did not become $expected; last=$safe_payload" >&2
+  else
+    echo "egress status did not become $expected; last=<redaction-failed>" >&2
+  fi
   return 1
 }
 
@@ -115,11 +150,18 @@ assert_status_reason() {
   payload="$(read_egress_status)"
   python3 -c '
 import json,sys
-value=json.loads(sys.argv[1])
+try:
+    value=json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
 expected_status=sys.argv[2]
 expected_reason=sys.argv[3]
-assert value.get("status") == expected_status, value
-assert value.get("reason_code") == expected_reason, value
+raise SystemExit(
+    0
+    if value.get("status") == expected_status
+    and value.get("reason_code") == expected_reason
+    else 1
+)
 ' "$payload" "$expected_status" "$expected_reason"
 }
 
@@ -153,11 +195,18 @@ fi
 before_stop="$(read_egress_status)"
 if ! python3 -c '
 import json,sys,time
-value=json.loads(sys.argv[1])
-assert value.get("status") == "RECONNECTING", value
-next_retry=value.get("next_retry_at")
-assert isinstance(next_retry, (int, float)), value
-assert next_retry - time.time() > 10, value
+try:
+    value=json.loads(sys.argv[1])
+    next_retry=value.get("next_retry_at")
+    valid=(
+        value.get("status") == "RECONNECTING"
+        and isinstance(next_retry, (int, float))
+        and not isinstance(next_retry, bool)
+        and next_retry - time.time() > 10
+    )
+except Exception:
+    valid=False
+raise SystemExit(0 if valid else 1)
 ' "$before_stop"; then
   emit_failure_stage "backoff-window"
   exit 1
@@ -219,7 +268,9 @@ set -e
 
 if [[ $terminal_rc -ne 2 ]]; then
   echo "unsafe destination did not exit with terminal status: rc=$terminal_rc" >&2
-  echo "$terminal_output" >&2
+  if ! printf '%s\n' "$terminal_output" | redact_generated_secrets >&2; then
+    echo "failed to redact terminal diagnostics; output withheld" >&2
+  fi
   emit_failure_stage "unsafe-destination-terminal"
   exit 1
 fi
@@ -237,8 +288,15 @@ if grep -Fq "$unsafe_secret" <<<"$terminal_output"; then
   emit_failure_stage "secret-redaction-terminal-output"
   exit 1
 fi
-if grep -Fq "$stream_key" <<<"$("${compose[@]}" logs --no-color egress-gateway 2>/dev/null || true)"; then
-  echo "egress gateway logs leaked stream key" >&2
+
+egress_logs_file="$tmp_dir/egress-gateway.log"
+if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file" 2>&1; then
+  echo "failed to read egress gateway logs for secret redaction check" >&2
+  emit_failure_stage "secret-redaction-logs-read"
+  exit 1
+fi
+if grep -Fq "$stream_key" "$egress_logs_file" || grep -Fq "$unsafe_secret" "$egress_logs_file"; then
+  echo "egress gateway logs leaked generated destination secret" >&2
   emit_failure_stage "secret-redaction-logs"
   exit 1
 fi
