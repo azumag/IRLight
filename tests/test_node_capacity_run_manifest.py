@@ -12,6 +12,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts" / "run-node-capacity-scenario.py"
 PLAN_RENDERER_PATH = ROOT / "scripts" / "render-node-capacity-load-plan.py"
+NODE_PROFILE = "c3.large-like"
+SOFTWARE_REVISION = "a" * 40
 
 
 def _load(name: str, path: pathlib.Path):
@@ -67,21 +69,41 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
         harness.write_text(HARNESS_SOURCE, encoding="utf-8")
         return plan_value, plan, harness
 
-    def test_complete_run_manifest_binds_plan_and_normalized_trials(self) -> None:
+    def _run_with_manifest(
+        self,
+        *,
+        plan: pathlib.Path,
+        harness: pathlib.Path,
+        trials: pathlib.Path,
+        manifest: pathlib.Path,
+        failure_policy: str,
+        mode: str = "normal",
+    ):
+        return RUNNER.run_scenario(
+            plan_path=plan,
+            scenario_id="normal-input",
+            trials_jsonl=trials,
+            runner_command=[sys.executable, str(harness), mode],
+            timeout_seconds=2.0,
+            failure_policy=failure_policy,
+            run_manifest=manifest,
+            node_profile=NODE_PROFILE,
+            software_revision=SOFTWARE_REVISION,
+        )
+
+    def test_complete_run_manifest_binds_plan_trials_and_measured_identity(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = pathlib.Path(raw_directory)
             plan_value, plan, harness = self._fixture(directory)
             trials = directory / "trials.jsonl"
             manifest = directory / "run.json"
 
-            summary = RUNNER.run_scenario(
-                plan_path=plan,
-                scenario_id="normal-input",
-                trials_jsonl=trials,
-                runner_command=[sys.executable, str(harness), "normal"],
-                timeout_seconds=2.0,
+            summary = self._run_with_manifest(
+                plan=plan,
+                harness=harness,
+                trials=trials,
+                manifest=manifest,
                 failure_policy="continue",
-                run_manifest=manifest,
             )
 
             sidecar = json.loads(manifest.read_text(encoding="utf-8"))
@@ -95,6 +117,8 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
             self.assertEqual(sidecar["trials_sha256"], RUNNER._canonical_digest(records))
             self.assertEqual(sidecar["profile_label"], "720p30 3Mbps")
             self.assertEqual(sidecar["scenario_id"], "normal-input")
+            self.assertEqual(sidecar["node_profile"], NODE_PROFILE)
+            self.assertEqual(sidecar["software_revision"], SOFTWARE_REVISION)
 
     def test_stop_policy_records_partial_manifest_as_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
@@ -103,20 +127,60 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
             trials = directory / "trials.jsonl"
             manifest = directory / "run.json"
 
-            RUNNER.run_scenario(
-                plan_path=plan,
-                scenario_id="normal-input",
-                trials_jsonl=trials,
-                runner_command=[sys.executable, str(harness), "normal"],
-                timeout_seconds=2.0,
+            self._run_with_manifest(
+                plan=plan,
+                harness=harness,
+                trials=trials,
+                manifest=manifest,
                 failure_policy="stop",
-                run_manifest=manifest,
             )
 
             sidecar = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(sidecar["tested_load_levels"], [1, 2, 4])
             self.assertFalse(sidecar["completed_plan"])
             self.assertTrue(sidecar["boundary_found"])
+
+    def test_missing_run_identity_fails_before_harness_or_trials(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            _plan_value, plan, harness = self._fixture(directory)
+            trials = directory / "trials.jsonl"
+            manifest = directory / "run.json"
+
+            with self.assertRaisesRegex(RUNNER.ScenarioRunError, "valid node profile"):
+                RUNNER.run_scenario(
+                    plan_path=plan,
+                    scenario_id="normal-input",
+                    trials_jsonl=trials,
+                    runner_command=[sys.executable, str(harness), "normal"],
+                    timeout_seconds=2.0,
+                    failure_policy="continue",
+                    run_manifest=manifest,
+                )
+            self.assertFalse(trials.exists())
+            self.assertFalse(manifest.exists())
+
+    def test_invalid_software_revision_fails_before_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            _plan_value, plan, harness = self._fixture(directory)
+            trials = directory / "trials.jsonl"
+            manifest = directory / "run.json"
+
+            with self.assertRaisesRegex(RUNNER.ScenarioRunError, "software revision"):
+                RUNNER.run_scenario(
+                    plan_path=plan,
+                    scenario_id="normal-input",
+                    trials_jsonl=trials,
+                    runner_command=[sys.executable, str(harness), "normal"],
+                    timeout_seconds=2.0,
+                    failure_policy="continue",
+                    run_manifest=manifest,
+                    node_profile=NODE_PROFILE,
+                    software_revision="not-a-revision",
+                )
+            self.assertFalse(trials.exists())
+            self.assertFalse(manifest.exists())
 
     def test_existing_manifest_fails_before_harness_or_trials(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
@@ -127,14 +191,12 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
             manifest.write_text("known-good\n", encoding="utf-8")
 
             with self.assertRaisesRegex(RUNNER.ScenarioRunError, "run manifest already exists"):
-                RUNNER.run_scenario(
-                    plan_path=plan,
-                    scenario_id="normal-input",
-                    trials_jsonl=trials,
-                    runner_command=[sys.executable, str(harness), "normal"],
-                    timeout_seconds=2.0,
+                self._run_with_manifest(
+                    plan=plan,
+                    harness=harness,
+                    trials=trials,
+                    manifest=manifest,
                     failure_policy="continue",
-                    run_manifest=manifest,
                 )
             self.assertFalse(trials.exists())
             self.assertEqual(manifest.read_text(encoding="utf-8"), "known-good\n")
@@ -146,14 +208,12 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
             evidence = directory / "same.json"
 
             with self.assertRaisesRegex(RUNNER.ScenarioRunError, "must not overwrite trials"):
-                RUNNER.run_scenario(
-                    plan_path=plan,
-                    scenario_id="normal-input",
-                    trials_jsonl=evidence,
-                    runner_command=[sys.executable, str(harness), "normal"],
-                    timeout_seconds=2.0,
+                self._run_with_manifest(
+                    plan=plan,
+                    harness=harness,
+                    trials=evidence,
+                    manifest=evidence,
                     failure_policy="continue",
-                    run_manifest=evidence,
                 )
             self.assertFalse(evidence.exists())
 
@@ -165,14 +225,13 @@ class NodeCapacityRunManifestTests(unittest.TestCase):
             manifest = directory / "run.json"
 
             with self.assertRaisesRegex(RUNNER.ScenarioRunError, "exited unsuccessfully"):
-                RUNNER.run_scenario(
-                    plan_path=plan,
-                    scenario_id="normal-input",
-                    trials_jsonl=trials,
-                    runner_command=[sys.executable, str(harness), "nonzero"],
-                    timeout_seconds=2.0,
+                self._run_with_manifest(
+                    plan=plan,
+                    harness=harness,
+                    trials=trials,
+                    manifest=manifest,
                     failure_policy="continue",
-                    run_manifest=manifest,
+                    mode="nonzero",
                 )
             self.assertFalse(trials.exists())
             self.assertFalse(manifest.exists())
