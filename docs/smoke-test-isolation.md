@@ -28,6 +28,7 @@ The isolation pattern is applied to:
 - `scripts/smoke-hold-timeout-cleanup.sh`
 - `scripts/smoke-continuity-restart.sh`
 - `scripts/smoke-short-media-stall.sh`
+- `scripts/smoke-short-media-stall-core.sh`
 - `scripts/smoke-unusable-media-holding.sh`
 - `scripts/smoke-rtmp-netem-blackhole.sh`
 - `scripts/smoke-rtmp-netem-degradation-matrix.sh`
