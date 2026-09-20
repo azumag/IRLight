@@ -29,7 +29,7 @@ python3 scripts/render-node-capacity-review-bundle.py \
 
 永続 artifact の更新では `renderer > review-bundle.json` を使わないでください。shell redirection は renderer が validation を始める前に既存ファイルを truncate するため、validation が失敗しただけでも直前の known-good artifact を失う可能性があります。
 
-renderer / writer は read-only な capacity review tooling です。proposal を `validate-node-capacity-max-sessions-proposal.py` と同じ契約で再検証し、coverage manifest の canonical validator も通したうえで、次を保存します。
+renderer は stdout 以外を変更せず、writer が変更するのも明示した review bundle artifact だけです。どちらも proposal を `validate-node-capacity-max-sessions-proposal.py` と同じ契約で再検証し、coverage manifest の canonical validator も通したうえで、次を保存します。
 
 - proposal の repository-relative path と SHA-256
 - coverage manifest の repository-relative path と SHA-256
