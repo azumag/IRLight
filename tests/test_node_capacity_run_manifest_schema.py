@@ -32,6 +32,8 @@ def _manifest() -> dict[str, object]:
         "plan_sha256": "a" * 64,
         "profile_label": "720p30 3Mbps",
         "scenario_id": "normal-input",
+        "node_profile": "c3.large-like",
+        "software_revision": "c" * 40,
         "failure_policy": "continue",
         "planned_load_levels": [1, 2, 4, 8],
         "tested_load_levels": [1, 2, 4, 8],
@@ -64,6 +66,18 @@ class NodeCapacityRunManifestSchemaTests(unittest.TestCase):
         value = _manifest()
         value["tested_load_levels"] = [1, 2, True, 8]
         with self.assertRaisesRegex(ASSEMBLER.PlannedReportError, "tested load levels"):
+            self._load_value(value)
+
+    def test_blank_node_profile_is_rejected(self) -> None:
+        value = _manifest()
+        value["node_profile"] = "   "
+        with self.assertRaisesRegex(ASSEMBLER.PlannedReportError, "node profile"):
+            self._load_value(value)
+
+    def test_noncanonical_software_revision_is_rejected(self) -> None:
+        value = _manifest()
+        value["software_revision"] = "C" * 40
+        with self.assertRaisesRegex(ASSEMBLER.PlannedReportError, "software revision"):
             self._load_value(value)
 
 
