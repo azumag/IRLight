@@ -81,6 +81,33 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
             "failure-stage call sites must stay hard-coded to avoid workflow-command injection",
         )
 
+    def test_log_redaction_drains_compose_logs_before_searching(self) -> None:
+        redaction = self.source.split('status_payload="$(read_egress_status)"', 1)[1].split(
+            "\n# Simulate a remote RTMP outage", 1
+        )[0]
+        self.assertIn('egress_logs_file="$tmp_dir/egress-gateway.log"', redaction)
+        self.assertIn(
+            'if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then',
+            redaction,
+        )
+        self.assertIn('if grep -Fq "$stream_key" "$egress_logs_file"; then', redaction)
+        self.assertNotRegex(
+            redaction,
+            r'logs\s+--no-color\s+egress-gateway\s*\|\s*grep\s+-Fq',
+        )
+
+    def test_log_redaction_fails_closed_when_log_read_fails(self) -> None:
+        redaction = self.source.split('egress_logs_file="$tmp_dir/egress-gateway.log"', 1)[1].split(
+            "\n# Simulate a remote RTMP outage", 1
+        )[0]
+        read_failure = redaction.split(
+            'if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then',
+            1,
+        )[1].split("\nfi", 1)[0]
+        self.assertIn('emit_failure_stage "secret-redaction-logs-read"', read_failure)
+        self.assertIn("exit 1", read_failure)
+        self.assertNotIn("$stream_key", read_failure)
+
 
 if __name__ == "__main__":
     unittest.main()
