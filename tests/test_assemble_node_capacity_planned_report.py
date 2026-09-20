@@ -12,6 +12,8 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ASSEMBLER_PATH = ROOT / "scripts" / "assemble-node-capacity-planned-report.py"
 PLAN_RENDERER_PATH = ROOT / "scripts" / "render-node-capacity-load-plan.py"
+NODE_PROFILE = "c3.large-like"
+SOFTWARE_REVISION = "a" * 40
 
 
 def _load(name: str, path: pathlib.Path):
@@ -48,6 +50,7 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
         *,
         profile_label: str = "720p30 3Mbps",
         completed_plan: bool | None = None,
+        failure_policy: str = "continue",
     ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
         plan_value = PLAN_RENDERER.build_plan(profile_label)
         plan = directory / "plan.json"
@@ -70,7 +73,9 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
             "plan_sha256": ASSEMBLER._canonical_digest(plan_value),
             "profile_label": profile_label,
             "scenario_id": "normal-input",
-            "failure_policy": "continue",
+            "node_profile": NODE_PROFILE,
+            "software_revision": SOFTWARE_REVISION,
+            "failure_policy": failure_policy,
             "planned_load_levels": planned_levels,
             "tested_load_levels": levels,
             "boundary_found": any(record["outcome"] == "fail" for record in records),
@@ -94,13 +99,11 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
             run_manifest_path=manifest,
             scenario_id=scenario,
             run_id=str(uuid.uuid4()),
-            node_profile="c3.large-like",
-            software_revision="a" * 40,
             safety_margin_percent=20,
             notes="fixture",
         )
 
-    def test_complete_canonical_ladder_assembles_profile_bound_report(self) -> None:
+    def test_complete_canonical_ladder_assembles_profile_and_node_bound_report(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = pathlib.Path(raw_directory)
             plan, trials, manifest = self._fixture(
@@ -115,6 +118,8 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
                 report["scenario"],
                 "profile=720p30 3Mbps; scenario=normal-input;",
             )
+            self.assertEqual(report["node_profile"], NODE_PROFILE)
+            self.assertEqual(report["software_revision"], SOFTWARE_REVISION)
             self.assertEqual(
                 [trial["concurrent_sessions"] for trial in report["trials"]],
                 [1, 2, 4, 8],
@@ -195,6 +200,21 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
             ):
                 self._assemble(plan, trials, manifest)
 
+    def test_impossible_stop_policy_complete_evidence_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            plan, trials, manifest = self._fixture(
+                directory,
+                [1, 2, 4, 8],
+                failure_policy="stop",
+            )
+
+            with self.assertRaisesRegex(
+                ASSEMBLER.PlannedReportError,
+                "failure policy is inconsistent",
+            ):
+                self._assemble(plan, trials, manifest)
+
     def test_cli_does_not_replace_existing_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = pathlib.Path(raw_directory)
@@ -214,10 +234,6 @@ class PlannedNodeCapacityReportTests(unittest.TestCase):
                     "normal-input",
                     "--run-id",
                     str(uuid.uuid4()),
-                    "--node-profile",
-                    "c3.large-like",
-                    "--software-revision",
-                    "b" * 40,
                     "--safety-margin-percent",
                     "20",
                     "--output",
