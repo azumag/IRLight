@@ -217,7 +217,14 @@ if grep -Fq "$stream_key" <<<"$status_payload"; then
   emit_failure_stage "secret-redaction-status"
   exit 1
 fi
-if "${compose[@]}" logs --no-color egress-gateway | grep -Fq "$stream_key"; then
+
+egress_logs_file="$tmp_dir/egress-gateway.log"
+if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then
+  echo "failed to read egress gateway logs for secret redaction check" >&2
+  emit_failure_stage "secret-redaction-logs-read"
+  exit 1
+fi
+if grep -Fq "$stream_key" "$egress_logs_file"; then
   echo "egress logs leaked stream key" >&2
   emit_failure_stage "secret-redaction-logs"
   exit 1
