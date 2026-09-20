@@ -28,8 +28,7 @@ cleanup() {
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps -a >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=180 control-ui >&2 || true
+    echo "control-ui diagnostics withheld; HOLD_TIMEOUT smoke handles auth/session material" >&2
     echo "--- sessions state ---" >&2
     "${compose[@]}" exec -T continuity sh -c 'cat /state/sessions.json 2>/dev/null || true' >&2 || true
     echo "--- fake provider state ---" >&2
