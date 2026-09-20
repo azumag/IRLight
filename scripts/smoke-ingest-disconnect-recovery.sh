@@ -43,19 +43,16 @@ YAML
 smoke_project="irlight-ingest-disconnect-recovery-smoke-$$-$RANDOM"
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+quarantine_failure_diagnostics() {
+  echo "Failure diagnostics quarantined because this smoke handles ingest credentials and session material." >&2
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=180 node-agent >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 control-ui >&2 || true
-    echo "--- mediamtx logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
-    echo "--- publisher log ---" >&2
-    cat "$publisher_log" >&2 2>/dev/null || true
+    quarantine_failure_diagnostics
   fi
   if [[ -n "$publisher_pid" ]]; then
     kill "$publisher_pid" 2>/dev/null || true
@@ -109,8 +106,7 @@ wait_session_status() {
     sleep 1
   done
   echo "Session did not become $expected" >&2
-  session_json >&2 || true
-  session_events >&2 || true
+  echo "Session and event timeout diagnostics quarantined." >&2
   return 1
 }
 
@@ -137,8 +133,7 @@ raise SystemExit(0 if ok else 1)
     sleep 1
   done
   echo "Session did not enter HOLDING with reason $expected" >&2
-  session_json >&2 || true
-  session_events >&2 || true
+  echo "Session and event timeout diagnostics quarantined." >&2
   return 1
 }
 
@@ -161,7 +156,7 @@ raise SystemExit(0 if any(
     sleep 1
   done
   echo "Node did not bind to user Session" >&2
-  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
+  echo "Node assignment timeout diagnostics quarantined." >&2
   return 1
 }
 
@@ -188,8 +183,7 @@ else:
     sleep 0.25
   done
   echo "Recovery candidate did not become observable while HOLDING" >&2
-  session_json >&2 || true
-  session_events >&2 || true
+  echo "Session and event timeout diagnostics quarantined." >&2
   return 1
 }
 
