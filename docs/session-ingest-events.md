@@ -120,3 +120,5 @@ unknown Session IDへの総当たりはSession eventを生成せず、PR #36のb
 7. SessionがLIVEになり `ingest.connected / ingest.format_detected` が記録されることを確認
 8. publisher終了後にHOLDING + `ingest.disconnected` を確認
 9. event sequenceが一意・昇順で、raw secretが含まれないことを確認
+
+この smoke は login cookie / CSRF、Node bootstrap token、発行済み ingest credential、credential を埋め込んだ publisher URL を同一 run 内で扱います。このため failure 時の service log と Session / Node API payload は credential-bearing とみなし、CI 向け diagnostics として読み出し・再掲しません。publisher output は run-local の private temporary file に保持したまま CI へ再掲しません。失敗時は固定文言だけを出す fail-closed quarantine とし、incomplete な redaction vocabulary や log-read failure をきっかけに raw credential が CI へ流れる fallback 経路を持たない設計にしています。通常の Session lifecycle / ingest event 検証内容は変えません。

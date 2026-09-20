@@ -32,6 +32,15 @@ YAML
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+# This smoke deliberately handles login/session material, bootstrap credentials,
+# an issued ingest credential, and a publisher URL containing that credential.
+# Treat all producer diagnostics as secret-bearing: keep them in the run-local
+# private directory and never replay them to CI on failure.
+withhold_sensitive_diagnostics() {
+  local label="$1"
+  echo "$label diagnostics withheld; this smoke handles credential-bearing material" >&2
+}
+
 cleanup() {
   status=$?
   if [[ -n "$publisher_pid" ]]; then
@@ -41,14 +50,10 @@ cleanup() {
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 node-agent >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 control-ui >&2 || true
-    echo "--- mediamtx logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
-    echo "--- publisher log ---" >&2
-    tail -100 "$publisher_log" >&2 2>/dev/null || true
+    withhold_sensitive_diagnostics "node-agent/service"
+    withhold_sensitive_diagnostics "control-ui/service"
+    withhold_sensitive_diagnostics "mediamtx/service"
+    withhold_sensitive_diagnostics "publisher"
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -94,7 +99,7 @@ wait_session_status() {
     sleep 1
   done
   echo "Session did not become $expected" >&2
-  session_json >&2 || true
+  withhold_sensitive_diagnostics "Session API"
   return 1
 }
 
@@ -110,6 +115,7 @@ wait_session_event() {
     sleep 1
   done
   echo "Session event not observed: $expected" >&2
+  withhold_sensitive_diagnostics "Session event API"
   return 1
 }
 
@@ -129,7 +135,7 @@ raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_i
     sleep 1
   done
   echo "Node did not bind to user Session" >&2
-  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
+  withhold_sensitive_diagnostics "Node API"
   return 1
 }
 
@@ -217,9 +223,12 @@ assigned="$(session_json)"
 python3 -c '
 import json,sys
 item=json.load(sys.stdin)
-assert item.get("node_id"), item
-assert item.get("node_boot_id") == "session-events-boot", item
-assert item.get("node_registered_at") is not None, item
+if not item.get("node_id"):
+    raise SystemExit("assigned Session is missing node_id")
+if item.get("node_boot_id") != "session-events-boot":
+    raise SystemExit("assigned Session has unexpected node_boot_id")
+if item.get("node_registered_at") is None:
+    raise SystemExit("assigned Session is missing node_registered_at")
 ' <<<"$assigned"
 
 credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
@@ -249,8 +258,10 @@ live="$(session_json)"
 python3 -c '
 import json,sys
 item=json.load(sys.stdin)
-assert item.get("first_ingest_at") is not None, item
-assert item.get("last_ingest_at") is not None, item
+if item.get("first_ingest_at") is None:
+    raise SystemExit("LIVE Session is missing first_ingest_at")
+if item.get("last_ingest_at") is None:
+    raise SystemExit("LIVE Session is missing last_ingest_at")
 ' <<<"$live"
 
 wait "$publisher_pid" || true
@@ -264,20 +275,27 @@ import json,sys
 d=json.load(sys.stdin)
 events=d.get("events", [])
 required={"ingest.auth_failed", "ingest.connected", "ingest.format_detected", "ingest.disconnected"}
-assert required.issubset({e.get("type") for e in events}), events
+if not required.issubset({e.get("type") for e in events}):
+    raise SystemExit("required Session ingest events are missing")
 sequences=[e.get("sequence") for e in events]
-assert sequences == sorted(sequences) and len(sequences) == len(set(sequences)), events
+if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+    raise SystemExit("Session event sequence is not unique and ordered")
 for event in events:
     event_type=event.get("type", "")
     payload=event.get("payload", {})
     forbidden={"credential_secret", "password", "token"}
-    assert forbidden.isdisjoint(payload), event
+    if not forbidden.isdisjoint(payload):
+        raise SystemExit("Session event payload contains a forbidden credential field")
     if event_type == "ingest.auth_failed":
-        assert event.get("origin") == "ingest-auth", event
-        assert event.get("reason_code") == "INVALID_CREDENTIAL", event
+        if event.get("origin") != "ingest-auth":
+            raise SystemExit("ingest.auth_failed has unexpected origin")
+        if event.get("reason_code") != "INVALID_CREDENTIAL":
+            raise SystemExit("ingest.auth_failed has unexpected reason_code")
     elif event_type.startswith("ingest."):
-        assert event.get("origin") == "node-agent", event
-        assert payload.get("node_id"), event
+        if event.get("origin") != "node-agent":
+            raise SystemExit("Node ingest event has unexpected origin")
+        if not payload.get("node_id"):
+            raise SystemExit("Node ingest event is missing node_id")
 ' <<<"$events"
 if grep -Fq "$ingest_secret" <<<"$events"; then
   echo "raw ingest secret leaked into Session events" >&2
