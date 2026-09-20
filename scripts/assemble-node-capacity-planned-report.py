@@ -3,9 +3,10 @@
 
 The lower-level ``assemble-node-capacity-report.py`` intentionally validates the
 trial/report schema without knowing which load plan produced the measurements.
-This entry point requires the runner's provenance sidecar, validates its digests,
-and requires the raw trial concurrency ladder to exactly match the selected
-canonical Issue #13 scenario before a report can be emitted.
+This entry point requires the runner's provenance sidecar, validates its digests
+and measured Node/software identity, and requires the raw trial concurrency
+ladder to exactly match the selected canonical Issue #13 scenario before a
+report can be emitted.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ RUN_MANIFEST_FIELDS = {
     "plan_sha256",
     "profile_label",
     "scenario_id",
+    "node_profile",
+    "software_revision",
     "failure_policy",
     "planned_load_levels",
     "tested_load_levels",
@@ -84,6 +87,14 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _is_revision(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _positive_int_list(value: object) -> bool:
     return (
         isinstance(value, list)
@@ -124,6 +135,15 @@ def _load_run_manifest(path: Path, plan_validator: ModuleType) -> dict[str, Any]
         raise PlannedReportError("run manifest has an invalid profile label")
     if not isinstance(value["scenario_id"], str) or not value["scenario_id"]:
         raise PlannedReportError("run manifest has an invalid scenario id")
+    node_profile = value["node_profile"]
+    if (
+        not isinstance(node_profile, str)
+        or not node_profile.strip()
+        or len(node_profile) > 300
+    ):
+        raise PlannedReportError("run manifest has an invalid node profile")
+    if not _is_revision(value["software_revision"]):
+        raise PlannedReportError("run manifest has an invalid software revision")
     failure_policy = value["failure_policy"]
     if not isinstance(failure_policy, str) or failure_policy not in {"stop", "continue"}:
         raise PlannedReportError("run manifest has an invalid failure policy")
@@ -168,6 +188,16 @@ def _validate_run_manifest(
         raise PlannedReportError(
             "raw trials do not cover the complete canonical scenario plan"
         )
+    if manifest["failure_policy"] == "stop" and failure_seen:
+        first_failure_index = next(
+            index
+            for index, trial in enumerate(normalized_trials)
+            if trial["outcome"] == "fail"
+        )
+        if first_failure_index != len(normalized_trials) - 1:
+            raise PlannedReportError(
+                "run manifest failure policy is inconsistent with the measured boundary"
+            )
 
 
 def assemble_planned_report(
@@ -177,8 +207,6 @@ def assemble_planned_report(
     run_manifest_path: Path,
     scenario_id: str,
     run_id: str,
-    node_profile: str,
-    software_revision: str,
     safety_margin_percent: int,
     notes: str,
 ) -> dict[str, Any]:
@@ -242,8 +270,8 @@ def assemble_planned_report(
         return assembler.assemble_report(
             trials=normalized,
             run_id=run_id,
-            node_profile=node_profile,
-            software_revision=software_revision,
+            node_profile=manifest["node_profile"],
+            software_revision=manifest["software_revision"],
             scenario=report_scenario,
             safety_margin_percent=safety_margin_percent,
             notes=notes,
@@ -259,8 +287,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-manifest", type=Path, required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--node-profile", required=True)
-    parser.add_argument("--software-revision", required=True)
     parser.add_argument("--safety-margin-percent", type=int, required=True)
     parser.add_argument("--notes", default="")
     parser.add_argument("--output", type=Path)
@@ -276,8 +302,6 @@ def main(argv: list[str] | None = None) -> int:
             run_manifest_path=args.run_manifest,
             scenario_id=args.scenario,
             run_id=args.run_id,
-            node_profile=args.node_profile,
-            software_revision=args.software_revision,
             safety_margin_percent=args.safety_margin_percent,
             notes=args.notes,
         )
