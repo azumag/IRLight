@@ -85,6 +85,20 @@ class SessionIngestEventsSmokeIsolationTest(unittest.TestCase):
         self.assertNotIn("$bootstrap_token", helper)
         self.assertNotIn("$cookie_jar", helper)
 
+    def test_api_assertions_never_embed_raw_payloads_in_failures(self) -> None:
+        self.assertNotIn("assert item.get(\"node_id\"), item", self.source)
+        self.assertNotIn("assert item.get(\"first_ingest_at\") is not None, item", self.source)
+        self.assertNotIn("assert required.issubset({e.get(\"type\") for e in events}), events", self.source)
+        self.assertNotIn("assert forbidden.isdisjoint(payload), event", self.source)
+        self.assertIn(
+            'raise SystemExit("Session event payload contains a forbidden credential field")',
+            self.source,
+        )
+        self.assertIn(
+            'raise SystemExit("required Session ingest events are missing")',
+            self.source,
+        )
+
     def test_session_ingest_event_contract_remains_intact(self) -> None:
         self.assertIn('if [[ "$auth_status" != "401" ]]', self.source)
         self.assertIn("wait_session_event ingest.auth_failed 15", self.source)
