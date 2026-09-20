@@ -50,7 +50,7 @@ Non-Compose smoke scripts still need the usual audit for their own temporary fil
 
 Readiness and diagnostic probes running under `set -o pipefail` must not use an early-exiting consumer such as `grep -q` directly on a producer whose exit status matters. A successful match can close the pipe before the producer finishes, causing SIGPIPE and turning a successful observation into a false negative.
 
-For bounded command output, capture the producer's complete output into a run-local private temporary file first, require the producer itself to succeed, and only then inspect the saved output. `scripts/smoke-rtmps-ingest-recovery.sh` follows this contract for the four-second `openssl s_client` RTMPS-listener probe. This keeps the existing per-attempt and overall readiness deadlines while separating command failure from a missing certificate marker.
+For bounded command output, capture the producer's complete output into a run-local private temporary file first, require the producer itself to succeed, and only then inspect the saved output. `scripts/smoke-rtmps-ingest-recovery-core.sh` follows this contract for the four-second `openssl s_client` RTMPS-listener probe. This keeps the existing per-attempt and overall readiness deadlines while separating command failure from a missing certificate marker.
 
 ## Secret-bearing diagnostics
 
@@ -58,7 +58,7 @@ A smoke test that deliberately injects a generated credential or stream key must
 
 Capture diagnostic output inside the run-local private temporary directory, redact every generated secret before emitting it, and withhold the output entirely if redaction fails. Secret-absence assertions must also separate log-read failure from a genuine no-match result; a failed log read is not evidence that the secret was absent. In particular, do not use `docker compose logs | grep -q <secret>` under `set -o pipefail`, because a successful match can terminate `grep` early and turn the upstream SIGPIPE into a false-negative leak check.
 
-`scripts/smoke-egress-stop-terminal.sh`, `scripts/smoke-egress-publish-conflict.sh`, and `scripts/smoke-egress-dns-tls.sh` follow this fail-closed diagnostic boundary.
+`scripts/smoke-egress-stop-terminal.sh`, `scripts/smoke-egress-publish-conflict.sh`, and `scripts/smoke-egress-dns-tls.sh` follow this fail-closed diagnostic boundary. The public `scripts/smoke-srt-ingest-recovery.sh` and `scripts/smoke-rtmps-ingest-recovery.sh` entrypoints use an even stricter quarantine: all inner stdout/stderr stays in a run-local private file and only fixed allowlisted success/failure messages can reach CI. Their `*-core.sh` implementations must not be invoked directly by CI.
 
 ## Parallel execution
 
