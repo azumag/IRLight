@@ -17,7 +17,10 @@ class ShortMediaStallSmokeIsolationTest(unittest.TestCase):
 
     def test_public_wrapper_quarantines_all_core_output(self) -> None:
         self.assertIn("umask 077", self.source)
-        self.assertIn('tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-short-media-stall-wrapper.XXXXXX")"', self.source)
+        self.assertIn(
+            'tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-short-media-stall-wrapper.XXXXXX")"',
+            self.source,
+        )
         self.assertIn('raw_log="$tmp_dir/short-media-stall.raw.log"', self.source)
         self.assertIn(
             'bash "$script_dir/smoke-short-media-stall-core.sh" >"$raw_log" 2>&1 &',
@@ -28,7 +31,9 @@ class ShortMediaStallSmokeIsolationTest(unittest.TestCase):
         self.assertIn("short-media-stall-quarantined", self.source)
 
         error_line = next(
-            line for line in self.source.splitlines() if "short-media-stall-quarantined" in line
+            line
+            for line in self.source.splitlines()
+            if "short-media-stall-quarantined" in line
         )
         for runtime_secret in (
             "$ingest_username",
@@ -50,8 +55,14 @@ class ShortMediaStallSmokeIsolationTest(unittest.TestCase):
     def test_workflow_uses_only_public_wrapper_and_tracks_core_changes(self) -> None:
         self.assertIn('- "scripts/smoke-short-media-stall.sh"', self.workflow_source)
         self.assertIn('- "scripts/smoke-short-media-stall-core.sh"', self.workflow_source)
-        self.assertIn("run: bash ./scripts/smoke-short-media-stall.sh", self.workflow_source)
-        self.assertNotIn("run: bash ./scripts/smoke-short-media-stall-core.sh", self.workflow_source)
+        self.assertIn(
+            "run: bash ./scripts/smoke-short-media-stall.sh",
+            self.workflow_source,
+        )
+        self.assertNotIn(
+            "run: bash ./scripts/smoke-short-media-stall-core.sh",
+            self.workflow_source,
+        )
 
     def test_core_compose_project_is_unique_per_run(self) -> None:
         self.assertIn(
@@ -73,11 +84,22 @@ class ShortMediaStallSmokeIsolationTest(unittest.TestCase):
         self.assertNotIn("docker compose down", cleanup)
         self.assertNotIn("down -v", cleanup)
 
+    def test_core_does_not_preemptively_stop_existing_stack(self) -> None:
+        before_up = self.core_source.split(
+            '"${compose[@]}" up -d --build control-ui', 1
+        )[0]
+        after_trap = before_up.split("trap cleanup EXIT", 1)[1]
+        self.assertNotIn('"${compose[@]}" down', after_trap)
+        self.assertIn('"${compose[@]}" config >/dev/null', after_trap)
+
     def test_core_temporary_material_is_private_and_run_scoped(self) -> None:
         self.assertIn("umask 077", self.core_source)
         self.assertIn('tmp_dir="$(mktemp -d)"', self.core_source)
         self.assertIn('cookie_jar="$tmp_dir/cookies.txt"', self.core_source)
-        self.assertIn('override="$tmp_dir/short-media-stall.override.yml"', self.core_source)
+        self.assertIn(
+            'override="$tmp_dir/short-media-stall.override.yml"',
+            self.core_source,
+        )
         self.assertIn('publisher_log="$tmp_dir/publisher.log"', self.core_source)
         self.assertNotIn(
             ">/tmp/irlight-short-media-stall-publisher.log",
