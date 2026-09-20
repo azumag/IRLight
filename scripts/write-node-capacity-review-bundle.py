@@ -68,7 +68,12 @@ def _pinned_paths(bundle: dict[str, Any]) -> set[str]:
             str(bundle["coverage_manifest"]),
             str(bundle["load_plan"]["path"]),
         }
-        paths.update(str(report["path"]) for report in bundle["reports"])
+        for report in bundle["reports"]:
+            paths.add(str(report["path"]))
+            if "trials_path" in report:
+                paths.add(str(report["trials_path"]))
+            if "run_manifest_path" in report:
+                paths.add(str(report["run_manifest_path"]))
     except (KeyError, TypeError) as exc:
         raise CapacityReviewBundleWriteError("rendered review bundle is invalid") from exc
     return paths
