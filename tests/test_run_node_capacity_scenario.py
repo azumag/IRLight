@@ -96,6 +96,7 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
         *,
         profile: str = "720p30 3Mbps",
         timeout_seconds: float = 2.0,
+        failure_policy: str = "stop",
     ) -> tuple[dict[str, object], pathlib.Path]:
         plan = self._write_plan(directory, profile)
         harness = self._write_harness(directory)
@@ -106,20 +107,34 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
             trials_jsonl=trials,
             runner_command=[sys.executable, str(harness), mode],
             timeout_seconds=timeout_seconds,
+            failure_policy=failure_policy,
         )
         return summary, trials
 
-    def test_runs_levels_in_order_and_stops_after_first_failure(self) -> None:
+    def test_stop_policy_stops_after_first_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = pathlib.Path(raw_directory)
-            summary, trials = self._run(directory, "pass-then-fail")
+            summary, trials = self._run(directory, "pass-then-fail", failure_policy="stop")
 
             self.assertEqual(summary["tested_load_levels"], [1, 2, 4])
             self.assertTrue(summary["boundary_found"])
-            self.assertTrue(summary["stopped_after_first_failure"])
+            self.assertFalse(summary["completed_plan"])
+            self.assertEqual(summary["failure_policy"], "stop")
             records = [json.loads(line) for line in trials.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([record["concurrent_sessions"] for record in records], [1, 2, 4])
             self.assertEqual([record["outcome"] for record in records], ["pass", "pass", "fail"])
+
+    def test_continue_policy_collects_every_planned_level_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            summary, trials = self._run(directory, "pass-then-fail", failure_policy="continue")
+
+            self.assertEqual(summary["tested_load_levels"], [1, 2, 4, 8])
+            self.assertTrue(summary["boundary_found"])
+            self.assertTrue(summary["completed_plan"])
+            self.assertEqual(summary["failure_policy"], "continue")
+            records = [json.loads(line) for line in trials.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([record["outcome"] for record in records], ["pass", "pass", "fail", "fail"])
 
     def test_all_pass_records_plan_without_inventing_a_higher_level(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
@@ -128,6 +143,7 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
 
             self.assertEqual(summary["tested_load_levels"], [1, 2, 4, 8])
             self.assertFalse(summary["boundary_found"])
+            self.assertTrue(summary["completed_plan"])
             records = [json.loads(line) for line in trials.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([record["concurrent_sessions"] for record in records], [1, 2, 4, 8])
 
@@ -144,6 +160,24 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
                     trials_jsonl=trials,
                     runner_command=[sys.executable, str(harness), "all-pass"],
                     timeout_seconds=2.0,
+                    failure_policy="stop",
+                )
+            self.assertFalse(trials.exists())
+
+    def test_invalid_failure_policy_fails_before_harness_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            plan = self._write_plan(directory)
+            harness = self._write_harness(directory)
+            trials = directory / "trials.jsonl"
+            with self.assertRaises(RUNNER.ScenarioRunError):
+                RUNNER.run_scenario(
+                    plan_path=plan,
+                    scenario_id="normal-input",
+                    trials_jsonl=trials,
+                    runner_command=[sys.executable, str(harness), "all-pass"],
+                    timeout_seconds=2.0,
+                    failure_policy="unsafe-default",
                 )
             self.assertFalse(trials.exists())
 
@@ -161,6 +195,7 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
                     trials_jsonl=trials,
                     runner_command=[sys.executable, str(harness), "all-pass"],
                     timeout_seconds=2.0,
+                    failure_policy="stop",
                 )
             self.assertEqual(trials.read_text(encoding="utf-8"), "known-good\n")
 
@@ -197,6 +232,8 @@ class NodeCapacityScenarioRunnerTests(unittest.TestCase):
                         str(directory / "trials.jsonl"),
                         "--timeout-seconds",
                         "2",
+                        "--failure-policy",
+                        "stop",
                         "--runner",
                         sys.executable,
                         "--runner-arg",
