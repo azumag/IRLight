@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -229,6 +231,82 @@ class NodeCapacityReviewBundleProvenanceTests(unittest.TestCase):
                         expected_software_revision=REVISION,
                         repo_root=root,
                     )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_v2_renderer_rejects_symlinked_raw_provenance(self) -> None:
+        for target_name in ("trials", "run_manifest"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                proposal_path, paths = self._write_v2_evidence(root)
+                target = paths[target_name]
+                real_target = target.with_name(target.name + ".real")
+                target.replace(real_target)
+                try:
+                    target.symlink_to(real_target)
+                except OSError as exc:
+                    self.skipTest(f"symlink creation unavailable: {exc}")
+
+                with self.assertRaises(BUNDLE_RENDERER.CapacityReviewBundleRenderError):
+                    BUNDLE_RENDERER.render_bundle(
+                        proposal_path,
+                        expected_node_profile=NODE_PROFILE,
+                        expected_software_revision=REVISION,
+                        repo_root=root,
+                    )
+
+    def test_v2_renderer_rejects_raw_provenance_path_escape(self) -> None:
+        for field in ("trials_path", "run_manifest_path"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                proposal_path, paths = self._write_v2_evidence(root)
+                coverage = json.loads(paths["coverage"].read_text(encoding="utf-8"))
+                coverage["reports"][0][field] = "../outside-evidence.json"
+                paths["coverage"].write_text(
+                    json.dumps(coverage, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(BUNDLE_RENDERER.CapacityReviewBundleRenderError):
+                    BUNDLE_RENDERER.render_bundle(
+                        proposal_path,
+                        expected_node_profile=NODE_PROFILE,
+                        expected_software_revision=REVISION,
+                        repo_root=root,
+                    )
+
+    def test_v2_renderer_detects_raw_provenance_replacement_between_pin_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            proposal_path, paths = self._write_v2_evidence(root)
+            target = paths["trials"]
+            original_collect = BUNDLE_RENDERER._collect_pins
+            calls = 0
+
+            def collect_then_mutate(**kwargs):
+                nonlocal calls
+                result = original_collect(**kwargs)
+                calls += 1
+                if calls == 1:
+                    original = target.read_text(encoding="utf-8")
+                    target.write_text(original.rstrip("\n") + "  \n", encoding="utf-8")
+                return result
+
+            with mock.patch.object(
+                BUNDLE_RENDERER,
+                "_collect_pins",
+                side_effect=collect_then_mutate,
+            ):
+                with self.assertRaisesRegex(
+                    BUNDLE_RENDERER.CapacityReviewBundleRenderError,
+                    "capacity evidence changed while being pinned",
+                ):
+                    BUNDLE_RENDERER.render_bundle(
+                        proposal_path,
+                        expected_node_profile=NODE_PROFILE,
+                        expected_software_revision=REVISION,
+                        repo_root=root,
+                    )
+            self.assertGreaterEqual(calls, 2)
 
     def test_atomic_writer_refuses_to_replace_raw_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
