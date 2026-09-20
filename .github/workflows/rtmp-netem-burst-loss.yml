@@ -12,6 +12,7 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/netem-container.sh"
       - "scripts/smoke-rtmp-netem-degradation-matrix.sh"
+      - "scripts/smoke-rtmp-netem-degradation-matrix-core.sh"
       - ".github/workflows/rtmp-netem-burst-loss.yml"
   workflow_dispatch:
     inputs:
@@ -60,5 +61,5 @@ jobs:
           NETEM_LOSS_CORRELATION="$LOSS_CORRELATION" \
             bash ./scripts/smoke-rtmp-netem-degradation-matrix.sh | tee /tmp/irlight-burst-loss.log
 
-          grep -Eq "loss 10(\\.0+)?%[[:space:]]+${LOSS_CORRELATION}(\\.0+)?%" \
+          grep -Fx "loss-correlation=${LOSS_CORRELATION} verified=yes" \
             /tmp/irlight-burst-loss.log
