@@ -9,6 +9,7 @@ on:
       - "config/mediamtx.yml"
       - "docker-compose.poc.yml"
       - "scripts/smoke-rtmps-ingest-recovery.sh"
+      - "scripts/smoke-rtmps-ingest-recovery-core.sh"
       - ".github/workflows/rtmps-ingest-recovery.yml"
   workflow_dispatch:
     inputs:
@@ -39,6 +40,8 @@ jobs:
           sudo apt-get install -y -qq ffmpeg
           ffmpeg -hide_banner -protocols 2>/dev/null | grep -Eq '(^|[[:space:]])rtmps([[:space:]]|$)'
       - name: Validate smoke syntax
-        run: bash -n ./scripts/smoke-rtmps-ingest-recovery.sh
+        run: |
+          bash -n ./scripts/smoke-rtmps-ingest-recovery.sh
+          bash -n ./scripts/smoke-rtmps-ingest-recovery-core.sh
       - name: Publish over authenticated RTMPS, disconnect, and recover
         run: bash ./scripts/smoke-rtmps-ingest-recovery.sh

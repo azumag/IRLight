@@ -9,6 +9,7 @@ on:
       - "config/mediamtx.yml"
       - "docker-compose.poc.yml"
       - "scripts/smoke-srt-ingest-recovery.sh"
+      - "scripts/smoke-srt-ingest-recovery-core.sh"
       - ".github/workflows/srt-ingest-recovery.yml"
   schedule:
     - cron: "47 18 * * *"
@@ -44,6 +45,8 @@ jobs:
           sudo apt-get install -y -qq ffmpeg
           ffmpeg -hide_banner -protocols 2>/dev/null | grep -Eq '(^|[[:space:]])srt([[:space:]]|$)'
       - name: Validate smoke syntax
-        run: bash -n ./scripts/smoke-srt-ingest-recovery.sh
+        run: |
+          bash -n ./scripts/smoke-srt-ingest-recovery.sh
+          bash -n ./scripts/smoke-srt-ingest-recovery-core.sh
       - name: Publish over authenticated SRT, disconnect, and recover
         run: bash ./scripts/smoke-srt-ingest-recovery.sh

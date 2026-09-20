@@ -3,7 +3,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = {
+CORE_SCRIPTS = {
+    "srt": ROOT / "scripts" / "smoke-srt-ingest-recovery-core.sh",
+    "rtmps": ROOT / "scripts" / "smoke-rtmps-ingest-recovery-core.sh",
+}
+WRAPPERS = {
     "srt": ROOT / "scripts" / "smoke-srt-ingest-recovery.sh",
     "rtmps": ROOT / "scripts" / "smoke-rtmps-ingest-recovery.sh",
 }
@@ -13,7 +17,12 @@ class IngestRecoverySmokeIsolationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.sources = {
-            name: path.read_text(encoding="utf-8") for name, path in SCRIPTS.items()
+            name: path.read_text(encoding="utf-8")
+            for name, path in CORE_SCRIPTS.items()
+        }
+        cls.wrappers = {
+            name: path.read_text(encoding="utf-8")
+            for name, path in WRAPPERS.items()
         }
 
     def test_compose_projects_are_unique_per_run(self) -> None:
@@ -106,6 +115,58 @@ class IngestRecoverySmokeIsolationTest(unittest.TestCase):
         )
         self.assertIn("return 0", openssl_gate)
         self.assertNotIn("|| true", openssl_gate)
+
+    def test_public_wrappers_quarantine_all_inner_output(self) -> None:
+        expected_cores = {
+            "srt": "smoke-srt-ingest-recovery-core.sh",
+            "rtmps": "smoke-rtmps-ingest-recovery-core.sh",
+        }
+        expected_stages = {
+            "srt": "stage=srt-ingest-recovery-quarantined",
+            "rtmps": "stage=rtmps-ingest-recovery-quarantined",
+        }
+        for name, source in self.wrappers.items():
+            with self.subTest(script=name):
+                self.assertIn("umask 077", source)
+                self.assertIn('tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-', source)
+                self.assertIn(
+                    f'bash "$script_dir/{expected_cores[name]}" >"$raw_log" 2>&1 &',
+                    source,
+                )
+                self.assertIn(expected_stages[name], source)
+                self.assertIn(
+                    "inner diagnostics withheld because this smoke carries generated ingest credentials",
+                    source,
+                )
+                self.assertNotIn('cat "$raw_log"', source)
+                self.assertNotIn('tail ', source)
+                self.assertNotIn('sed ', source)
+                self.assertNotIn('awk ', source)
+                self.assertNotIn('grep ', source)
+
+    def test_public_wrappers_remove_private_logs_and_forward_signals(self) -> None:
+        for name, source in self.wrappers.items():
+            with self.subTest(script=name):
+                self.assertIn('rm -rf "$tmp_dir"', source)
+                self.assertIn("trap cleanup_wrapper EXIT", source)
+                self.assertIn("trap 'forward_signal 130' INT", source)
+                self.assertIn("trap 'forward_signal 143' TERM", source)
+                self.assertIn('kill -TERM "$core_pid"', source)
+                self.assertIn('wait "$core_pid"', source)
+
+    def test_generated_credentials_remain_inside_quarantined_core(self) -> None:
+        self.assertIn(
+            'streamid="publish:live/input:${ingest_username}:${ingest_secret}"',
+            self.sources["srt"],
+        )
+        self.assertIn(
+            'rtmps_url="${rtmps_server_url}?user=${ingest_username}&pass=${ingest_secret}"',
+            self.sources["rtmps"],
+        )
+        for name, wrapper in self.wrappers.items():
+            with self.subTest(script=name):
+                self.assertNotIn("ingest_secret", wrapper)
+                self.assertNotIn("credential_secret", wrapper)
 
 
 if __name__ == "__main__":
