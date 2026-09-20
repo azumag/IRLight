@@ -43,6 +43,61 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
         self.assertIn('secret_file="$tmp_dir/egress_url"', self.source)
         self.assertIn('chmod 600 "$secret_file"', self.source)
 
+    def test_failure_diagnostics_redact_generated_stream_key_without_raw_fallback(
+        self,
+    ) -> None:
+        self.assertIn("redact_stream_key() {", self.source)
+        helper = self.source.split("emit_redacted_compose_logs() {", 1)[1].split(
+            "\n}\n\ncleanup() {", 1
+        )[0]
+        self.assertIn('>"$raw_file" 2>&1 || logs_rc=$?', helper)
+        self.assertIn('redact_stream_key <"$raw_file" >&2', helper)
+        self.assertIn("output withheld", helper)
+
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn("emit_redacted_compose_logs conflict-holder 120", cleanup)
+        self.assertIn("emit_redacted_compose_logs egress-conflict 160", cleanup)
+        self.assertIn("emit_redacted_compose_logs egress-conflict-target 160", cleanup)
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=120 conflict-holder >&2', cleanup
+        )
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=160 egress-conflict >&2', cleanup
+        )
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=160 egress-conflict-target >&2',
+            cleanup,
+        )
+
+    def test_timeout_status_diagnostics_redact_stream_key(self) -> None:
+        wait = self.source.split("wait_status_reason() {", 1)[1].split(
+            "\n}\n\nwait_for_target_listener() {", 1
+        )[0]
+        self.assertIn(
+            'safe_payload="$(printf \'%s\' "$payload" | redact_stream_key 2>/dev/null)"',
+            wait,
+        )
+        self.assertIn("last=$safe_payload", wait)
+        self.assertIn("last=<redaction-failed>", wait)
+        self.assertNotIn("last=$payload", wait)
+
+    def test_secret_assertion_fails_closed_on_log_read_and_avoids_pipefail_q(
+        self,
+    ) -> None:
+        final_checks = self.source.split('status_payload="$(read_status)"', 1)[1]
+        self.assertIn(
+            'egress_logs_file="$tmp_dir/egress-conflict.log"', final_checks
+        )
+        self.assertIn(
+            '"${compose[@]}" logs --no-color egress-conflict >"$egress_logs_file" 2>&1',
+            final_checks,
+        )
+        self.assertIn('grep -Fq "$stream_key" "$egress_logs_file"', final_checks)
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color egress-conflict | grep -Fq "$stream_key"',
+            final_checks,
+        )
+
     def test_conflict_target_is_ready_before_holder_starts(self) -> None:
         target_up = self.source.index(
             '"${compose[@]}" up -d egress-conflict-target'

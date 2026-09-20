@@ -88,17 +88,44 @@ EOF
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+redact_stream_key() {
+  python3 -c '
+import sys
+
+data = sys.stdin.buffer.read()
+data = data.replace(sys.argv[1].encode("utf-8"), b"<redacted>")
+sys.stdout.buffer.write(data)
+' "$stream_key"
+}
+
+emit_redacted_compose_logs() {
+  local service="$1"
+  local tail_lines="$2"
+  local raw_file="$tmp_dir/${service}.failure.log"
+  local logs_rc=0
+
+  "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
+  if ! redact_stream_key <"$raw_file" >&2; then
+    echo "failed to redact $service diagnostics; output withheld" >&2
+    return 1
+  fi
+  if (( logs_rc != 0 )); then
+    echo "failed to read $service diagnostics: rc=$logs_rc" >&2
+    return "$logs_rc"
+  fi
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps -a >&2 || true
-    echo "--- holder logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 conflict-holder >&2 || true
-    echo "--- egress logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-conflict >&2 || true
-    echo "--- target logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-conflict-target >&2 || true
+    echo "--- holder logs (redacted) ---" >&2
+    emit_redacted_compose_logs conflict-holder 120 || true
+    echo "--- egress logs (redacted) ---" >&2
+    emit_redacted_compose_logs egress-conflict 160 || true
+    echo "--- target logs (redacted) ---" >&2
+    emit_redacted_compose_logs egress-conflict-target 160 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -130,7 +157,12 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
     fi
     sleep 1
   done
-  echo "egress status did not become $expected_status/$expected_reason; last=$payload" >&2
+  local safe_payload
+  if safe_payload="$(printf '%s' "$payload" | redact_stream_key 2>/dev/null)"; then
+    echo "egress status did not become $expected_status/$expected_reason; last=$safe_payload" >&2
+  else
+    echo "egress status did not become $expected_status/$expected_reason; last=<redaction-failed>" >&2
+  fi
   return 1
 }
 
@@ -224,7 +256,12 @@ if grep -Fq "$stream_key" <<<"$status_payload"; then
   echo "egress conflict status leaked stream key" >&2
   exit 1
 fi
-if "${compose[@]}" logs --no-color egress-conflict | grep -Fq "$stream_key"; then
+egress_logs_file="$tmp_dir/egress-conflict.log"
+if ! "${compose[@]}" logs --no-color egress-conflict >"$egress_logs_file" 2>&1; then
+  echo "failed to read egress conflict logs for secret redaction check" >&2
+  exit 1
+fi
+if grep -Fq "$stream_key" "$egress_logs_file"; then
   echo "egress conflict logs leaked stream key" >&2
   exit 1
 fi
