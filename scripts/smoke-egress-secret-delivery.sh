@@ -33,15 +33,22 @@ YAML
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+# This smoke handles login/session material, a bootstrap token, the plaintext
+# Destination stream key, and the resolved credentialed egress URL. A logging
+# regression can put any of those values into service output, so failure
+# diagnostics are quarantined instead of attempting a partial redaction list.
+withhold_sensitive_diagnostics() {
+  local label="$1"
+  echo "$label diagnostics withheld; this smoke handles credential-bearing material" >&2
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=140 control-ui >&2 || true
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=140 node-agent >&2 || true
+    withhold_sensitive_diagnostics "control-ui/service"
+    withhold_sensitive_diagnostics "node-agent/service"
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -162,7 +169,11 @@ if grep -Fq "$stream_key" <<<"$secret_response"; then
   echo "Destination secret API echoed the plaintext secret" >&2
   exit 1
 fi
-python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("configured") is True, d' <<<"$secret_response"
+python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+raise SystemExit(0 if d.get("configured") is True else "Destination secret API did not confirm configuration")
+' <<<"$secret_response"
 
 secret_state="$("${compose[@]}" exec -T control-ui cat /state/destination_secrets.json)"
 if grep -Fq "$stream_key" <<<"$secret_state"; then
@@ -182,16 +193,16 @@ prepared="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   -H "X-CSRF-Token: $csrf" \
   -H "Idempotency-Key: egress-secret-$session_id" \
   --data "{\"environment\":\"dev\",\"destination_id\":\"$destination_id\"}")"
-provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
-python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-assert d.get("destination_id") == sys.argv[1], d
-' "$destination_id" <<<"$prepared"
 if grep -Fq "$stream_key" <<<"$prepared"; then
   echo "Session prepare response leaked Destination secret" >&2
   exit 1
 fi
+provider_server_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_server_id"])' <<<"$prepared")"
+python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+raise SystemExit(0 if d.get("destination_id") == sys.argv[1] else "Session prepare response destination_id mismatch")
+' "$destination_id" <<<"$prepared"
 
 export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
 "${compose[@]}" up -d --build node-agent
