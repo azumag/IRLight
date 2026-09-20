@@ -223,9 +223,12 @@ assigned="$(session_json)"
 python3 -c '
 import json,sys
 item=json.load(sys.stdin)
-assert item.get("node_id"), item
-assert item.get("node_boot_id") == "session-events-boot", item
-assert item.get("node_registered_at") is not None, item
+if not item.get("node_id"):
+    raise SystemExit("assigned Session is missing node_id")
+if item.get("node_boot_id") != "session-events-boot":
+    raise SystemExit("assigned Session has unexpected node_boot_id")
+if item.get("node_registered_at") is None:
+    raise SystemExit("assigned Session is missing node_registered_at")
 ' <<<"$assigned"
 
 credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
@@ -255,8 +258,10 @@ live="$(session_json)"
 python3 -c '
 import json,sys
 item=json.load(sys.stdin)
-assert item.get("first_ingest_at") is not None, item
-assert item.get("last_ingest_at") is not None, item
+if item.get("first_ingest_at") is None:
+    raise SystemExit("LIVE Session is missing first_ingest_at")
+if item.get("last_ingest_at") is None:
+    raise SystemExit("LIVE Session is missing last_ingest_at")
 ' <<<"$live"
 
 wait "$publisher_pid" || true
@@ -270,20 +275,27 @@ import json,sys
 d=json.load(sys.stdin)
 events=d.get("events", [])
 required={"ingest.auth_failed", "ingest.connected", "ingest.format_detected", "ingest.disconnected"}
-assert required.issubset({e.get("type") for e in events}), events
+if not required.issubset({e.get("type") for e in events}):
+    raise SystemExit("required Session ingest events are missing")
 sequences=[e.get("sequence") for e in events]
-assert sequences == sorted(sequences) and len(sequences) == len(set(sequences)), events
+if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+    raise SystemExit("Session event sequence is not unique and ordered")
 for event in events:
     event_type=event.get("type", "")
     payload=event.get("payload", {})
     forbidden={"credential_secret", "password", "token"}
-    assert forbidden.isdisjoint(payload), event
+    if not forbidden.isdisjoint(payload):
+        raise SystemExit("Session event payload contains a forbidden credential field")
     if event_type == "ingest.auth_failed":
-        assert event.get("origin") == "ingest-auth", event
-        assert event.get("reason_code") == "INVALID_CREDENTIAL", event
+        if event.get("origin") != "ingest-auth":
+            raise SystemExit("ingest.auth_failed has unexpected origin")
+        if event.get("reason_code") != "INVALID_CREDENTIAL":
+            raise SystemExit("ingest.auth_failed has unexpected reason_code")
     elif event_type.startswith("ingest."):
-        assert event.get("origin") == "node-agent", event
-        assert payload.get("node_id"), event
+        if event.get("origin") != "node-agent":
+            raise SystemExit("Node ingest event has unexpected origin")
+        if not payload.get("node_id"):
+            raise SystemExit("Node ingest event is missing node_id")
 ' <<<"$events"
 if grep -Fq "$ingest_secret" <<<"$events"; then
   echo "raw ingest secret leaked into Session events" >&2
