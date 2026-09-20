@@ -52,6 +52,14 @@ Readiness and diagnostic probes running under `set -o pipefail` must not use an 
 
 For bounded command output, capture the producer's complete output into a run-local private temporary file first, require the producer itself to succeed, and only then inspect the saved output. `scripts/smoke-rtmps-ingest-recovery.sh` follows this contract for the four-second `openssl s_client` RTMPS-listener probe. This keeps the existing per-attempt and overall readiness deadlines while separating command failure from a missing certificate marker.
 
+## Secret-bearing diagnostics
+
+A smoke test that deliberately injects a generated credential or stream key must assume that a regression can place that value in status output or service logs. Failure diagnostics therefore must not print raw producer output directly to CI stderr.
+
+Capture diagnostic output inside the run-local private temporary directory, redact every generated secret before emitting it, and withhold the output entirely if redaction fails. Secret-absence assertions must also separate log-read failure from a genuine no-match result; a failed log read is not evidence that the secret was absent. In particular, do not use `docker compose logs | grep -q <secret>` under `set -o pipefail`, because a successful match can terminate `grep` early and turn the upstream SIGPIPE into a false-negative leak check.
+
+`scripts/smoke-egress-stop-terminal.sh`, `scripts/smoke-egress-publish-conflict.sh`, and `scripts/smoke-egress-dns-tls.sh` follow this fail-closed diagnostic boundary.
+
 ## Parallel execution
 
 A unique Compose project name prevents project/volume/name collisions, but it does not by itself make tests with fixed published host ports parallel-safe. Tests that expose fixed ports must either allocate test-specific ports or fail cleanly on collision without changing unrelated containers.
