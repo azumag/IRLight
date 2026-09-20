@@ -69,6 +69,18 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
             cleanup,
         )
 
+    def test_timeout_status_diagnostics_redact_stream_key(self) -> None:
+        wait = self.source.split("wait_status_reason() {", 1)[1].split(
+            "\n}\n\nwait_for_target_listener() {", 1
+        )[0]
+        self.assertIn(
+            'safe_payload="$(printf \'%s\' "$payload" | redact_stream_key 2>/dev/null)"',
+            wait,
+        )
+        self.assertIn("last=$safe_payload", wait)
+        self.assertIn("last=<redaction-failed>", wait)
+        self.assertNotIn("last=$payload", wait)
+
     def test_secret_assertion_fails_closed_on_log_read_and_avoids_pipefail_q(
         self,
     ) -> None:
