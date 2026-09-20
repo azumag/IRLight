@@ -60,6 +60,10 @@ def assemble_planned_report(
         "validate-node-capacity-report.py",
         "irlight_node_capacity_report_validator_for_planned_report",
     )
+    coverage_validator = _load_script(
+        "validate-node-capacity-plan-coverage.py",
+        "irlight_node_capacity_coverage_validator_for_planned_report",
+    )
 
     try:
         plan = plan_validator.load_plan(plan_path)
@@ -91,13 +95,19 @@ def assemble_planned_report(
             "raw trials do not cover the complete canonical scenario plan"
         )
 
+    # Coverage validation requires every report to carry a machine-checkable
+    # profile+scenario prefix. Derive it from the already-validated plan instead
+    # of accepting a second operator-controlled scenario description.
+    report_scenario = coverage_validator.expected_report_scenario_prefix(
+        plan["profile_label"], scenario_id
+    )
     try:
         return assembler.assemble_report(
             trials=normalized,
             run_id=run_id,
             node_profile=node_profile,
             software_revision=software_revision,
-            scenario=scenario_id,
+            scenario=report_scenario,
             safety_margin_percent=safety_margin_percent,
             notes=notes,
         )
