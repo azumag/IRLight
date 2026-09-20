@@ -19,7 +19,7 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
         )
 
     def test_stop_terminal_boundaries_emit_only_expected_static_failure_stages(self) -> None:
-        stages = (
+        stages = {
             "compose-config",
             "compose-up",
             "initial-connected",
@@ -38,13 +38,16 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
             "unsafe-destination-reason",
             "secret-redaction-terminal-output",
             "secret-redaction-logs",
-        )
+        }
         calls = re.findall(
             r'^\s*emit_failure_stage "([a-z0-9-]+)"\s*$',
             self.source,
             flags=re.MULTILINE,
         )
-        self.assertEqual(calls, list(stages))
+        # A single semantic stage may legitimately guard more than one assertion
+        # (for example STOPPED and USER_STOPPED). Reject missing or unexpected
+        # stages without requiring each token to appear exactly once.
+        self.assertEqual(set(calls), stages)
         self.assertIsNone(
             re.search(r'emit_failure_stage\s+"\$', self.source),
             "failure-stage call sites must stay hard-coded to avoid workflow-command injection",
