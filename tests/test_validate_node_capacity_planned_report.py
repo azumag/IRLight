@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -188,6 +190,30 @@ class PersistedPlannedNodeCapacityReportTests(unittest.TestCase):
                 "run provenance is invalid",
             ):
                 self._validate(other_plan, trials, manifest, report)
+
+    def test_report_path_replacement_during_read_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = pathlib.Path(raw_directory)
+            plan, trials, manifest, report = self._fixture(directory)
+            replacement = directory / "replacement-report.json"
+            replacement.write_text(report.read_text(encoding="utf-8"), encoding="utf-8")
+            original_stat = os.lstat(report)
+            replacement_stat = os.lstat(replacement)
+            self.assertNotEqual(
+                (original_stat.st_dev, original_stat.st_ino),
+                (replacement_stat.st_dev, replacement_stat.st_ino),
+            )
+
+            with mock.patch.object(
+                VALIDATOR.os,
+                "lstat",
+                side_effect=[original_stat, replacement_stat],
+            ):
+                with self.assertRaisesRegex(
+                    VALIDATOR.PlannedReportValidationError,
+                    "changed while reading",
+                ):
+                    self._validate(plan, trials, manifest, report)
 
     def test_invalid_scenario_is_fail_closed_without_reflection(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
