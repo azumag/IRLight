@@ -43,6 +43,41 @@ class EgressDnsTlsSmokeIsolationTest(unittest.TestCase):
         self.assertIn('chmod 600 "$tls_secret"', self.source)
         self.assertIn('chmod 600 "$tmp_dir/server.key"', self.source)
 
+    def test_failure_diagnostics_redact_generated_stream_key(self) -> None:
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn("redact_generated_secrets() {", self.source)
+        self.assertIn("emit_redacted_compose_logs() {", self.source)
+        self.assertIn("emit_redacted_compose_logs egress-dns 120", cleanup)
+        self.assertIn("emit_redacted_compose_logs egress-tls 160", cleanup)
+        self.assertIn("emit_redacted_compose_logs egress-tls-target 120", cleanup)
+        self.assertNotIn('"${compose[@]}" logs --no-color --tail=120 egress-dns >&2', cleanup)
+        self.assertNotIn('"${compose[@]}" logs --no-color --tail=160 egress-tls >&2', cleanup)
+        self.assertIn("output withheld", self.source)
+
+    def test_status_timeout_diagnostics_are_redacted(self) -> None:
+        wait_body = self.source.split("wait_status_reason() {", 1)[1].split(
+            "\n}\n\n# The generated project", 1
+        )[0]
+        self.assertIn("redact_generated_secrets", wait_body)
+        self.assertIn("last=<redaction-failed>", wait_body)
+        self.assertNotIn("last=$payload", wait_body)
+
+    def test_secret_log_check_captures_before_searching(self) -> None:
+        self.assertIn('egress_tls_logs="$tmp_dir/egress-tls.log"', self.source)
+        self.assertIn(
+            '"${compose[@]}" logs --no-color egress-tls >"$egress_tls_logs" 2>&1',
+            self.source,
+        )
+        self.assertIn('grep -Fq "$stream_key" "$egress_tls_logs"', self.source)
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color egress-tls | grep -Fq "$stream_key"',
+            self.source,
+        )
+        self.assertIn(
+            "failed to read egress TLS logs for secret redaction check",
+            self.source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
