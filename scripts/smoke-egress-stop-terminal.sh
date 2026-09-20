@@ -55,6 +55,11 @@ YAML
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+emit_failure_stage() {
+  local stage="$1"
+  printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
@@ -118,48 +123,84 @@ assert value.get("reason_code") == expected_reason, value
 ' "$payload" "$expected_status" "$expected_reason"
 }
 
-"${compose[@]}" config >/dev/null
+if ! "${compose[@]}" config >/dev/null; then
+  emit_failure_stage "compose-config"
+  exit 1
+fi
 # Start Node Agent and Control Plane as well: Continuity consumes authenticated
 # local-media URIs from the Agent-owned tmpfs secret volume.
-"${compose[@]}" up -d --build
-wait_egress_status CONNECTED 60
+if ! "${compose[@]}" up -d --build; then
+  emit_failure_stage "compose-up"
+  exit 1
+fi
+if ! wait_egress_status CONNECTED 60; then
+  emit_failure_stage "initial-connected"
+  exit 1
+fi
 
 # Phase 1: remote outage enters a long reconnect backoff. An explicit user stop
 # must interrupt that wait, write STOPPED, and never reconnect after the target
 # comes back.
-"${compose[@]}" stop egress-target >/dev/null
-wait_egress_status RECONNECTING 45
+if ! "${compose[@]}" stop egress-target >/dev/null; then
+  emit_failure_stage "target-stop"
+  exit 1
+fi
+if ! wait_egress_status RECONNECTING 45; then
+  emit_failure_stage "reconnecting"
+  exit 1
+fi
 
 before_stop="$(read_egress_status)"
-python3 -c '
+if ! python3 -c '
 import json,sys,time
 value=json.loads(sys.argv[1])
 assert value.get("status") == "RECONNECTING", value
 next_retry=value.get("next_retry_at")
 assert isinstance(next_retry, (int, float)), value
 assert next_retry - time.time() > 10, value
-' "$before_stop"
+' "$before_stop"; then
+  emit_failure_stage "backoff-window"
+  exit 1
+fi
 
-"${compose[@]}" stop -t 5 egress-gateway >/dev/null
-wait_egress_status STOPPED 10
-assert_status_reason STOPPED USER_STOPPED
+if ! "${compose[@]}" stop -t 5 egress-gateway >/dev/null; then
+  emit_failure_stage "gateway-stop"
+  exit 1
+fi
+if ! wait_egress_status STOPPED 10; then
+  emit_failure_stage "stopped-user-stopped"
+  exit 1
+fi
+if ! assert_status_reason STOPPED USER_STOPPED; then
+  emit_failure_stage "stopped-user-stopped"
+  exit 1
+fi
 
 if "${compose[@]}" ps --status running --services | grep -qx egress-gateway; then
   echo "egress gateway is still running after explicit stop" >&2
+  emit_failure_stage "gateway-still-running"
   exit 1
 fi
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   echo "continuity stopped during egress stop/reconnect race" >&2
+  emit_failure_stage "continuity-survives-stop"
   exit 1
 fi
 
-"${compose[@]}" start egress-target >/dev/null
+if ! "${compose[@]}" start egress-target >/dev/null; then
+  emit_failure_stage "target-recovery-start"
+  exit 1
+fi
 sleep 5
 if "${compose[@]}" ps --status running --services | grep -qx egress-gateway; then
   echo "egress gateway restarted after target recovery despite user stop" >&2
+  emit_failure_stage "target-recovery-no-restart"
   exit 1
 fi
-assert_status_reason STOPPED USER_STOPPED
+if ! assert_status_reason STOPPED USER_STOPPED; then
+  emit_failure_stage "target-recovery-stopped-status"
+  exit 1
+fi
 
 # Phase 2: an unsafe metadata/private destination must fail before GStreamer
 # attempts to connect and must not enter the reconnect loop.
@@ -179,17 +220,26 @@ set -e
 if [[ $terminal_rc -ne 2 ]]; then
   echo "unsafe destination did not exit with terminal status: rc=$terminal_rc" >&2
   echo "$terminal_output" >&2
+  emit_failure_stage "unsafe-destination-terminal"
   exit 1
 fi
-wait_egress_status FAILED 5
-assert_status_reason FAILED DESTINATION_UNSAFE
+if ! wait_egress_status FAILED 5; then
+  emit_failure_stage "unsafe-destination-failed"
+  exit 1
+fi
+if ! assert_status_reason FAILED DESTINATION_UNSAFE; then
+  emit_failure_stage "unsafe-destination-reason"
+  exit 1
+fi
 
 if grep -Fq "$unsafe_secret" <<<"$terminal_output"; then
   echo "terminal guard output leaked destination secret" >&2
+  emit_failure_stage "secret-redaction-terminal-output"
   exit 1
 fi
 if grep -Fq "$stream_key" <<<"$("${compose[@]}" logs --no-color egress-gateway 2>/dev/null || true)"; then
   echo "egress gateway logs leaked stream key" >&2
+  emit_failure_stage "secret-redaction-logs"
   exit 1
 fi
 
