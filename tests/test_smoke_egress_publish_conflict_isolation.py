@@ -48,7 +48,7 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
     ) -> None:
         self.assertIn("redact_stream_key() {", self.source)
         helper = self.source.split("emit_redacted_compose_logs() {", 1)[1].split(
-            "\n}\n\ncleanup() {", 1
+            "\n}\n\ncapture_compose_logs() {", 1
         )[0]
         self.assertIn('>"$raw_file" 2>&1 || logs_rc=$?', helper)
         self.assertIn('redact_stream_key <"$raw_file" >&2', helper)
@@ -98,6 +98,72 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
             final_checks,
         )
 
+    def test_log_marker_probes_capture_complete_logs_before_fixed_search(self) -> None:
+        capture = self.source.split("capture_compose_logs() {", 1)[1].split(
+            "\n}\n\ncompose_logs_contain_marker() {", 1
+        )[0]
+        self.assertIn(
+            '"${compose[@]}" logs --no-color "$service" >"$output_file" 2>&1',
+            capture,
+        )
+        marker = self.source.split("compose_logs_contain_marker() {", 1)[1].split(
+            "\n}\n\ncleanup() {", 1
+        )[0]
+        self.assertIn('capture_compose_logs "$service" "$output_file"', marker)
+        self.assertIn('grep -Fq -- "$marker" "$output_file"', marker)
+        self.assertNotIn(
+            'logs --no-color egress-conflict-target 2>/dev/null | grep -Fq',
+            self.source,
+        )
+
+    def test_polling_keeps_existing_timeout_and_liveness_contracts(self) -> None:
+        listener = self.source.split("wait_for_target_listener() {", 1)[1].split(
+            "\n}\n\n\"${compose[@]}\" config", 1
+        )[0]
+        self.assertIn('local timeout="${1:-30}"', listener)
+        self.assertIn(
+            'compose_logs_contain_marker egress-conflict-target "started with listener on :1935"',
+            listener,
+        )
+        self.assertIn(
+            '"${compose[@]}" ps --status running --services | grep -qx egress-conflict-target',
+            listener,
+        )
+        self.assertIn("sleep 1", listener)
+
+        holder_poll = self.source.split(
+            'holder_poll_logs="$tmp_dir/egress-conflict-target.holder-poll.log"', 1
+        )[1].split(
+            'holder_final_logs="$tmp_dir/egress-conflict-target.holder-final.log"', 1
+        )[0]
+        self.assertIn("for _ in $(seq 1 20); do", holder_poll)
+        self.assertIn(
+            'compose_logs_contain_marker egress-conflict-target "is publishing to path \'$path_name\'"',
+            holder_poll,
+        )
+        self.assertIn("sleep 1", holder_poll)
+
+    def test_final_target_evidence_fails_closed_on_log_read_error(self) -> None:
+        holder_final = self.source.split(
+            'holder_final_logs="$tmp_dir/egress-conflict-target.holder-final.log"', 1
+        )[1].split('"${compose[@]}" up -d egress-conflict', 1)[0]
+        self.assertIn("marker_rc=$?", holder_final)
+        self.assertIn("if (( marker_rc == 2 )); then", holder_final)
+        self.assertIn(
+            "failed to read target logs while confirming first publisher", holder_final
+        )
+
+        conflict_final = self.source.split(
+            'conflict_evidence_logs="$tmp_dir/egress-conflict-target.conflict-evidence.log"',
+            1,
+        )[1].split("# The rejection is terminal", 1)[0]
+        self.assertIn("marker_rc=$?", conflict_final)
+        self.assertIn("if (( marker_rc == 2 )); then", conflict_final)
+        self.assertIn(
+            "failed to read target logs while confirming publish conflict",
+            conflict_final,
+        )
+
     def test_conflict_target_is_ready_before_holder_starts(self) -> None:
         target_up = self.source.index(
             '"${compose[@]}" up -d egress-conflict-target'
@@ -108,7 +174,10 @@ class EgressPublishConflictSmokeIsolationTest(unittest.TestCase):
         )
         self.assertLess(target_up, listener_wait)
         self.assertLess(listener_wait, holder_up)
-        self.assertIn('grep -Fq "started with listener on :1935"', self.source)
+        self.assertIn(
+            'compose_logs_contain_marker egress-conflict-target "started with listener on :1935"',
+            self.source,
+        )
 
     def test_local_images_are_built_before_holder_lifetime_starts(self) -> None:
         build = self.source.index(
