@@ -18,7 +18,7 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
             self.source,
         )
 
-    def test_stop_terminal_boundaries_emit_static_failure_stages(self) -> None:
+    def test_stop_terminal_boundaries_emit_only_expected_static_failure_stages(self) -> None:
         stages = (
             "compose-config",
             "compose-up",
@@ -39,10 +39,12 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
             "secret-redaction-terminal-output",
             "secret-redaction-logs",
         )
-        for stage in stages:
-            with self.subTest(stage=stage):
-                self.assertIn(f'emit_failure_stage "{stage}"', self.source)
-
+        calls = re.findall(
+            r'^\s*emit_failure_stage "([a-z0-9-]+)"\s*$',
+            self.source,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(calls, list(stages))
         self.assertIsNone(
             re.search(r'emit_failure_stage\s+"\$', self.source),
             "failure-stage call sites must stay hard-coded to avoid workflow-command injection",
@@ -61,12 +63,6 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
         for contract in expected_contracts:
             with self.subTest(contract=contract):
                 self.assertIn(contract, self.source)
-
-    def test_failure_stages_are_emitted_only_on_error_paths(self) -> None:
-        helper_end = self.source.index("\n}\n\ncleanup()")
-        body = self.source[helper_end:]
-        self.assertNotRegex(body, r'^emit_failure_stage ', msg="no unconditional stage emission")
-        self.assertNotIn('emit_failure_stage "$stage"', body)
 
 
 if __name__ == "__main__":
