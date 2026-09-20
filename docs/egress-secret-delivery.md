@@ -194,3 +194,5 @@ bootstrap responseにはNodeへ配送するためcredentialed URLが含まれる
 8. catalog/session/node/secret JSONにraw key・credentialed URLがないことを確認
 
 このsmokeは実行ごとに固有のCompose projectを使用し、開始前に既存PoCを `down` しません。終了時も自分が生成したprojectだけを `down --volumes --remove-orphans` で破棄します。cookie jarとCompose overrideは `umask 077` を設定した一時ディレクトリ配下に置き、並行実行や既存PoCの永続volumeへの干渉を避けます。
+
+このsmokeは login/session material、bootstrap token、plaintext stream key、credentialed egress URL を同時に扱うため、失敗時の `control-ui` / `node-agent` raw service log は CI へ再掲しません。API assertion もresponse payload全体を例外文へ埋め込まず、secret non-echo checkをresponseの構造検証より先に行います。secret関連の回帰を検出した failure path 自体がcredentialを公開しないことを優先した fail-closed quarantine です。
