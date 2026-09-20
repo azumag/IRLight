@@ -76,3 +76,5 @@ lock成立後のリクエストは毎回メモリ上で即座にlock判定され
 `tests/test_ingest_auth_guard.py` でcredential/IP双方のlock、期限切れ復帰、成功時リセット、lock中audit書込みのthrottle、秘密情報非保存、bounded auditを検証します。
 
 `scripts/smoke-ingest-auth-abuse.sh` はControl APIをDockerで起動し、閾値を3回へ下げた上で `401 -> 401 -> 429 -> 429` と `Retry-After`、audit stateへのsecret非保存を確認します。
+
+この smoke の失敗診断では、`node-agent` と `control-ui` の service log を run-local の private file にいったん回収し、smoke account password、意図的に送る wrong secret、発行済み ingest username / credential secret を固定文字列で redaction してから CI へ出します。credential 発行後に redaction 値の安全な保存が完了していない場合や、log 取得・redactor 自体が失敗した場合は raw log へフォールバックせず診断出力を withheld にします。これにより、auth logging の回帰を検出する失敗経路そのものが credential-bearing log を CI へ公開しないようにします。
