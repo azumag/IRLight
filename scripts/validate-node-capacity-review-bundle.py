@@ -3,9 +3,10 @@
 
 The bundle is not authority for production configuration. This read-only check
 re-renders it from the referenced persisted max_sessions proposal and current
-coverage bytes, verifies the explicit deployment identity, and requires exact
-canonical equality. Any byte change to the proposal or coverage manifest after
-review therefore invalidates the bundle even when the JSON meaning is unchanged.
+coverage closure, verifies the explicit deployment identity, and requires exact
+canonical equality. Any byte change to the proposal, coverage manifest, load
+plan, or measured reports after review therefore invalidates the bundle even
+when the JSON meaning is unchanged.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ BUNDLE_FIELDS = {
     "proposal_sha256",
     "coverage_manifest",
     "coverage_manifest_sha256",
+    "load_plan",
+    "reports",
     "node_profile",
     "software_revision",
     "candidate_max_sessions",
