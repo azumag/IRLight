@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "smoke-rtmp-netem-blackhole.sh"
 CORE = ROOT / "scripts" / "smoke-rtmp-netem-blackhole-core.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "rtmp-netem-blackhole.yml"
+SHARED_DOCKER_SUITE = ROOT / "scripts" / "ci-docker-smoke-suite.sh"
 
 
 class RtmpNetemBlackholeSmokeIsolationTest(unittest.TestCase):
@@ -14,6 +15,7 @@ class RtmpNetemBlackholeSmokeIsolationTest(unittest.TestCase):
         cls.source = SCRIPT.read_text(encoding="utf-8")
         cls.core_source = CORE.read_text(encoding="utf-8")
         cls.workflow_source = WORKFLOW.read_text(encoding="utf-8")
+        cls.shared_docker_suite_source = SHARED_DOCKER_SUITE.read_text(encoding="utf-8")
 
     def test_public_wrapper_quarantines_all_core_output(self) -> None:
         self.assertIn("umask 077", self.source)
@@ -55,7 +57,7 @@ class RtmpNetemBlackholeSmokeIsolationTest(unittest.TestCase):
         self.assertIn('kill -TERM "$core_pid"', self.source)
         self.assertIn('rm -rf "$tmp_dir"', self.source)
 
-    def test_dedicated_workflow_uses_only_public_wrapper(self) -> None:
+    def test_ci_entrypoints_do_not_bypass_public_wrapper(self) -> None:
         self.assertIn('      - "scripts/smoke-rtmp-netem-blackhole.sh"', self.workflow_source)
         self.assertIn('      - "scripts/smoke-rtmp-netem-blackhole-core.sh"', self.workflow_source)
         self.assertIn(
@@ -65,6 +67,10 @@ class RtmpNetemBlackholeSmokeIsolationTest(unittest.TestCase):
         self.assertNotIn(
             "run: bash ./scripts/smoke-rtmp-netem-blackhole-core.sh",
             self.workflow_source,
+        )
+        self.assertNotIn(
+            "smoke-rtmp-netem-blackhole-core.sh",
+            self.shared_docker_suite_source,
         )
 
     def test_compose_project_is_unique_per_run(self) -> None:
