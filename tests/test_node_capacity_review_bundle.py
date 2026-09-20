@@ -162,26 +162,35 @@ class NodeCapacityReviewBundleTests(unittest.TestCase):
         self.assertEqual(bundle["measured_recommended_max_sessions"], 3)
         self.assertRegex(str(bundle["proposal_sha256"]), r"^[0-9a-f]{64}$")
         self.assertRegex(str(bundle["coverage_manifest_sha256"]), r"^[0-9a-f]{64}$")
+        self.assertRegex(str(bundle["load_plan"]["sha256"]), r"^[0-9a-f]{64}$")
+        self.assertEqual(len(bundle["reports"]), len(SCENARIO_IDS))
+        for report in bundle["reports"]:
+            self.assertRegex(str(report["sha256"]), r"^[0-9a-f]{64}$")
 
-    def test_semantically_equivalent_byte_changes_invalidate_bundle(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            bundle_path, proposal_path, manifest_path, _bundle = self.write_bundle(root)
+    def test_semantically_equivalent_byte_changes_invalidate_full_evidence_closure(self) -> None:
+        for target_name in ("proposal", "manifest", "plan", "report"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                bundle_path, proposal_path, manifest_path, bundle = self.write_bundle(root)
+                if target_name == "proposal":
+                    target = proposal_path
+                elif target_name == "manifest":
+                    target = manifest_path
+                elif target_name == "plan":
+                    target = root / str(bundle["load_plan"]["path"])
+                else:
+                    target = root / str(bundle["reports"][0]["path"])
 
-            original_manifest = manifest_path.read_text(encoding="utf-8")
-            manifest_path.write_text(original_manifest + "\n", encoding="utf-8")
-            self.assertEqual(json.loads(original_manifest), json.loads(manifest_path.read_text()))
-            with self.assertRaises(BUNDLE_VALIDATOR.CapacityReviewBundleValidationError):
-                self.validate(bundle_path, root)
-
-            manifest_path.write_text(original_manifest, encoding="utf-8")
-            proposal_value = json.loads(proposal_path.read_text(encoding="utf-8"))
-            proposal_path.write_text(
-                json.dumps(proposal_value, sort_keys=True),
-                encoding="utf-8",
-            )
-            with self.assertRaises(BUNDLE_VALIDATOR.CapacityReviewBundleValidationError):
-                self.validate(bundle_path, root)
+                original = target.read_text(encoding="utf-8")
+                target.write_text(original + "\n", encoding="utf-8")
+                self.assertEqual(
+                    json.loads(original),
+                    json.loads(target.read_text(encoding="utf-8")),
+                )
+                with self.assertRaises(
+                    BUNDLE_VALIDATOR.CapacityReviewBundleValidationError
+                ):
+                    self.validate(bundle_path, root)
 
     def test_tampered_bundle_and_wrong_identity_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
