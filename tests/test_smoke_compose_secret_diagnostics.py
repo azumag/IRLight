@@ -31,6 +31,7 @@ class SmokeComposeSecretDiagnosticsTest(unittest.TestCase):
         self.assertNotIn('tail -n 20 "$raw_log"', self.wrapper)
         self.assertNotIn('sed ', self.wrapper)
         self.assertIn("inner diagnostics withheld", self.wrapper)
+        self.assertIn("stage=central-compose-quarantined", self.wrapper)
 
     def test_known_port_collision_is_normalized_without_echoing_matching_line(self) -> None:
         self.assertIn("grep -Eiq", self.wrapper)
