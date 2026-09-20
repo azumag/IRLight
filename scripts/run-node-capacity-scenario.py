@@ -19,6 +19,7 @@ concurrent_sessions, which is pinned by the canonical plan.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -75,6 +76,17 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ScenarioRunError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+def _canonical_digest(value: Any) -> str:
+    rendered = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(rendered).hexdigest()
 
 
 def _identity(snapshot: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -247,6 +259,39 @@ def _positive_finite_float(raw: str) -> float:
     return value
 
 
+def _validate_manifest_output(path: Path, trials_jsonl: Path) -> None:
+    if path.exists() or path.is_symlink():
+        raise ScenarioRunError("run manifest already exists; use a new evidence path")
+    if not path.parent.exists():
+        raise ScenarioRunError("run manifest parent directory does not exist")
+    try:
+        if path.resolve() == trials_jsonl.resolve():
+            raise ScenarioRunError("run manifest must not overwrite trials JSONL")
+    except (OSError, RuntimeError) as exc:
+        raise ScenarioRunError("run manifest path cannot be resolved safely") from exc
+
+
+def _write_run_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    writer = _load_script(
+        "assemble-node-capacity-report.py",
+        "irlight_node_capacity_atomic_writer_for_runner_manifest",
+    )
+    rendered = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    try:
+        writer._write_exclusive_atomic(path, rendered)
+    except writer.CapacityAssemblyError as exc:
+        raise ScenarioRunError("run manifest could not be published") from exc
+
+
 def run_scenario(
     *,
     plan_path: Path,
@@ -255,6 +300,7 @@ def run_scenario(
     runner_command: list[str],
     timeout_seconds: float,
     failure_policy: str,
+    run_manifest: Path | None = None,
 ) -> dict[str, Any]:
     if not runner_command or not runner_command[0]:
         raise ScenarioRunError("runner command must not be empty")
@@ -264,6 +310,8 @@ def run_scenario(
         raise ScenarioRunError("trials JSONL already exists; use a new evidence path")
     if not trials_jsonl.parent.exists():
         raise ScenarioRunError("trials JSONL parent directory does not exist")
+    if run_manifest is not None:
+        _validate_manifest_output(run_manifest, trials_jsonl)
 
     validator = _load_script(
         "validate-node-capacity-load-plan.py",
@@ -290,6 +338,7 @@ def run_scenario(
 
     planned_levels = list(scenario["session_counts"])
     recorded_levels: list[int] = []
+    recorded_trials: list[dict[str, Any]] = []
     boundary_found = False
     for concurrent_sessions in planned_levels:
         request = {
@@ -309,12 +358,13 @@ def run_scenario(
         except recorder.CapacityTrialRecordError as exc:
             raise ScenarioRunError("capacity harness returned an invalid trial") from exc
         recorded_levels.append(recorded["concurrent_sessions"])
+        recorded_trials.append(recorded)
         if recorded["outcome"] == "fail":
             boundary_found = True
             if failure_policy == "stop":
                 break
 
-    return {
+    summary = {
         "schema_version": 1,
         "scenario_id": scenario_id,
         "failure_policy": failure_policy,
@@ -322,6 +372,21 @@ def run_scenario(
         "boundary_found": boundary_found,
         "completed_plan": recorded_levels == planned_levels,
     }
+    if run_manifest is not None:
+        manifest = {
+            "schema_version": 1,
+            "plan_sha256": _canonical_digest(plan),
+            "profile_label": plan["profile_label"],
+            "scenario_id": scenario_id,
+            "failure_policy": failure_policy,
+            "planned_load_levels": planned_levels,
+            "tested_load_levels": recorded_levels,
+            "boundary_found": boundary_found,
+            "completed_plan": recorded_levels == planned_levels,
+            "trials_sha256": _canonical_digest(recorded_trials),
+        }
+        _write_run_manifest(run_manifest, manifest)
+    return summary
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -329,6 +394,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--trials-jsonl", type=Path, required=True)
+    parser.add_argument(
+        "--run-manifest",
+        type=Path,
+        help=(
+            "Persist an exclusive schema-v1 sidecar binding the validated plan and "
+            "normalized raw trials by SHA-256."
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=_positive_finite_float, required=True)
     parser.add_argument(
         "--failure-policy",
@@ -360,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             runner_command=[args.runner, *args.runner_arg],
             timeout_seconds=args.timeout_seconds,
             failure_policy=args.failure_policy,
+            run_manifest=args.run_manifest,
         )
     except (ScenarioRunError, OSError, UnicodeError) as exc:
         print(f"node capacity scenario run failed: {exc}", file=sys.stderr)
