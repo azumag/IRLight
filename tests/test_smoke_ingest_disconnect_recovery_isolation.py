@@ -46,6 +46,71 @@ class IngestDisconnectRecoverySmokeIsolationTest(unittest.TestCase):
             self.source,
         )
 
+    def test_failure_cleanup_quarantines_credential_bearing_logs(self) -> None:
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn("quarantine_failure_diagnostics", cleanup)
+        self.assertNotIn('"${compose[@]}" logs', cleanup)
+        self.assertNotIn('cat "$publisher_log"', cleanup)
+
+        quarantine = self.source.split("quarantine_failure_diagnostics() {", 1)[1].split(
+            "\n}\n\ncleanup()",
+            1,
+        )[0]
+        self.assertIn("Failure diagnostics quarantined", quarantine)
+        for runtime_secret in (
+            "$ingest_username",
+            "$ingest_secret",
+            "$cookie_jar",
+            "$csrf",
+            "$publisher_log",
+        ):
+            self.assertNotIn(runtime_secret, quarantine)
+
+    def test_timeout_paths_do_not_emit_raw_api_payloads(self) -> None:
+        wait_session = self.source.split("wait_session_status() {", 1)[1].split(
+            "\n}\n\nwait_holding_reason()",
+            1,
+        )[0]
+        self.assertIn("Session and event timeout diagnostics quarantined.", wait_session)
+        self.assertNotIn("session_json >&2", wait_session)
+        self.assertNotIn("session_events >&2", wait_session)
+
+        wait_holding = self.source.split("wait_holding_reason() {", 1)[1].split(
+            "\n}\n\nwait_assigned_node()",
+            1,
+        )[0]
+        self.assertIn("Session and event timeout diagnostics quarantined.", wait_holding)
+        self.assertNotIn("session_json >&2", wait_holding)
+        self.assertNotIn("session_events >&2", wait_holding)
+
+        wait_node = self.source.split("wait_assigned_node() {", 1)[1].split(
+            "\n}\n\nwait_recovery_candidate()",
+            1,
+        )[0]
+        self.assertIn("Node assignment timeout diagnostics quarantined.", wait_node)
+        self.assertNotIn('node_admin_curl -fsS "$base_url/internal/nodes" >&2', wait_node)
+
+        wait_candidate = self.source.split("wait_recovery_candidate() {", 1)[1].split(
+            "\n}\n\nstop_publisher()",
+            1,
+        )[0]
+        self.assertIn("Session and event timeout diagnostics quarantined.", wait_candidate)
+        self.assertNotIn("session_json >&2", wait_candidate)
+        self.assertNotIn("session_events >&2", wait_candidate)
+
+    def test_disconnect_recovery_contract_remains_explicit(self) -> None:
+        for marker in (
+            "wait_session_status LIVE 60",
+            "wait_holding_reason INGEST_DISCONNECTED 60",
+            'candidate_info="$(wait_recovery_candidate 45)"',
+            "wait_session_status LIVE 75",
+            'kill -0 "$publisher_pid"',
+            'e.get("type") == "ingest.reconnected"',
+            'e.get("type") == "session.recovered"',
+            "minimum = max(0.0, stable - 0.5)",
+        ):
+            self.assertIn(marker, self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
