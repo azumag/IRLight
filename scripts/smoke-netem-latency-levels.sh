@@ -12,7 +12,8 @@ case "$protocol" in
     source_script="scripts/smoke-rtmp-netem-degradation-matrix-core.sh"
     ;;
   srt)
-    source_script="scripts/smoke-srt-netem-degradation-matrix.sh"
+    public_script="scripts/smoke-srt-netem-degradation-matrix.sh"
+    source_script="scripts/smoke-srt-netem-degradation-matrix-core.sh"
     ;;
   *)
     echo "usage: $0 <rtmp|srt>" >&2
@@ -79,16 +80,20 @@ bash -n "$tmp_script"
 printf '\n=== netem-latency-levels protocol=%s profiles=%s duration=%ss ===\n' \
   "$protocol" "$profiles" "$profile_seconds"
 
-if [[ "$protocol" == "rtmp" ]]; then
-  RTMP_NETEM_MATRIX_CORE="$tmp_script" \
-  NETEM_MATRIX_PROFILES="$profiles" \
-  NETEM_PROFILE_SECONDS="$profile_seconds" \
-    bash "$public_script" | tee "$log_file"
-else
-  NETEM_MATRIX_PROFILES="$profiles" \
-  NETEM_PROFILE_SECONDS="$profile_seconds" \
-    bash "$tmp_script" | tee "$log_file"
-fi
+case "$protocol" in
+  rtmp)
+    RTMP_NETEM_MATRIX_CORE="$tmp_script" \
+    NETEM_MATRIX_PROFILES="$profiles" \
+    NETEM_PROFILE_SECONDS="$profile_seconds" \
+      bash "$public_script" | tee "$log_file"
+    ;;
+  srt)
+    SRT_NETEM_MATRIX_CORE="$tmp_script" \
+    NETEM_MATRIX_PROFILES="$profiles" \
+    NETEM_PROFILE_SECONDS="$profile_seconds" \
+      bash "$public_script" | tee "$log_file"
+    ;;
+esac
 
 IFS=',' read -r -a expected_profiles <<<"$profiles"
 for profile in "${expected_profiles[@]}"; do
