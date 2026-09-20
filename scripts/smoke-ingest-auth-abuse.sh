@@ -22,32 +22,96 @@ base_url="${BASE_URL:-http://127.0.0.1:8080}"
 source_ip="203.0.113.50"
 wrong_secret="abuse-secret-must-never-persist"
 cookie_jar="$tmp_dir/cookies.txt"
+redaction_values="$tmp_dir/ingest-auth-abuse.redaction-values"
 email="auth-abuse-$(date +%s)-$RANDOM@example.invalid"
 password="SmokePassword123!"
 csrf=""
 session_id=""
 ingest_username=""
+ingest_secret=""
+redaction_ready=0
+credential_material_obtained=0
+redaction_has_ingest_credential=0
 
 export IRLIGHT_INGEST_AUTH_FAILURE_WINDOW_SECONDS=60
 export IRLIGHT_INGEST_AUTH_MAX_FAILURES_PER_CREDENTIAL=3
 export IRLIGHT_INGEST_AUTH_MAX_FAILURES_PER_IP=20
 export IRLIGHT_INGEST_AUTH_LOCKOUT_SECONDS=30
 
+write_redaction_values() {
+  redaction_ready=0
+  if ! printf 'IRLIGHT_REDACTION_V1\0%s\0%s\0%s\0%s\0' \
+    "$password" "$wrong_secret" "$ingest_username" "$ingest_secret" >"$redaction_values"; then
+    return 1
+  fi
+  if ! chmod 600 "$redaction_values"; then
+    return 1
+  fi
+  redaction_ready=1
+}
+
+redact_auth_values() {
+  python3 -c '
+from pathlib import Path
+import sys
+
+values = Path(sys.argv[1]).read_bytes().split(b"\0")
+if len(values) != 6 or values[0] != b"IRLIGHT_REDACTION_V1" or values[-1] != b"":
+    raise SystemExit("invalid redaction value file")
+if not values[1] or not values[2]:
+    raise SystemExit("missing auth-abuse redaction value")
+
+data = sys.stdin.buffer.read()
+for raw in values[1:5]:
+    if raw:
+        data = data.replace(raw, b"<redacted>")
+sys.stdout.buffer.write(data)
+' "$redaction_values"
+}
+
+emit_redacted_compose_logs() {
+  local service="$1"
+  local tail_lines="$2"
+  local raw_file="$tmp_dir/${service}.failure.log"
+  local logs_rc=0
+
+  if (( redaction_ready != 1 )); then
+    echo "failed to initialize ingest-auth-abuse redaction; $service diagnostics withheld" >&2
+    return 1
+  fi
+  if (( credential_material_obtained == 1 && redaction_has_ingest_credential != 1 )); then
+    echo "ingest credential was issued before its redaction values were secured; $service diagnostics withheld" >&2
+    return 1
+  fi
+
+  "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
+  if ! redact_auth_values <"$raw_file" >&2; then
+    echo "failed to redact $service diagnostics; output withheld" >&2
+    return 1
+  fi
+  if (( logs_rc != 0 )); then
+    echo "failed to read $service diagnostics: rc=$logs_rc" >&2
+    return "$logs_rc"
+  fi
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=150 node-agent >&2 || true
-    echo "--- control-ui logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=150 control-ui >&2 || true
+    echo "--- node-agent logs (redacted) ---" >&2
+    emit_redacted_compose_logs node-agent 150 || true
+    echo "--- control-ui logs (redacted) ---" >&2
+    emit_redacted_compose_logs control-ui 150 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
 trap cleanup EXIT
+
+write_redaction_values
 
 wait_http() {
   local deadline=$((SECONDS + ${2:-60}))
@@ -163,7 +227,11 @@ credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $csrf" \
   --data '{"protocols":["rtmp"],"ttl_seconds":3600}')"
+credential_material_obtained=1
 ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
+ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
+write_redaction_values
+redaction_has_ingest_credential=1
 
 for attempt in 1 2; do
   response="$(auth_response)"
