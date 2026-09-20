@@ -4,8 +4,12 @@
 The existing max_sessions proposal is intentionally a readable derived artifact,
 but its repository paths are provenance references rather than content pins. This
 read-only command validates that proposal again and emits SHA-256 digests for the
-exact proposal, coverage manifest, load plan, and measured reports a reviewer is
-approving.
+exact proposal and its complete validated evidence closure.
+
+Schema-v1 coverage produces the existing schema-v1 review bundle (proposal,
+coverage manifest, load plan, measured reports). Schema-v2 provenance-bound
+coverage produces a schema-v2 bundle that additionally pins every raw trial
+stream and run manifest referenced by the coverage manifest.
 
 It never edits scheduler inventory or Node configuration, executes load, contacts
 a provider, or chooses capacity policy.
@@ -33,7 +37,7 @@ COVERAGE_VALIDATOR = Path(__file__).with_name(
 )
 # Canonical report validation currently caps one measured report at 2 MiB. Keep
 # the pinning guardrail above that while still bounding a post-validation
-# replacement before hashing it.
+# replacement before hashing it. Raw trial files share the same bounded guardrail.
 MAX_PINNED_FILE_BYTES = 8 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
@@ -154,7 +158,10 @@ def _collect_pins(
         )
         coverage_digest_before = _stable_sha256(resolved_coverage)
         coverage_payload = coverage_validator.load_manifest(resolved_coverage)
-        coverage_validator.validate_manifest(coverage_payload, repo_root=repo_root)
+        coverage_summary = coverage_validator.validate_manifest(
+            coverage_payload,
+            repo_root=repo_root,
+        )
         coverage_digest_after = _stable_sha256(resolved_coverage)
     except CapacityReviewBundleRenderError:
         raise
@@ -171,6 +178,7 @@ def _collect_pins(
 
     load_plan_name = coverage_payload["load_plan"]
     reports_payload = coverage_payload["reports"]
+    provenance_bound = coverage_summary["provenance_bound"]
     try:
         resolved_plan = coverage_validator._validate_repo_file(  # noqa: SLF001
             repo_root,
@@ -184,19 +192,38 @@ def _collect_pins(
                 entry["path"],
                 "report path",
             )
-            reports.append(
-                {
-                    "scenario_id": entry["scenario_id"],
-                    "path": entry["path"],
-                    "sha256": _stable_sha256(resolved_report),
-                }
-            )
+            pinned_report = {
+                "scenario_id": entry["scenario_id"],
+                "path": entry["path"],
+                "sha256": _stable_sha256(resolved_report),
+            }
+            if provenance_bound:
+                resolved_trials = coverage_validator._validate_repo_file(  # noqa: SLF001
+                    repo_root,
+                    entry["trials_path"],
+                    "trials path",
+                )
+                resolved_run_manifest = coverage_validator._validate_repo_file(  # noqa: SLF001
+                    repo_root,
+                    entry["run_manifest_path"],
+                    "run manifest path",
+                )
+                pinned_report.update(
+                    {
+                        "trials_path": entry["trials_path"],
+                        "trials_sha256": _stable_sha256(resolved_trials),
+                        "run_manifest_path": entry["run_manifest_path"],
+                        "run_manifest_sha256": _stable_sha256(resolved_run_manifest),
+                    }
+                )
+            reports.append(pinned_report)
     except CapacityReviewBundleRenderError:
         raise
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise CapacityReviewBundleRenderError("capacity evidence closure is invalid") from exc
 
     return {
+        "schema_version": 2 if provenance_bound else 1,
         "proposal_path": proposal_name,
         "proposal_sha256": _stable_sha256(resolved_proposal),
         "coverage_manifest": coverage_name,
@@ -246,8 +273,8 @@ def render_bundle(
         )
 
         # Revalidate after hashing the complete evidence closure. This catches a
-        # report/plan/manifest/proposal replacement that occurred between the
-        # first canonical validation and digest collection.
+        # report/plan/manifest/proposal/raw-provenance replacement that occurred
+        # between the first canonical validation and digest collection.
         validated_after = proposal_validator.validate_proposal_file(
             resolved_proposal,
             expected_node_profile=expected_node_profile,
@@ -282,7 +309,6 @@ def render_bundle(
         raise CapacityReviewBundleRenderError("capacity evidence changed while being pinned")
 
     return {
-        "schema_version": 1,
         **pins_after,
         "node_profile": validated_after["node_profile"],
         "software_revision": validated_after["software_revision"],
