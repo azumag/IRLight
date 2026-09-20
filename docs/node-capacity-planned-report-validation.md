@@ -18,7 +18,9 @@ python3 scripts/validate-node-capacity-planned-report.py \
 
 report の `run_id`、`safety_margin_percent`、`notes` は report assembly 時に明示する metadata / policy input なので、persisted report から再構成器へ渡します。一方、測定 trial、media profile/scenario、Node profile、software revision は run provenance 側から導出されます。したがって report 内の trial metric や measured identity だけを書き換えても、raw trials / run manifest と一致しなければ fail-closed になります。
 
-persisted report 自体は bounded stable regular-file read で読み、final symlink / special file、oversize、read 中の pathname replacement や same-inode mutation を拒否します。この validator は「その report 内容が提示された canonical run provenance と整合する」ことを検証するもので、外部からの暗号学的な真正性を付与するものではありません。
+persisted report 自体は bounded stable regular-file read で読み、final symlink / special file、oversize、read 中の pathname replacement や same-inode mutation を拒否します。plan と run manifest は既存の stable plan reader を再利用し、raw trial JSONL も recorder の sidecar lock に加えて opened FD と read 後 pathname の device/inode/size/mtime/ctime が一致することを確認します。これにより、検証中に evidence path が別ファイルへ差し替えられた場合も成功扱いにしません。
+
+この validator は「その report 内容が提示された canonical run provenance と整合する」ことを検証するもので、外部からの暗号学的な真正性を付与するものではありません。
 
 ## Safety boundary
 
