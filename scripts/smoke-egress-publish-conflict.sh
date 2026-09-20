@@ -157,7 +157,12 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
     fi
     sleep 1
   done
-  echo "egress status did not become $expected_status/$expected_reason" >&2
+  local safe_payload
+  if safe_payload="$(printf '%s' "$payload" | redact_stream_key 2>/dev/null)"; then
+    echo "egress status did not become $expected_status/$expected_reason; last=$safe_payload" >&2
+  else
+    echo "egress status did not become $expected_status/$expected_reason; last=<redaction-failed>" >&2
+  fi
   return 1
 }
 
