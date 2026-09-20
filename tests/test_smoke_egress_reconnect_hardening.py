@@ -108,6 +108,32 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
         self.assertIn("exit 1", read_failure)
         self.assertNotIn("$stream_key", read_failure)
 
+    def test_failure_diagnostics_redact_generated_stream_key(self) -> None:
+        helper = self.source.split("redact_stream_key() {", 1)[1].split(
+            "\n}\n\ncleanup()", 1
+        )[0]
+        self.assertIn('.replace(secret, "<redacted>")', helper)
+
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        for service in ("continuity", "egress-gateway", "egress-target"):
+            with self.subTest(service=service):
+                self.assertRegex(
+                    cleanup,
+                    rf'logs --no-color --tail=\d+ {service} 2>&1 \| redact_stream_key >&2 \|\| true',
+                )
+
+        status_wait = self.source.split("wait_egress_status() {", 1)[1].split(
+            "\n}\n\ntarget_path_ready()", 1
+        )[0]
+        self.assertIn("read_egress_status | redact_stream_key", status_wait)
+        self.assertNotIn("last=$(read_egress_status)", status_wait)
+
+        target_wait = self.source.split("wait_target_path() {", 1)[1].split(
+            "\n}\n\n# The generated project", 1
+        )[0]
+        self.assertNotIn("live/$stream_key", target_wait)
+        self.assertNotIn("paths=$(target_api", target_wait)
+
 
 if __name__ == "__main__":
     unittest.main()
