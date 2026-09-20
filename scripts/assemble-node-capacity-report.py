@@ -36,6 +36,16 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _identity(snapshot: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        snapshot.st_dev,
+        snapshot.st_ino,
+        snapshot.st_size,
+        snapshot.st_mtime_ns,
+        snapshot.st_ctime_ns,
+    )
+
+
 def parse_trials_jsonl(raw: str) -> list[dict[str, Any]]:
     """Parse already-snapshotted trial JSONL without reopening its path."""
 
@@ -112,7 +122,17 @@ def _open_trials_readonly(path: Path) -> Any:
 def load_trials_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
         with _open_trials_readonly(path) as handle:
+            opened = os.fstat(handle.fileno())
             raw_bytes = handle.read(MAX_TRIALS_JSONL_BYTES + 1)
+            after_read = os.fstat(handle.fileno())
+            try:
+                after_path = os.lstat(path)
+            except OSError as exc:
+                raise CapacityAssemblyError("trials JSONL changed while reading") from exc
+            if not stat.S_ISREG(after_path.st_mode):
+                raise CapacityAssemblyError("trials JSONL changed while reading")
+            if _identity(opened) != _identity(after_read) or _identity(opened) != _identity(after_path):
+                raise CapacityAssemblyError("trials JSONL changed while reading")
         if len(raw_bytes) > MAX_TRIALS_JSONL_BYTES:
             raise CapacityAssemblyError(
                 f"trials JSONL exceeds maximum size of {MAX_TRIALS_JSONL_BYTES} bytes"
