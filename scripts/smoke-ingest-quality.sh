@@ -28,6 +28,15 @@ ingest_secret=""
 provider_server_id=""
 session_id=""
 
+# This smoke handles login/session material and an issued ingest credential.
+# Publisher output may include the credential-bearing RTMP URL, while service
+# and Node API diagnostics may reflect auth logging regressions. Keep producer
+# diagnostics out of CI and emit only fixed failure context.
+withhold_sensitive_diagnostics() {
+  local label="$1"
+  echo "$label diagnostics withheld; this smoke handles credential-bearing material" >&2
+}
+
 cleanup() {
   status=$?
   if [[ -n "$publisher_pid" ]]; then
@@ -35,16 +44,10 @@ cleanup() {
     wait "$publisher_pid" 2>/dev/null || true
   fi
   if [[ $status -ne 0 ]]; then
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=200 node-agent >&2 || true
-    echo "--- mediamtx logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 mediamtx >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 control-ui >&2 || true
-    if [[ -f "$publisher_log" ]]; then
-      echo "--- publisher log ---" >&2
-      tail -120 "$publisher_log" >&2 || true
-    fi
+    withhold_sensitive_diagnostics "node-agent/service"
+    withhold_sensitive_diagnostics "mediamtx/service"
+    withhold_sensitive_diagnostics "control-ui/service"
+    withhold_sensitive_diagnostics "publisher"
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -81,6 +84,7 @@ raise SystemExit(0 if any(n.get("session_assigned") is True and n.get("session_i
     sleep 1
   done
   echo "Node did not bind to ingest quality Session" >&2
+  withhold_sensitive_diagnostics "Node assignment API"
   return 1
 }
 
@@ -106,7 +110,7 @@ raise SystemExit(1)
     sleep 1
   done
   echo "Node ingest status did not become $expected reason=$reason" >&2
-  node_admin_curl -fsS "$base_url/internal/nodes" >&2 || true
+  withhold_sensitive_diagnostics "Node status API"
   return 1
 }
 
@@ -130,6 +134,7 @@ raise SystemExit(1)
     sleep 1
   done
   echo "Node event not found: $expected" >&2
+  withhold_sensitive_diagnostics "Node event API"
   return 1
 }
 
