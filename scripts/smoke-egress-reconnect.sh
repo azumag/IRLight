@@ -61,6 +61,11 @@ YAML
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
+emit_failure_stage() {
+  local stage="$1"
+  printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
@@ -182,41 +187,78 @@ wait_target_path() {
 
 # The generated project must never borrow or tear down a developer stack. If a
 # fixed host port is occupied, let `up` fail rather than preempting that owner.
-"${compose[@]}" config >/dev/null
+if ! "${compose[@]}" config >/dev/null; then
+  emit_failure_stage "compose-config"
+  exit 1
+fi
 # Continuity now receives its authenticated local-media URIs from Node Agent
 # tmpfs files. Start the complete PoC dependency chain so the test exercises
 # production-equivalent secret delivery instead of bypassing it.
-"${compose[@]}" up -d --build
-wait_target_api 60
-wait_egress_status CONNECTED 60
-wait_target_path 60
+if ! "${compose[@]}" up -d --build; then
+  emit_failure_stage "compose-up"
+  exit 1
+fi
+if ! wait_target_api 60; then
+  emit_failure_stage "target-api-initial"
+  exit 1
+fi
+if ! wait_egress_status CONNECTED 60; then
+  emit_failure_stage "egress-connected-initial"
+  exit 1
+fi
+if ! wait_target_path 60; then
+  emit_failure_stage "target-path-initial"
+  exit 1
+fi
 
 status_payload="$(read_egress_status)"
 if grep -Fq "$stream_key" <<<"$status_payload"; then
   echo "egress status leaked stream key" >&2
+  emit_failure_stage "secret-redaction-status"
   exit 1
 fi
 if "${compose[@]}" logs --no-color egress-gateway | grep -Fq "$stream_key"; then
   echo "egress logs leaked stream key" >&2
+  emit_failure_stage "secret-redaction-logs"
   exit 1
 fi
 
 # Simulate a remote RTMP outage. The Egress Gateway must reconnect on its own;
 # Continuity must keep publishing the local output/relay stream throughout.
-"${compose[@]}" stop egress-target >/dev/null
-wait_egress_status RECONNECTING 45
+if ! "${compose[@]}" stop egress-target >/dev/null; then
+  emit_failure_stage "target-stop"
+  exit 1
+fi
+if ! wait_egress_status RECONNECTING 45; then
+  emit_failure_stage "egress-reconnecting"
+  exit 1
+fi
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   echo "continuity stopped when the external destination went down" >&2
+  emit_failure_stage "continuity-during-outage"
   exit 1
 fi
 
-"${compose[@]}" start egress-target >/dev/null
-wait_target_api 45
-wait_egress_status CONNECTED 60
-wait_target_path 60
+if ! "${compose[@]}" start egress-target >/dev/null; then
+  emit_failure_stage "target-start"
+  exit 1
+fi
+if ! wait_target_api 45; then
+  emit_failure_stage "target-api-recovery"
+  exit 1
+fi
+if ! wait_egress_status CONNECTED 60; then
+  emit_failure_stage "egress-connected-recovery"
+  exit 1
+fi
+if ! wait_target_path 60; then
+  emit_failure_stage "target-path-recovery"
+  exit 1
+fi
 
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   echo "continuity is not running after egress recovery" >&2
+  emit_failure_stage "continuity-after-recovery"
   exit 1
 fi
 
