@@ -24,3 +24,21 @@ CI の Docker smoke suite は static stage annotation を artifact に残しま�
 - `secret-redaction-logs`: 取得済み logs に stream key が含まれていた
 
 stage token に secret 値や外部入力は含めません。再接続 timeout、retry policy、production configuration はこの診断契約の対象外です。
+
+## Stop / terminal smoke の failure stages
+
+`scripts/smoke-egress-stop-terminal.sh` も同じ annotation 契約を使います。explicit stop と terminal unsafe-destination のどこで最初に失敗したかを、Docker smoke artifact の `Stage` から判別できます。
+
+主な stage は次のとおりです。
+
+- `initial-connected`: 初期 `CONNECTED` へ到達しなかった
+- `reconnecting`: target 停止後に `RECONNECTING` へ到達しなかった
+- `backoff-window`: explicit stop と競合させるための long backoff 条件を満たさなかった
+- `stopped-user-stopped`: gateway stop 後の `STOPPED / USER_STOPPED` 契約を満たさなかった
+- `continuity-survives-stop`: egress stop/reconnect race 中に Continuity が停止した
+- `target-recovery-no-restart`: user stop 後の target 復旧で gateway が再起動した
+- `unsafe-destination-terminal`: unsafe destination が terminal exit contract を満たさなかった
+- `unsafe-destination-failed` / `unsafe-destination-reason`: `FAILED / DESTINATION_UNSAFE` 契約を満たさなかった
+- `secret-redaction-terminal-output` / `secret-redaction-logs`: terminal output または logs に generated secret が露出した
+
+stage token は hard-coded ASCII token に限定し、secret や外部入力を workflow annotation へ反射しません。既存の retry、timeout、status、reason-code assertion は診断追加のために緩和しません。
