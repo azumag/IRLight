@@ -18,7 +18,7 @@ python3 scripts/validate-node-capacity-planned-report.py \
 
 report の `run_id`、`safety_margin_percent`、`notes` は report assembly 時に明示する metadata / policy input なので、persisted report から再構成器へ渡します。一方、測定 trial、media profile/scenario、Node profile、software revision は run provenance 側から導出されます。したがって report 内の trial metric や measured identity だけを書き換えても、raw trials / run manifest と一致しなければ fail-closed になります。
 
-この validator は「その report 内容が提示された canonical run provenance と整合する」ことを検証するもので、外部からの暗号学的な真正性を付与するものではありません。run manifest と raw trials を含む evidence closure の bytes を review 時に固定する責務は、digest-pinned review artifact 側にあります。
+persisted report 自体は bounded stable regular-file read で読み、final symlink / special file、oversize、read 中の pathname replacement や same-inode mutation を拒否します。この validator は「その report 内容が提示された canonical run provenance と整合する」ことを検証するもので、外部からの暗号学的な真正性を付与するものではありません。
 
 ## Safety boundary
 
@@ -26,4 +26,4 @@ validator は provider API、network、subprocess、credential、課金リソー
 
 ## 次段
 
-現在の durable coverage manifest は load plan と report path を束縛しますが、raw trials / run manifest path はまだ schema に含みません。この validator を primitive として、次段では coverage / release acceptance の永続 evidence も run provenance まで閉じる必要があります。その schema migration は既存 schema-v1 との互換性を明示して別変更として扱います。
+現在の durable coverage manifest は load plan と report path を束縛しますが、raw trials / run manifest path はまだ schema に含みません。また現行の digest-pinned review bundle が固定する evidence closure も coverage manifest・load plan・reports までで、raw trials / run manifest はまだ含みません。この validator を primitive として、次段では coverage / release acceptance / review bundle の永続 evidence を run provenance まで閉じる必要があります。その schema migration は既存 schema-v1 との互換性を明示して別変更として扱います。
