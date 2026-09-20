@@ -108,11 +108,14 @@ wait_http() {
 
 wait_rtmps_listener() {
   local timeout="${1:-45}" deadline
+  local probe_output="$tmp_dir/rtmps-listener-probe.txt"
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
-    if timeout 4 openssl s_client -connect 127.0.0.1:1936 -servername localhost </dev/null 2>/dev/null \
-      | grep -q 'BEGIN CERTIFICATE'; then
-      return 0
+    if timeout 4 openssl s_client -connect 127.0.0.1:1936 -servername localhost \
+      </dev/null >"$probe_output" 2>/dev/null; then
+      if grep -Fq 'BEGIN CERTIFICATE' "$probe_output"; then
+        return 0
+      fi
     fi
     sleep 1
   done
