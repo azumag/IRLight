@@ -49,6 +49,6 @@ fi
 if grep -Eiq 'address already in use|port is already allocated|failed to bind|bind for .* failed|driver failed programming external connectivity' "$raw_log"; then
   echo "host port is already allocated" >&2
 else
-  echo "::error title=IRLight docker smoke failure::inner diagnostics withheld because this smoke carries generated ingest credentials" >&2
+  echo "::error title=IRLight docker smoke failure::stage=central-compose-quarantined; inner diagnostics withheld because this smoke carries generated ingest credentials" >&2
 fi
 exit "$status"
