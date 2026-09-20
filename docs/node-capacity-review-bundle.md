@@ -4,17 +4,32 @@
 
 実測値を scheduler / Node inventory へ反映する判断を残すときは、proposal を canonical validator で再検証したうえで、**proposal → coverage manifest → load plan + measured reports** の evidence closure 全体を SHA-256 で固定した review bundle を保存できます。
 
-## 生成
+## 永続化する review bundle の生成
+
+既存の review bundle を更新する場合は `write-node-capacity-review-bundle.py` を使います。proposal と evidence closure の検証・digest 収集がすべて成功してから、一時ファイルを同じディレクトリへ書き、最後に atomic rename で置き換えます。検証失敗や書き込み失敗で既存の known-good bundle を先に truncate しません。
+
+```bash
+python3 scripts/write-node-capacity-review-bundle.py \
+  docs/evidence/node-capacity/max-sessions-proposal.json \
+  --output docs/evidence/node-capacity/review-bundle.json \
+  --node-profile 'linux-x86_64 4 vCPU 8 GiB' \
+  --software-revision 0123456789abcdef0123456789abcdef01234567
+```
+
+`--output` は repository-relative path に限定され、親ディレクトリは事前に存在している必要があります。symlink の出力先・親ディレクトリや、bundle が固定対象にしている proposal / coverage manifest / load plan / measured report 自体を出力先に指定した場合は fail-closed です。
+
+stdout へ一時的に出力して別処理へ渡したい場合は、従来どおり renderer を直接利用できます。
 
 ```bash
 python3 scripts/render-node-capacity-review-bundle.py \
   docs/evidence/node-capacity/max-sessions-proposal.json \
   --node-profile 'linux-x86_64 4 vCPU 8 GiB' \
-  --software-revision 0123456789abcdef0123456789abcdef01234567 \
-  > docs/evidence/node-capacity/review-bundle.json
+  --software-revision 0123456789abcdef0123456789abcdef01234567
 ```
 
-renderer は read-only です。proposal を `validate-node-capacity-max-sessions-proposal.py` と同じ契約で再検証し、coverage manifest の canonical validator も通したうえで、次を保存します。
+永続 artifact の更新では `renderer > review-bundle.json` を使わないでください。shell redirection は renderer が validation を始める前に既存ファイルを truncate するため、validation が失敗しただけでも直前の known-good artifact を失う可能性があります。
+
+renderer は stdout 以外を変更せず、writer が変更するのも明示した review bundle artifact だけです。どちらも proposal を `validate-node-capacity-max-sessions-proposal.py` と同じ契約で再検証し、coverage manifest の canonical validator も通したうえで、次を保存します。
 
 - proposal の repository-relative path と SHA-256
 - coverage manifest の repository-relative path と SHA-256
