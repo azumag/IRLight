@@ -30,6 +30,8 @@ session_id=""
 ingest_username=""
 ingest_secret=""
 redaction_ready=0
+session_material_obtained=0
+redaction_has_session_material=0
 credential_material_obtained=0
 redaction_has_ingest_credential=0
 
@@ -40,10 +42,30 @@ export IRLIGHT_INGEST_AUTH_LOCKOUT_SECONDS=30
 
 write_redaction_values() {
   redaction_ready=0
-  if ! printf 'IRLIGHT_REDACTION_V1\0%s\0%s\0%s\0%s\0' \
-    "$password" "$wrong_secret" "$ingest_username" "$ingest_secret" >"$redaction_values"; then
+  if ! printf 'IRLIGHT_REDACTION_V1\0%s\0%s\0%s\0%s\0%s\0' \
+    "$password" "$wrong_secret" "$csrf" "$ingest_username" "$ingest_secret" >"$redaction_values"; then
     return 1
   fi
+
+  if [[ -f "$cookie_jar" ]]; then
+    if ! python3 - "$cookie_jar" >>"$redaction_values" <<'PY'
+from pathlib import Path
+import sys
+
+for line in Path(sys.argv[1]).read_bytes().splitlines():
+    if line.startswith(b"#HttpOnly_"):
+        line = line[len(b"#HttpOnly_"):]
+    elif line.startswith(b"#"):
+        continue
+    parts = line.split(b"\t")
+    if len(parts) >= 7 and parts[6]:
+        sys.stdout.buffer.write(parts[6] + b"\0")
+PY
+    then
+      return 1
+    fi
+  fi
+
   if ! chmod 600 "$redaction_values"; then
     return 1
   fi
@@ -56,13 +78,13 @@ from pathlib import Path
 import sys
 
 values = Path(sys.argv[1]).read_bytes().split(b"\0")
-if len(values) != 6 or values[0] != b"IRLIGHT_REDACTION_V1" or values[-1] != b"":
+if len(values) < 7 or values[0] != b"IRLIGHT_REDACTION_V1" or values[-1] != b"":
     raise SystemExit("invalid redaction value file")
 if not values[1] or not values[2]:
     raise SystemExit("missing auth-abuse redaction value")
 
 data = sys.stdin.buffer.read()
-for raw in values[1:5]:
+for raw in values[1:-1]:
     if raw:
         data = data.replace(raw, b"<redacted>")
 sys.stdout.buffer.write(data)
@@ -79,19 +101,23 @@ emit_redacted_compose_logs() {
     echo "failed to initialize ingest-auth-abuse redaction; $service diagnostics withheld" >&2
     return 1
   fi
+  if (( session_material_obtained == 1 && redaction_has_session_material != 1 )); then
+    echo "login material was obtained before its redaction values were secured; $service diagnostics withheld" >&2
+    return 1
+  fi
   if (( credential_material_obtained == 1 && redaction_has_ingest_credential != 1 )); then
     echo "ingest credential was issued before its redaction values were secured; $service diagnostics withheld" >&2
     return 1
   fi
 
   "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
+  if (( logs_rc != 0 )); then
+    echo "failed to read $service diagnostics: rc=$logs_rc; output withheld" >&2
+    return "$logs_rc"
+  fi
   if ! redact_auth_values <"$raw_file" >&2; then
     echo "failed to redact $service diagnostics; output withheld" >&2
     return 1
-  fi
-  if (( logs_rc != 0 )); then
-    echo "failed to read $service diagnostics: rc=$logs_rc" >&2
-    return "$logs_rc"
   fi
 }
 
@@ -148,7 +174,10 @@ login() {
   response="$(curl -fsS --max-time 10 -c "$cookie_jar" -X POST "$base_url/v1/auth/login" \
     -H 'Content-Type: application/json' \
     --data "{\"email\":\"$email\",\"password\":\"$password\"}")"
+  session_material_obtained=1
   csrf="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<<"$response")"
+  write_redaction_values
+  redaction_has_session_material=1
 }
 
 auth_response() {
