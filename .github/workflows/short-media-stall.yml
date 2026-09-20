@@ -11,6 +11,7 @@ on:
       - "config/mediamtx.yml"
       - "docker-compose.poc.yml"
       - "scripts/smoke-short-media-stall.sh"
+      - "scripts/smoke-short-media-stall-core.sh"
       - ".github/workflows/short-media-stall.yml"
   workflow_dispatch:
     inputs:
