@@ -72,6 +72,12 @@ Control Plane node state stores the latest quality snapshot and emits bounded ev
 
 The current Phase B bootstrap is not yet the final user-session assignment model, so these are Node events. Mapping them into canonical user Session events belongs with the #8 assignment integration.
 
+## Smoke-test diagnostic boundary
+
+`scripts/smoke-ingest-quality.sh` creates a real login/session, obtains an ingest credential, and embeds that credential in the disposable RTMP publisher URL. The publisher output is stored under a run-local `umask 077` temporary directory. Because service logs and Node API payloads can also become credential-bearing if auth/logging behavior regresses, failure handling does not replay raw `node-agent`, `mediamtx`, `control-ui`, publisher, or Node API diagnostics into CI. It emits fixed context only and keeps the existing quality assertions intact. This is intentionally stricter than maintaining a partial redaction vocabulary.
+
+The smoke still verifies that a valid 10 fps stream remains connected while surfacing `DEGRADED/FPS_OUT_OF_RANGE`, then becomes `OFFLINE` after publisher exit, and that a fresh 30 fps publisher reaches `ACCEPTED`.
+
 ## Non-goals of this slice
 
 - automatic transition of the Continuity Engine itself into `DEGRADED` / `HOLDING`
