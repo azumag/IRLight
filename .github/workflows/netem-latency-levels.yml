@@ -12,6 +12,7 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/netem-container.sh"
       - "scripts/smoke-rtmp-netem-degradation-matrix.sh"
+      - "scripts/smoke-rtmp-netem-degradation-matrix-core.sh"
       - "scripts/smoke-srt-netem-degradation-matrix.sh"
       - "scripts/smoke-netem-latency-levels.sh"
       - ".github/workflows/netem-latency-levels.yml"
@@ -53,6 +54,9 @@ jobs:
           command -v tc
           command -v nsenter
       - name: Validate latency harness syntax
-        run: bash -n ./scripts/smoke-netem-latency-levels.sh
+        run: |
+          bash -n ./scripts/smoke-netem-latency-levels.sh
+          bash -n ./scripts/smoke-rtmp-netem-degradation-matrix.sh
+          bash -n ./scripts/smoke-rtmp-netem-degradation-matrix-core.sh
       - name: Run real ${{ matrix.protocol }} latency levels
         run: bash ./scripts/smoke-netem-latency-levels.sh "${{ matrix.protocol }}"

@@ -4,10 +4,12 @@ set -euo pipefail
 protocol="${1:-${NETEM_PROTOCOL:-}}"
 profile_seconds="${NETEM_PROFILE_SECONDS:-12}"
 profiles="latency-50,latency-100,latency-300,latency-1000"
+public_script=""
 
 case "$protocol" in
   rtmp)
-    source_script="scripts/smoke-rtmp-netem-degradation-matrix.sh"
+    public_script="scripts/smoke-rtmp-netem-degradation-matrix.sh"
+    source_script="scripts/smoke-rtmp-netem-degradation-matrix-core.sh"
     ;;
   srt)
     source_script="scripts/smoke-srt-netem-degradation-matrix.sh"
@@ -33,6 +35,10 @@ fi
   echo "matrix source script not found: $source_script" >&2
   exit 2
 }
+if [[ -n "$public_script" && ! -f "$public_script" ]]; then
+  echo "matrix public wrapper not found: $public_script" >&2
+  exit 2
+fi
 
 # Keep the generated matrix beside the source scripts. The matrix scripts now
 # source scripts/lib/node-admin.sh relative to BASH_SOURCE, so placing the
@@ -73,9 +79,16 @@ bash -n "$tmp_script"
 printf '\n=== netem-latency-levels protocol=%s profiles=%s duration=%ss ===\n' \
   "$protocol" "$profiles" "$profile_seconds"
 
-NETEM_MATRIX_PROFILES="$profiles" \
-NETEM_PROFILE_SECONDS="$profile_seconds" \
-  bash "$tmp_script" | tee "$log_file"
+if [[ "$protocol" == "rtmp" ]]; then
+  RTMP_NETEM_MATRIX_CORE="$tmp_script" \
+  NETEM_MATRIX_PROFILES="$profiles" \
+  NETEM_PROFILE_SECONDS="$profile_seconds" \
+    bash "$public_script" | tee "$log_file"
+else
+  NETEM_MATRIX_PROFILES="$profiles" \
+  NETEM_PROFILE_SECONDS="$profile_seconds" \
+    bash "$tmp_script" | tee "$log_file"
+fi
 
 IFS=',' read -r -a expected_profiles <<<"$profiles"
 for profile in "${expected_profiles[@]}"; do
