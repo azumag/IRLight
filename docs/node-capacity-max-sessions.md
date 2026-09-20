@@ -47,6 +47,21 @@ python3 scripts/validate-node-capacity-max-sessions-proposal.py \
 
 The persisted proposal must be a regular, symlink-free repository file with bounded valid UTF-8 JSON, no duplicate keys, the exact schema-v1 field set, and strict JSON types. The validator reruns the canonical renderer against the referenced coverage manifest and the explicitly supplied deployment identity, then compares canonical JSON values. This catches edited candidate or derived values, stale recommendation/headroom/report-count/safety-margin fields, Boolean-for-integer substitutions, unexpected fields, and reuse against a different Node profile or software revision. Successful plain-text output contains numeric capacity values only; evidence- and operator-controlled strings are not reflected into validation errors.
 
-The proposal path is a provenance reference, not a cryptographic content pin. Preserve the rendered proposal and referenced coverage manifest in the same reviewed Git revision (or otherwise preserve the exact immutable revision containing both) so a later reviewer cannot accidentally associate the proposal with a different version of the evidence at the same path. Revalidation proves consistency with the evidence currently present at that repository path; it does not prove that the evidence bytes are identical to a historical revision.
+The proposal's `coverage_manifest` path is provenance, not a digest by itself. For a durable review record, persist a Node-capacity review bundle with `scripts/write-node-capacity-review-bundle.py`. The bundle pins the proposal, coverage manifest, canonical load plan, and every measured scenario report by content digest, so later review does not silently follow different bytes at the same repository paths.
 
-This guardrail, renderer, and persisted-proposal validator are intentionally separate from applying a production capacity change. Wiring a measured value into the real scheduler / Node inventory must preserve the repository's deployment and review controls, and should reference the exact coverage manifest and proposal revision used for the decision.
+```bash
+python3 scripts/write-node-capacity-review-bundle.py \
+  docs/evidence/node-capacity/max-sessions-proposal.json \
+  --node-profile 'cx42-equivalent / 4 vCPU / 8 GiB / qa-image-v1' \
+  --software-revision 0123456789abcdef0123456789abcdef01234567 \
+  --output docs/evidence/node-capacity/review-bundle.json
+
+python3 scripts/validate-node-capacity-review-bundle.py \
+  docs/evidence/node-capacity/review-bundle.json \
+  --node-profile 'cx42-equivalent / 4 vCPU / 8 GiB / qa-image-v1' \
+  --software-revision 0123456789abcdef0123456789abcdef01234567
+```
+
+Use the atomic writer rather than shell redirection for a persisted review bundle. It renders and validates the complete evidence closure before replacing the requested artifact, so a failed regeneration does not truncate the previous known-good bundle. The standalone renderer remains useful for transient pipeline output.
+
+These guardrails are intentionally separate from applying a production capacity change. Wiring a measured value into the real scheduler / Node inventory must preserve the repository's deployment and review controls and should reference the validated review bundle used for the decision.
