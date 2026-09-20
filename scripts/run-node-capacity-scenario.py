@@ -4,7 +4,7 @@
 The runner deliberately does not choose acceptance thresholds or a safety margin.
 An operator-provided harness classifies each measured level as pass/fail. This
 orchestrator validates the canonical Issue #13 plan, executes its concurrency
-ladder in order, stops after the first failing level, and records each result
+ladder in order under an explicit post-failure policy, and records each result
 through the existing strict raw-trial recorder.
 
 Harness contract
@@ -43,6 +43,7 @@ RESULT_FIELDS = {
     "failed_sessions",
     "unexpected_reconnects",
 }
+FAILURE_POLICIES = ("stop", "continue")
 
 
 class ScenarioRunError(ValueError):
@@ -253,9 +254,12 @@ def run_scenario(
     trials_jsonl: Path,
     runner_command: list[str],
     timeout_seconds: float,
+    failure_policy: str,
 ) -> dict[str, Any]:
     if not runner_command or not runner_command[0]:
         raise ScenarioRunError("runner command must not be empty")
+    if failure_policy not in FAILURE_POLICIES:
+        raise ScenarioRunError("failure policy is invalid")
     if trials_jsonl.exists() or trials_jsonl.is_symlink():
         raise ScenarioRunError("trials JSONL already exists; use a new evidence path")
     if not trials_jsonl.parent.exists():
@@ -284,9 +288,10 @@ def run_scenario(
     if scenario is None:
         raise ScenarioRunError("scenario is not present in the canonical load plan")
 
+    planned_levels = list(scenario["session_counts"])
     recorded_levels: list[int] = []
     boundary_found = False
-    for concurrent_sessions in scenario["session_counts"]:
+    for concurrent_sessions in planned_levels:
         request = {
             "schema_version": 1,
             "profile_label": plan["profile_label"],
@@ -306,14 +311,16 @@ def run_scenario(
         recorded_levels.append(recorded["concurrent_sessions"])
         if recorded["outcome"] == "fail":
             boundary_found = True
-            break
+            if failure_policy == "stop":
+                break
 
     return {
         "schema_version": 1,
         "scenario_id": scenario_id,
+        "failure_policy": failure_policy,
         "tested_load_levels": recorded_levels,
         "boundary_found": boundary_found,
-        "stopped_after_first_failure": boundary_found,
+        "completed_plan": recorded_levels == planned_levels,
     }
 
 
@@ -323,6 +330,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--trials-jsonl", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=_positive_finite_float, required=True)
+    parser.add_argument(
+        "--failure-policy",
+        choices=FAILURE_POLICIES,
+        required=True,
+        help=(
+            "stop: do not execute higher planned levels after the first measured failure; "
+            "continue: explicitly execute the remaining canonical levels for complete coverage"
+        ),
+    )
     parser.add_argument("--runner", required=True, help="Local harness executable.")
     parser.add_argument(
         "--runner-arg",
@@ -343,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             trials_jsonl=args.trials_jsonl,
             runner_command=[args.runner, *args.runner_arg],
             timeout_seconds=args.timeout_seconds,
+            failure_policy=args.failure_policy,
         )
     except (ScenarioRunError, OSError, UnicodeError) as exc:
         print(f"node capacity scenario run failed: {exc}", file=sys.stderr)
@@ -355,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "node capacity scenario run complete: "
             f"scenario={summary['scenario_id']} levels={levels} "
-            f"boundary_found={'yes' if summary['boundary_found'] else 'no'}"
+            f"boundary_found={'yes' if summary['boundary_found'] else 'no'} "
+            f"completed_plan={'yes' if summary['completed_plan'] else 'no'}"
         )
     return 0
 
