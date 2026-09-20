@@ -9,6 +9,7 @@ override="$tmp_dir/node-assignment.override.yml"
 base_url="${BASE_URL:-http://127.0.0.1:8080}"
 cookie_jar="$tmp_dir/cookies.txt"
 publisher_log="$tmp_dir/publisher.log"
+redaction_values="$tmp_dir/ingest-auth-cache.redaction-values"
 publisher_pid=""
 email="cache-smoke-$(date +%s)-$RANDOM@example.invalid"
 password="SmokePassword123!"
@@ -18,6 +19,9 @@ provider_server_id=""
 ingest_username=""
 ingest_secret=""
 credential_id=""
+redaction_ready=0
+credential_material_obtained=0
+redaction_has_ingest_secret=0
 compose=(docker compose -p "$smoke_project" -f docker-compose.poc.yml -f "$override")
 
 cat >"$override" <<'EOF'
@@ -28,6 +32,63 @@ services:
       NODE_BOOT_ID: ingest-auth-cache-smoke-boot
 EOF
 
+write_redaction_values() {
+  redaction_ready=0
+  if ! printf 'IRLIGHT_REDACTION_V1\0%s\0%s\0%s\0' \
+    "$password" "$ingest_username" "$ingest_secret" >"$redaction_values"; then
+    return 1
+  fi
+  if ! chmod 600 "$redaction_values"; then
+    return 1
+  fi
+  redaction_ready=1
+}
+
+redact_ingest_credentials() {
+  python3 -c '
+from pathlib import Path
+import sys
+
+values = Path(sys.argv[1]).read_bytes().split(b"\0")
+if len(values) != 5 or values[0] != b"IRLIGHT_REDACTION_V1" or values[-1] != b"":
+    raise SystemExit("invalid redaction value file")
+if not values[1]:
+    raise SystemExit("missing smoke account password redaction value")
+
+data = sys.stdin.buffer.read()
+for raw in values[1:4]:
+    if raw:
+        data = data.replace(raw, b"<redacted>")
+sys.stdout.buffer.write(data)
+' "$redaction_values"
+}
+
+emit_redacted_compose_logs() {
+  local service="$1"
+  local tail_lines="$2"
+  local raw_file="$tmp_dir/${service}.failure.log"
+  local logs_rc=0
+
+  if (( redaction_ready != 1 )); then
+    echo "failed to initialize ingest-auth-cache redaction; $service diagnostics withheld" >&2
+    return 1
+  fi
+  if (( credential_material_obtained == 1 && redaction_has_ingest_secret != 1 )); then
+    echo "ingest credential was issued before its redaction value was secured; $service diagnostics withheld" >&2
+    return 1
+  fi
+
+  "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
+  if ! redact_ingest_credentials <"$raw_file" >&2; then
+    echo "failed to redact $service diagnostics; output withheld" >&2
+    return 1
+  fi
+  if (( logs_rc != 0 )); then
+    echo "failed to read $service diagnostics: rc=$logs_rc" >&2
+    return "$logs_rc"
+  fi
+}
+
 cleanup() {
   status=$?
   if [[ -n "$publisher_pid" ]]; then
@@ -37,18 +98,20 @@ cleanup() {
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
-    echo "--- node-agent logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=150 node-agent >&2 || true
-    echo "--- mediamtx logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=150 mediamtx >&2 || true
-    echo "--- control logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=100 control-ui >&2 || true
+    echo "--- node-agent logs (redacted) ---" >&2
+    emit_redacted_compose_logs node-agent 150 || true
+    echo "--- mediamtx logs (redacted) ---" >&2
+    emit_redacted_compose_logs mediamtx 150 || true
+    echo "--- control logs (redacted) ---" >&2
+    emit_redacted_compose_logs control-ui 100 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
 trap cleanup EXIT
+
+write_redaction_values
 
 wait_http() {
   local deadline=$((SECONDS + ${2:-45}))
@@ -194,9 +257,12 @@ credential="$(curl -fsS --max-time 10 -b "$cookie_jar" -X POST \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $csrf" \
   --data '{"protocols":["rtmp"],"ttl_seconds":3600}')"
+credential_material_obtained=1
 ingest_username="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' <<<"$credential")"
 ingest_secret="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["credential_secret"])' <<<"$credential")"
 credential_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$credential")"
+write_redaction_values
+redaction_has_ingest_secret=1
 
 export ASSIGNED_PROVIDER_SERVER_ID="$provider_server_id"
 "${compose[@]}" up -d --build node-agent
