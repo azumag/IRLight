@@ -46,6 +46,12 @@ The isolation pattern is applied to:
 
 Non-Compose smoke scripts still need the usual audit for their own temporary files and external side effects, but they do not share the Compose project/volume deletion risk covered by this contract.
 
+## Bounded probe output
+
+Readiness and diagnostic probes running under `set -o pipefail` must not use an early-exiting consumer such as `grep -q` directly on a producer whose exit status matters. A successful match can close the pipe before the producer finishes, causing SIGPIPE and turning a successful observation into a false negative.
+
+For bounded command output, capture the producer's complete output into a run-local private temporary file first, require the producer itself to succeed, and only then inspect the saved output. `scripts/smoke-rtmps-ingest-recovery.sh` follows this contract for the four-second `openssl s_client` RTMPS-listener probe. This keeps the existing per-attempt and overall readiness deadlines while separating command failure from a missing certificate marker.
+
 ## Parallel execution
 
 A unique Compose project name prevents project/volume/name collisions, but it does not by itself make tests with fixed published host ports parallel-safe. Tests that expose fixed ports must either allocate test-specific ports or fail cleanly on collision without changing unrelated containers.

@@ -71,6 +71,42 @@ class IngestRecoverySmokeIsolationTest(unittest.TestCase):
                 self.assertIn(expected_root, source)
                 self.assertIn('-f "$repo_root/docker-compose.poc.yml"', source)
 
+    def test_rtmps_listener_probe_drains_openssl_before_marker_search(self) -> None:
+        rtmps = self.sources["rtmps"]
+        wait = rtmps.split("wait_rtmps_listener() {", 1)[1].split(
+            "\n}\n\nlogin()", 1
+        )[0]
+        self.assertIn(
+            'local probe_output="$tmp_dir/rtmps-listener-probe.txt"',
+            wait,
+        )
+        self.assertIn(
+            'if timeout 4 openssl s_client -connect 127.0.0.1:1936 -servername localhost \\\n'
+            '      </dev/null >"$probe_output" 2>/dev/null; then',
+            wait,
+        )
+        self.assertIn(
+            "if grep -Fq 'BEGIN CERTIFICATE' \"$probe_output\"; then",
+            wait,
+        )
+        self.assertNotIn("| grep", wait)
+
+    def test_rtmps_listener_probe_requires_successful_openssl_attempt(self) -> None:
+        rtmps = self.sources["rtmps"]
+        wait = rtmps.split("wait_rtmps_listener() {", 1)[1].split(
+            "\n}\n\nlogin()", 1
+        )[0]
+        openssl_gate = wait.split(
+            'if timeout 4 openssl s_client -connect 127.0.0.1:1936 -servername localhost',
+            1,
+        )[1].split("\n    fi", 1)[0]
+        self.assertIn(
+            "if grep -Fq 'BEGIN CERTIFICATE' \"$probe_output\"; then",
+            openssl_gate,
+        )
+        self.assertIn("return 0", openssl_gate)
+        self.assertNotIn("|| true", openssl_gate)
+
 
 if __name__ == "__main__":
     unittest.main()
