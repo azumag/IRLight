@@ -12,6 +12,7 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/netem-container.sh"
       - "scripts/smoke-srt-netem-degradation-matrix.sh"
+      - "scripts/smoke-srt-netem-degradation-matrix-core.sh"
       - ".github/workflows/srt-netem-degradation-matrix.yml"
   workflow_dispatch:
     inputs:
@@ -52,7 +53,9 @@ jobs:
           command -v tc
           command -v nsenter
       - name: Validate smoke syntax
-        run: bash -n ./scripts/smoke-srt-netem-degradation-matrix.sh
+        run: |
+          bash -n ./scripts/smoke-srt-netem-degradation-matrix.sh
+          bash -n ./scripts/smoke-srt-netem-degradation-matrix-core.sh
       - name: Run real SRT degradation profiles
         run: |
           case "$PROFILE_SET" in
