@@ -57,6 +57,10 @@ class IngestAuthAbuseSmokeIsolationTest(unittest.TestCase):
         self.assertIn('redact_auth_values <"$raw_file" >&2', helper)
         self.assertIn("output withheld", helper)
         self.assertNotIn('cat "$raw_file"', helper)
+        self.assertLess(
+            helper.index("if (( logs_rc != 0 )); then"),
+            helper.index('redact_auth_values <"$raw_file" >&2'),
+        )
 
     def test_redactor_uses_private_value_file_not_secret_argv(self) -> None:
         helper = self.source.split("redact_auth_values() {", 1)[1].split(
@@ -64,6 +68,7 @@ class IngestAuthAbuseSmokeIsolationTest(unittest.TestCase):
         )[0]
         self.assertIn('"$redaction_values"', helper)
         self.assertNotIn('"$wrong_secret"', helper)
+        self.assertNotIn('"$csrf"', helper)
         self.assertNotIn('"$ingest_username"', helper)
         self.assertNotIn('"$ingest_secret"', helper)
         self.assertIn('Path(sys.argv[1]).read_bytes()', helper)
@@ -71,8 +76,28 @@ class IngestAuthAbuseSmokeIsolationTest(unittest.TestCase):
         writer = self.source.split("write_redaction_values() {", 1)[1].split(
             "\n}\n\nredact_auth_values() {", 1
         )[0]
-        self.assertIn('"$password" "$wrong_secret" "$ingest_username" "$ingest_secret"', writer)
+        self.assertIn(
+            '"$password" "$wrong_secret" "$csrf" "$ingest_username" "$ingest_secret"',
+            writer,
+        )
+        self.assertIn('python3 - "$cookie_jar" >>"$redaction_values"', writer)
         self.assertIn('chmod 600 "$redaction_values"', writer)
+
+    def test_login_material_is_secured_before_diagnostics_are_allowed(self) -> None:
+        login = self.source.split("login() {", 1)[1].split("\n}\n\nauth_response() {", 1)[0]
+        self.assertLess(
+            login.index("session_material_obtained=1"),
+            login.index("csrf="),
+        )
+        self.assertIn("write_redaction_values", login)
+        self.assertIn("redaction_has_session_material=1", login)
+
+        helper = self.source.split("emit_redacted_compose_logs() {", 1)[1].split(
+            "\n}\n\ncleanup() {", 1
+        )[0]
+        self.assertIn("session_material_obtained == 1", helper)
+        self.assertIn("redaction_has_session_material != 1", helper)
+        self.assertIn("diagnostics withheld", helper)
 
     def test_diagnostics_are_withheld_until_issued_credential_is_secured(self) -> None:
         credential_block = self.source.split('credential="$(curl', 1)[1].split(
