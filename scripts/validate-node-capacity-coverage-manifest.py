@@ -15,9 +15,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 COVERAGE_VALIDATOR = Path(__file__).with_name("validate-node-capacity-plan-coverage.py")
+PLANNED_REPORT_VALIDATOR = Path(__file__).with_name(
+    "validate-node-capacity-planned-report.py"
+)
 MAX_MANIFEST_BYTES = 128 * 1024
 TOP_LEVEL_FIELDS = {"schema_version", "load_plan", "reports"}
-REPORT_FIELDS = {"scenario_id", "path"}
+REPORT_FIELDS_V1 = {"scenario_id", "path"}
+REPORT_FIELDS_V2 = {"scenario_id", "path", "trials_path", "run_manifest_path"}
 
 
 class CapacityCoverageManifestError(ValueError):
@@ -117,19 +121,33 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _load_coverage_validator() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "irlight_node_capacity_coverage_for_manifest", COVERAGE_VALIDATOR
-    )
+def _load_module(path: Path, module_name: str, label: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise CapacityCoverageManifestError("coverage validator could not be loaded")
+        raise CapacityCoverageManifestError(f"{label} validator could not be loaded")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     try:
         spec.loader.exec_module(module)
     except Exception as exc:  # pragma: no cover - repository packaging failure
-        raise CapacityCoverageManifestError("coverage validator could not be loaded") from exc
+        raise CapacityCoverageManifestError(f"{label} validator could not be loaded") from exc
     return module
+
+
+def _load_coverage_validator() -> ModuleType:
+    return _load_module(
+        COVERAGE_VALIDATOR,
+        "irlight_node_capacity_coverage_for_manifest",
+        "coverage",
+    )
+
+
+def _load_planned_report_validator() -> ModuleType:
+    return _load_module(
+        PLANNED_REPORT_VALIDATOR,
+        "irlight_node_capacity_planned_report_for_manifest",
+        "planned report",
+    )
 
 
 def _validate_repo_file(repo_root: Path, path_text: object, label: str) -> Path:
@@ -168,6 +186,84 @@ def _validate_repo_file(repo_root: Path, path_text: object, label: str) -> Path:
     return candidate
 
 
+def _validate_scenario_id(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(character in value for character in ("\x00", "\n", "\r"))
+    ):
+        raise CapacityCoverageManifestError("scenario_id must be a canonical one-line string")
+    return value
+
+
+def _validate_reports_v1(
+    reports: list[Any],
+    *,
+    repo_root: Path,
+) -> dict[str, Path]:
+    bindings: dict[str, Path] = {}
+    for entry in reports:
+        if not isinstance(entry, dict) or set(entry) != REPORT_FIELDS_V1:
+            raise CapacityCoverageManifestError("report binding has an unexpected shape")
+        scenario_id = _validate_scenario_id(entry["scenario_id"])
+        if scenario_id in bindings:
+            raise CapacityCoverageManifestError("duplicate report binding for scenario")
+        bindings[scenario_id] = _validate_repo_file(repo_root, entry["path"], "report path")
+    return bindings
+
+
+def _validate_reports_v2(
+    reports: list[Any],
+    *,
+    plan_path: Path,
+    repo_root: Path,
+) -> dict[str, Path]:
+    bindings: dict[str, Path] = {}
+    used_evidence_paths: set[str] = set()
+    planned_validator = _load_planned_report_validator()
+
+    for entry in reports:
+        if not isinstance(entry, dict) or set(entry) != REPORT_FIELDS_V2:
+            raise CapacityCoverageManifestError("provenance report binding has an unexpected shape")
+        scenario_id = _validate_scenario_id(entry["scenario_id"])
+        if scenario_id in bindings:
+            raise CapacityCoverageManifestError("duplicate report binding for scenario")
+
+        names = (entry["path"], entry["trials_path"], entry["run_manifest_path"])
+        if any(not isinstance(name, str) for name in names):
+            raise CapacityCoverageManifestError("provenance evidence paths are invalid")
+        if len(set(names)) != len(names):
+            raise CapacityCoverageManifestError("provenance evidence paths must be distinct")
+        if any(name in used_evidence_paths for name in names):
+            raise CapacityCoverageManifestError("duplicate provenance evidence binding")
+
+        report_path = _validate_repo_file(repo_root, entry["path"], "report path")
+        trials_path = _validate_repo_file(repo_root, entry["trials_path"], "trials path")
+        run_manifest_path = _validate_repo_file(
+            repo_root,
+            entry["run_manifest_path"],
+            "run manifest path",
+        )
+        try:
+            planned_validator.validate_planned_report(
+                report_path=report_path,
+                plan_path=plan_path,
+                trials_path=trials_path,
+                run_manifest_path=run_manifest_path,
+                scenario_id=scenario_id,
+            )
+        except planned_validator.PlannedReportValidationError as exc:
+            raise CapacityCoverageManifestError(
+                "scenario report is not bound to canonical run provenance"
+            ) from exc
+
+        used_evidence_paths.update(names)
+        bindings[scenario_id] = report_path
+
+    return bindings
+
+
 def validate_manifest(
     payload: dict[str, Any],
     *,
@@ -177,7 +273,11 @@ def validate_manifest(
         raise CapacityCoverageManifestError("manifest has an unexpected top-level shape")
 
     schema_version = payload["schema_version"]
-    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in {1, 2}
+    ):
         raise CapacityCoverageManifestError("unsupported manifest schema_version")
 
     plan_path = _validate_repo_file(repo_root, payload["load_plan"], "load_plan")
@@ -185,21 +285,16 @@ def validate_manifest(
     if not isinstance(reports, list) or not reports:
         raise CapacityCoverageManifestError("reports must be a non-empty list")
 
-    bindings: dict[str, Path] = {}
-    for entry in reports:
-        if not isinstance(entry, dict) or set(entry) != REPORT_FIELDS:
-            raise CapacityCoverageManifestError("report binding has an unexpected shape")
-        scenario_id = entry["scenario_id"]
-        if (
-            not isinstance(scenario_id, str)
-            or not scenario_id
-            or scenario_id != scenario_id.strip()
-            or any(character in scenario_id for character in ("\x00", "\n", "\r"))
-        ):
-            raise CapacityCoverageManifestError("scenario_id must be a canonical one-line string")
-        if scenario_id in bindings:
-            raise CapacityCoverageManifestError("duplicate report binding for scenario")
-        bindings[scenario_id] = _validate_repo_file(repo_root, entry["path"], "report path")
+    if schema_version == 1:
+        bindings = _validate_reports_v1(reports, repo_root=repo_root)
+        provenance_bound = False
+    else:
+        bindings = _validate_reports_v2(
+            reports,
+            plan_path=plan_path,
+            repo_root=repo_root,
+        )
+        provenance_bound = True
 
     coverage_validator = _load_coverage_validator()
     try:
@@ -209,7 +304,8 @@ def validate_manifest(
 
     return {
         "valid": True,
-        "schema_version": 1,
+        "schema_version": schema_version,
+        "provenance_bound": provenance_bound,
         "load_plan": payload["load_plan"],
         "profile_label": coverage["profile_label"],
         "node_profile": coverage["node_profile"],
@@ -252,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(
             "node capacity coverage manifest valid: "
+            f"schema=v{summary['schema_version']} "
+            f"provenance_bound={str(summary['provenance_bound']).lower()} "
             f"scenarios={summary['report_count']} "
             f"recommended_max_sessions={summary['recommended_max_sessions']}"
         )
