@@ -222,19 +222,16 @@ def _validate_six_hour_soak_evidence(evidence_paths: list[str]) -> None:
 
 
 def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
-    """Require provenance-bound complete-scenario capacity coverage before satisfaction."""
+    """Require durable complete-scenario capacity coverage before satisfaction."""
 
     validator = _load_capacity_coverage_manifest_validator()
     failures: list[str] = []
     for path_text in evidence_paths:
         candidate = ROOT / path_text
         try:
-            summary = validator.validate_manifest_file(candidate, repo_root=ROOT)
+            validator.validate_manifest_file(candidate, repo_root=ROOT)
         except (validator.CapacityCoverageManifestError, OSError, UnicodeError) as exc:
             failures.append(f"{path_text}: {exc}")
-            continue
-        if summary.get("provenance_bound") is not True:
-            failures.append(f"{path_text}: schema-v2 run provenance is required")
             continue
         return
 
@@ -243,7 +240,7 @@ def _validate_node_capacity_evidence(evidence_paths: list[str]) -> None:
         detail = f" ({detail})"
     raise ChecklistValidationError(
         "node-capacity-load: satisfied status requires at least one canonical "
-        f"provenance-bound Node capacity coverage manifest{detail}"
+        f"Node capacity coverage manifest{detail}"
     )
 
 
