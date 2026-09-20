@@ -12,6 +12,7 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/netem-container.sh"
       - "scripts/smoke-rtmp-netem-blackhole.sh"
+      - "scripts/smoke-rtmp-netem-blackhole-core.sh"
       - ".github/workflows/rtmp-netem-blackhole.yml"
   workflow_dispatch:
     inputs:
