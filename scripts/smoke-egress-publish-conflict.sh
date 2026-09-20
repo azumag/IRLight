@@ -115,6 +115,23 @@ emit_redacted_compose_logs() {
   fi
 }
 
+capture_compose_logs() {
+  local service="$1"
+  local output_file="$2"
+  "${compose[@]}" logs --no-color "$service" >"$output_file" 2>&1
+}
+
+compose_logs_contain_marker() {
+  local service="$1"
+  local marker="$2"
+  local output_file="$3"
+
+  if ! capture_compose_logs "$service" "$output_file"; then
+    return 2
+  fi
+  grep -Fq -- "$marker" "$output_file"
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
@@ -169,8 +186,9 @@ raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_c
 wait_for_target_listener() {
   local timeout="${1:-30}"
   local deadline=$((SECONDS + timeout))
+  local listener_logs="$tmp_dir/egress-conflict-target.listener.log"
   while (( SECONDS < deadline )); do
-    if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "started with listener on :1935"; then
+    if compose_logs_contain_marker egress-conflict-target "started with listener on :1935" "$listener_logs"; then
       return 0
     fi
     if ! "${compose[@]}" ps --status running --services | grep -qx egress-conflict-target; then
@@ -207,18 +225,27 @@ wait_for_target_listener 30
 # it outside the continuity container is important: starting another Compose
 # service is allowed to recreate continuity, but must not accidentally kill the
 # publisher that creates the conflict we are trying to test.
+holder_poll_logs="$tmp_dir/egress-conflict-target.holder-poll.log"
 for _ in $(seq 1 20); do
   if ! "${compose[@]}" ps --status running --services | grep -qx conflict-holder; then
     echo "first publisher holder exited before conflict test" >&2
     exit 1
   fi
-  if "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "is publishing to path '$path_name'"; then
+  if compose_logs_contain_marker egress-conflict-target "is publishing to path '$path_name'" "$holder_poll_logs"; then
     break
   fi
   sleep 1
 done
-if ! "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "is publishing to path '$path_name'"; then
-  echo "first publisher did not become active on conflict target" >&2
+holder_final_logs="$tmp_dir/egress-conflict-target.holder-final.log"
+if compose_logs_contain_marker egress-conflict-target "is publishing to path '$path_name'" "$holder_final_logs"; then
+  :
+else
+  marker_rc=$?
+  if (( marker_rc == 2 )); then
+    echo "failed to read target logs while confirming first publisher" >&2
+  else
+    echo "first publisher did not become active on conflict target" >&2
+  fi
   exit 1
 fi
 
@@ -229,8 +256,16 @@ wait_status_reason FAILED PUBLISH_REJECTED 45
 # surfaces only Gst.ResourceError.WRITE. The Gateway therefore reports the
 # stable terminal PUBLISH_REJECTED reason while the target logs prove this
 # particular test was the same-path publisher conflict.
-if ! "${compose[@]}" logs --no-color egress-conflict-target 2>/dev/null | grep -Fq "someone is already publishing to path '$path_name'"; then
-  echo "target did not reject the second publisher as a path conflict" >&2
+conflict_evidence_logs="$tmp_dir/egress-conflict-target.conflict-evidence.log"
+if compose_logs_contain_marker egress-conflict-target "someone is already publishing to path '$path_name'" "$conflict_evidence_logs"; then
+  :
+else
+  marker_rc=$?
+  if (( marker_rc == 2 )); then
+    echo "failed to read target logs while confirming publish conflict" >&2
+  else
+    echo "target did not reject the second publisher as a path conflict" >&2
+  fi
   exit 1
 fi
 
