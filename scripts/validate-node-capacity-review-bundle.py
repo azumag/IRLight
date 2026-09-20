@@ -4,9 +4,9 @@
 The bundle is not authority for production configuration. This read-only check
 re-renders it from the referenced persisted max_sessions proposal and current
 coverage closure, verifies the explicit deployment identity, and requires exact
-canonical equality. Any byte change to the proposal, coverage manifest, load
-plan, or measured reports after review therefore invalidates the bundle even
-when the JSON meaning is unchanged.
+canonical equality. Any byte change to the pinned proposal, coverage manifest,
+load plan, measured reports, or (for schema v2) raw trials/run manifests after
+review therefore invalidates the bundle even when the JSON meaning is unchanged.
 """
 
 from __future__ import annotations
@@ -98,10 +98,11 @@ def validate_bundle_file(
 
     if set(payload) != BUNDLE_FIELDS:
         raise CapacityReviewBundleValidationError("review bundle has an unexpected top-level shape")
+    schema_version = payload["schema_version"]
     if (
-        isinstance(payload["schema_version"], bool)
-        or not isinstance(payload["schema_version"], int)
-        or payload["schema_version"] != 1
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in {1, 2}
     ):
         raise CapacityReviewBundleValidationError("review bundle schema_version is unsupported")
     proposal_name = payload["proposal_path"]
