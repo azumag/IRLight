@@ -26,10 +26,11 @@ python3 scripts/assemble-node-capacity-planned-report.py \
 - `--scenario` がその plan に含まれること
 - raw trials が既存の型・順序・pass/fail 契約を満たすこと
 - raw trials の `concurrent_sessions` が scenario の planned ladder と **完全一致**すること
+- report の `scenario` provenance を既存 coverage validator と同じ `profile=<profile_label>; scenario=<scenario_id>;` contract から自動生成すること
 - report 自体が既存の Node capacity report validator を通ること
 - `--output` が既に存在する場合は上書きしないこと
 
-つまり、`stop` policy で失敗境界を探索した途中 evidence や、harness failure 後に残った partial JSONL は、そのまま complete scenario report へ昇格しません。再試行では新しい raw evidence path を使い、plan 全件を採取してから report を生成します。
+つまり、`stop` policy で失敗境界を探索した途中 evidence や、harness failure 後に残った partial JSONL は、そのまま complete scenario report へ昇格しません。また profile/scenario の provenance は operator が別文字列として再入力せず、検証済み plan から生成するため、後段 coverage validator との binding drift を避けます。再試行では新しい raw evidence path を使い、plan 全件を採取してから report を生成します。
 
 ## 既存 assembler との関係
 
