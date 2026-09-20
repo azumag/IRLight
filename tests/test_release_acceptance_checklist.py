@@ -16,10 +16,44 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-release-acceptance-checklist.py"
 CHECKLIST = ROOT / "docs" / "release-acceptance-checklist.json"
 
-_spec = importlib.util.spec_from_file_location("release_acceptance_checklist", SCRIPT)
-assert _spec is not None and _spec.loader is not None
-module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(module)
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = loaded
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+module = _load("release_acceptance_checklist", SCRIPT)
+PLAN_RENDERER = _load(
+    "release_acceptance_capacity_plan_renderer",
+    ROOT / "scripts" / "render-node-capacity-load-plan.py",
+)
+PLANNED_ASSEMBLER = _load(
+    "release_acceptance_capacity_planned_assembler",
+    ROOT / "scripts" / "assemble-node-capacity-planned-report.py",
+)
+
+PROFILE_LABEL = "720p30/1080p30 mix release-test-v2"
+NODE_PROFILE = "unit-test node profile"
+SOFTWARE_REVISION = "0123456789abcdef0123456789abcdef01234567"
+LOAD_LEVELS = [1, 2, 4, 8]
+
+
+def _trial(sessions: int) -> dict[str, object]:
+    outcome = "fail" if sessions == 8 else "pass"
+    return {
+        "concurrent_sessions": sessions,
+        "duration_seconds": 300.0,
+        "outcome": outcome,
+        "cpu_peak_percent": float(sessions * 20),
+        "memory_rss_peak_bytes": sessions * 100_000_000,
+        "egress_peak_bps": float(sessions * 5_000_000),
+        "failed_sessions": 1 if outcome == "fail" else 0,
+        "unexpected_reconnects": 0,
+    }
 
 
 class ReleaseAcceptanceChecklistTests(unittest.TestCase):
@@ -87,79 +121,85 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
         )
         return report_path
 
-    def _write_capacity_coverage_evidence(self) -> tuple[Path, Path]:
+    def _write_capacity_coverage_evidence(
+        self,
+        *,
+        provenance_bound: bool = False,
+    ) -> tuple[Path, Path]:
         directory = Path(tempfile.mkdtemp(prefix=".release-capacity-coverage-", dir=ROOT))
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
 
-        renderer_path = ROOT / "scripts" / "render-node-capacity-load-plan.py"
-        renderer_spec = importlib.util.spec_from_file_location(
-            f"release_capacity_renderer_{uuid.uuid4().hex}", renderer_path
-        )
-        assert renderer_spec is not None and renderer_spec.loader is not None
-        renderer = importlib.util.module_from_spec(renderer_spec)
-        sys.modules[renderer_spec.name] = renderer
-        renderer_spec.loader.exec_module(renderer)
-
-        profile = "720p30/1080p30 mix release-test-v1"
-        revision = "0123456789abcdef0123456789abcdef01234567"
+        plan_value = PLAN_RENDERER.build_plan(PROFILE_LABEL)
         plan_path = directory / "plan.json"
-        plan_path.write_text(
-            json.dumps(renderer.build_plan(profile), sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        plan_path.write_text(json.dumps(plan_value, sort_keys=True) + "\n", encoding="utf-8")
 
         bindings: list[dict[str, str]] = []
         first_report: Path | None = None
-        for index, (scenario_id, _description) in enumerate(renderer.SCENARIOS, start=1):
-            report_path = directory / f"{scenario_id}.json"
-            if first_report is None:
-                first_report = report_path
-            trials = []
-            for sessions in (1, 2, 4, 8):
-                outcome = "fail" if sessions == 8 else "pass"
-                trials.append(
-                    {
-                        "concurrent_sessions": sessions,
-                        "duration_seconds": 300.0,
-                        "outcome": outcome,
-                        "cpu_peak_percent": float(sessions * 20),
-                        "memory_rss_peak_bytes": sessions * 100_000_000,
-                        "egress_peak_bps": float(sessions * 5_000_000),
-                        "failed_sessions": 1 if outcome == "fail" else 0,
-                        "unexpected_reconnects": 0,
-                    }
-                )
-            report_path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "run_id": str(uuid.UUID(int=index)),
-                        "node_profile": "unit-test node profile",
-                        "software_revision": revision,
-                        "scenario": (
-                            f"profile={profile}; scenario={scenario_id}; approved acceptance policy"
-                        ),
-                        "safety_margin_percent": 25,
-                        "trials": trials,
-                        "notes": "synthetic validator fixture only",
-                    },
-                    sort_keys=True,
+        for index, (scenario_id, _description) in enumerate(PLAN_RENDERER.SCENARIOS, start=1):
+            records = [_trial(sessions) for sessions in LOAD_LEVELS]
+            trials_path = directory / f"{scenario_id}.trials.jsonl"
+            trials_path.write_text(
+                "\n".join(
+                    json.dumps(record, separators=(",", ":"), sort_keys=True)
+                    for record in records
                 )
                 + "\n",
                 encoding="utf-8",
             )
-            bindings.append(
-                {
-                    "scenario_id": scenario_id,
-                    "path": report_path.relative_to(ROOT).as_posix(),
-                }
+            run_manifest_value = {
+                "schema_version": 1,
+                "plan_sha256": PLANNED_ASSEMBLER._canonical_digest(plan_value),
+                "profile_label": PROFILE_LABEL,
+                "scenario_id": scenario_id,
+                "node_profile": NODE_PROFILE,
+                "software_revision": SOFTWARE_REVISION,
+                "failure_policy": "continue",
+                "planned_load_levels": LOAD_LEVELS,
+                "tested_load_levels": LOAD_LEVELS,
+                "boundary_found": True,
+                "completed_plan": True,
+                "trials_sha256": PLANNED_ASSEMBLER._canonical_digest(records),
+            }
+            run_manifest_path = directory / f"{scenario_id}.run.json"
+            run_manifest_path.write_text(
+                json.dumps(run_manifest_value, sort_keys=True) + "\n",
+                encoding="utf-8",
             )
+            report_value = PLANNED_ASSEMBLER.assemble_planned_report(
+                plan_path=plan_path,
+                trials_path=trials_path,
+                run_manifest_path=run_manifest_path,
+                scenario_id=scenario_id,
+                run_id=str(uuid.UUID(int=index)),
+                safety_margin_percent=25,
+                notes="synthetic release acceptance provenance fixture",
+            )
+            report_path = directory / f"{scenario_id}.report.json"
+            report_path.write_text(
+                json.dumps(report_value, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            if first_report is None:
+                first_report = report_path
+
+            entry = {
+                "scenario_id": scenario_id,
+                "path": report_path.relative_to(ROOT).as_posix(),
+            }
+            if provenance_bound:
+                entry.update(
+                    {
+                        "trials_path": trials_path.relative_to(ROOT).as_posix(),
+                        "run_manifest_path": run_manifest_path.relative_to(ROOT).as_posix(),
+                    }
+                )
+            bindings.append(entry)
 
         manifest_path = directory / "coverage.json"
         manifest_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2 if provenance_bound else 1,
                     "load_plan": plan_path.relative_to(ROOT).as_posix(),
                     "reports": bindings,
                 },
@@ -186,9 +226,7 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
     def test_missing_required_item_is_rejected(self) -> None:
         payload = self._canonical()
         payload["items"] = [
-            item
-            for item in payload["items"]
-            if item["id"] != "six-hour-soak"
+            item for item in payload["items"] if item["id"] != "six-hour-soak"
         ]
         with self.assertRaisesRegex(module.ChecklistValidationError, "missing required"):
             module.validate_checklist(payload)
@@ -201,21 +239,16 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
 
     def test_satisfied_item_requires_evidence(self) -> None:
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "obs-compatibility"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "obs-compatibility")
         item["status"] = "satisfied"
         with self.assertRaisesRegex(module.ChecklistValidationError, "require repository evidence"):
             module.validate_checklist(payload)
 
     def test_six_hour_soak_satisfied_rejects_arbitrary_repository_evidence(self) -> None:
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "six-hour-soak")
         item["status"] = "satisfied"
         item["evidence"] = ["docs/release-acceptance-checklist.md"]
-
         with self.assertRaisesRegex(
             module.ChecklistValidationError, "canonical passing six-hour-or-longer soak report"
         ):
@@ -227,12 +260,9 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             observed_duration_seconds=600,
         )
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "six-hour-soak")
         item["status"] = "satisfied"
         item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
-
         with self.assertRaisesRegex(
             module.ChecklistValidationError, "target_duration_seconds must be >= 21600"
         ):
@@ -245,12 +275,9 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             outcome="fail",
         )
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "six-hour-soak")
         item["status"] = "satisfied"
         item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
-
         with self.assertRaisesRegex(module.ChecklistValidationError, "outcome must be pass"):
             module.validate_checklist(payload)
 
@@ -260,72 +287,67 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             observed_duration_seconds=21600,
         )
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "six-hour-soak"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "six-hour-soak")
         item["status"] = "satisfied"
         item["evidence"] = [
             "docs/release-acceptance-checklist.md",
             report_path.relative_to(ROOT).as_posix(),
         ]
-
         module.validate_checklist(payload)
 
     def test_node_capacity_satisfied_rejects_arbitrary_repository_evidence(self) -> None:
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "node-capacity-load")
         item["status"] = "satisfied"
         item["evidence"] = ["docs/node-capacity-load-evidence.md"]
-
         with self.assertRaisesRegex(
-            module.ChecklistValidationError, "canonical Node capacity coverage manifest"
+            module.ChecklistValidationError, "provenance-bound Node capacity coverage manifest"
         ):
             module.validate_checklist(payload)
 
     def test_node_capacity_satisfied_rejects_single_canonical_report(self) -> None:
         _manifest_path, report_path = self._write_capacity_coverage_evidence()
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "node-capacity-load")
         item["status"] = "satisfied"
         item["evidence"] = [report_path.relative_to(ROOT).as_posix()]
-
         with self.assertRaisesRegex(
-            module.ChecklistValidationError, "canonical Node capacity coverage manifest"
+            module.ChecklistValidationError, "provenance-bound Node capacity coverage manifest"
         ):
             module.validate_checklist(payload)
 
-    def test_node_capacity_satisfied_accepts_complete_coverage_manifest(self) -> None:
+    def test_node_capacity_satisfied_rejects_schema_v1_complete_coverage_manifest(self) -> None:
         manifest_path, _report_path = self._write_capacity_coverage_evidence()
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "node-capacity-load"
+        item = next(entry for entry in payload["items"] if entry["id"] == "node-capacity-load")
+        item["status"] = "satisfied"
+        item["evidence"] = [manifest_path.relative_to(ROOT).as_posix()]
+        with self.assertRaisesRegex(module.ChecklistValidationError, "bind raw run provenance"):
+            module.validate_checklist(payload)
+
+    def test_node_capacity_satisfied_accepts_provenance_bound_complete_coverage_manifest(self) -> None:
+        manifest_path, _report_path = self._write_capacity_coverage_evidence(
+            provenance_bound=True
         )
+        payload = self._canonical()
+        item = next(entry for entry in payload["items"] if entry["id"] == "node-capacity-load")
         item["status"] = "satisfied"
         item["evidence"] = [
-            "docs/node-capacity-load-evidence.md",
+            "docs/node-capacity-provenance-coverage.md",
             manifest_path.relative_to(ROOT).as_posix(),
         ]
-
         module.validate_checklist(payload)
 
     def test_missing_evidence_path_is_rejected(self) -> None:
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "obs-compatibility"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "obs-compatibility")
         item["evidence"] = ["docs/does-not-exist-release-proof.json"]
         with self.assertRaisesRegex(module.ChecklistValidationError, "missing or unsafe"):
             module.validate_checklist(payload)
 
     def test_path_traversal_evidence_is_rejected(self) -> None:
         payload = self._canonical()
-        item = next(
-            entry for entry in payload["items"] if entry["id"] == "obs-compatibility"
-        )
+        item = next(entry for entry in payload["items"] if entry["id"] == "obs-compatibility")
         item["evidence"] = ["../outside-proof.json"]
         with self.assertRaisesRegex(module.ChecklistValidationError, "inside the repository"):
             module.validate_checklist(payload)
@@ -407,9 +429,7 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
                 "lstat",
                 side_effect=[original_stat, replacement_stat],
             ):
-                with self.assertRaisesRegex(
-                    module.ChecklistValidationError, "changed while reading"
-                ):
+                with self.assertRaisesRegex(module.ChecklistValidationError, "changed while reading"):
                     module.load_checklist(original)
 
     def test_checklist_in_place_change_during_read_is_rejected(self) -> None:
@@ -432,9 +452,7 @@ class ReleaseAcceptanceChecklistTests(unittest.TestCase):
             "fstat",
             side_effect=[stable, stable, mutated],
         ):
-            with self.assertRaisesRegex(
-                module.ChecklistValidationError, "changed while reading"
-            ):
+            with self.assertRaisesRegex(module.ChecklistValidationError, "changed while reading"):
                 module.load_checklist(path)
 
     def test_invalid_utf8_checklist_is_reported_without_traceback(self) -> None:
