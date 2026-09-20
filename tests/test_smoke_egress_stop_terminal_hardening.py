@@ -37,6 +37,7 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
             "unsafe-destination-failed",
             "unsafe-destination-reason",
             "secret-redaction-terminal-output",
+            "secret-redaction-logs-read",
             "secret-redaction-logs",
         }
         calls = re.findall(
@@ -66,6 +67,51 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
         for contract in expected_contracts:
             with self.subTest(contract=contract):
                 self.assertIn(contract, self.source)
+
+    def test_failure_cleanup_redacts_generated_secrets_before_emitting_logs(self) -> None:
+        self.assertIn("redact_generated_secrets()", self.source)
+        self.assertIn("emit_redacted_compose_logs()", self.source)
+        self.assertIn("emit_redacted_compose_logs continuity 120 || true", self.source)
+        self.assertIn("emit_redacted_compose_logs egress-gateway 160 || true", self.source)
+        self.assertIn("emit_redacted_compose_logs egress-target 120 || true", self.source)
+        self.assertIn('"$stream_key" "$unsafe_secret"', self.source)
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=160 egress-gateway >&2 || true',
+            self.source,
+        )
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=120 continuity >&2 || true',
+            self.source,
+        )
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color --tail=120 egress-target >&2 || true',
+            self.source,
+        )
+
+    def test_secret_log_check_fails_closed_when_log_read_fails(self) -> None:
+        self.assertIn('egress_logs_file="$tmp_dir/egress-gateway.log"', self.source)
+        self.assertIn(
+            'if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file" 2>&1; then',
+            self.source,
+        )
+        self.assertIn('emit_failure_stage "secret-redaction-logs-read"', self.source)
+        self.assertNotIn(
+            '"${compose[@]}" logs --no-color egress-gateway 2>/dev/null || true',
+            self.source,
+        )
+
+    def test_status_and_terminal_failure_diagnostics_do_not_emit_raw_payloads(self) -> None:
+        self.assertIn(
+            "printf '%s' \"$payload\" | redact_generated_secrets",
+            self.source,
+        )
+        self.assertIn(
+            "printf '%s\\n' \"$terminal_output\" | redact_generated_secrets",
+            self.source,
+        )
+        self.assertNotIn('echo "$terminal_output" >&2', self.source)
+        self.assertNotIn('assert value.get("status") == expected_status, value', self.source)
+        self.assertNotIn('assert value.get("reason_code") == expected_reason, value', self.source)
 
 
 if __name__ == "__main__":
