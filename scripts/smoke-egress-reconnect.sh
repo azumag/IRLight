@@ -66,17 +66,25 @@ emit_failure_stage() {
   printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
 }
 
+redact_stream_key() {
+  python3 -c '
+import sys
+secret = sys.argv[1]
+sys.stdout.write(sys.stdin.read().replace(secret, "<redacted>"))
+' "$stream_key"
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     echo "--- compose ps ---" >&2
     "${compose[@]}" ps >&2 || true
     echo "--- continuity logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 continuity >&2 || true
+    "${compose[@]}" logs --no-color --tail=120 continuity 2>&1 | redact_stream_key >&2 || true
     echo "--- egress gateway logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-gateway >&2 || true
+    "${compose[@]}" logs --no-color --tail=160 egress-gateway 2>&1 | redact_stream_key >&2 || true
     echo "--- target logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=120 egress-target >&2 || true
+    "${compose[@]}" logs --no-color --tail=120 egress-target 2>&1 | redact_stream_key >&2 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -149,7 +157,9 @@ wait_egress_status() {
   if egress_status_matches "$expected"; then
     return 0
   fi
-  echo "egress status did not become $expected; last=$(read_egress_status)" >&2
+  local safe_last
+  safe_last="$(read_egress_status | redact_stream_key 2>/dev/null || true)"
+  echo "egress status did not become $expected; last=$safe_last" >&2
   return 1
 }
 
@@ -181,7 +191,7 @@ wait_target_path() {
   if target_path_ready; then
     return 0
   fi
-  echo "target did not receive live/$stream_key; paths=$(target_api 2>/dev/null || true)" >&2
+  echo "target did not receive the expected test stream; API snapshot withheld because it can contain the generated stream key" >&2
   return 1
 }
 
@@ -217,7 +227,14 @@ if grep -Fq "$stream_key" <<<"$status_payload"; then
   emit_failure_stage "secret-redaction-status"
   exit 1
 fi
-if "${compose[@]}" logs --no-color egress-gateway | grep -Fq "$stream_key"; then
+
+egress_logs_file="$tmp_dir/egress-gateway.log"
+if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then
+  echo "failed to read egress gateway logs for secret redaction check" >&2
+  emit_failure_stage "secret-redaction-logs-read"
+  exit 1
+fi
+if grep -Fq "$stream_key" "$egress_logs_file"; then
   echo "egress logs leaked stream key" >&2
   emit_failure_stage "secret-redaction-logs"
   exit 1
