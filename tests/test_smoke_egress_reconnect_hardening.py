@@ -37,7 +37,25 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
     def test_runtime_secret_is_private_per_run(self) -> None:
         self.assertIn("umask 077", self.source)
         self.assertIn('secret_file="$tmp_dir/egress_url"', self.source)
-        self.assertIn('chmod 600 "$secret_file"', self.source)
+        self.assertIn('stream_key_file="$tmp_dir/stream_key"', self.source)
+        self.assertIn('chmod 600 "$secret_file" "$stream_key_file"', self.source)
+        self.assertIn("unset stream_key", self.source)
+
+    def test_generated_stream_key_never_reaches_helper_argv(self) -> None:
+        after_unset = self.source.split("unset stream_key", 1)[1]
+        secret_var = r"\$stream_key(?:[^A-Za-z0-9_]|$)"
+        self.assertIsNone(re.search(secret_var, after_unset))
+        self.assertIsNone(re.search(r"grep[^\n]*" + secret_var, self.source))
+        self.assertIn("Path(sys.argv[1]).read_text", self.source)
+        self.assertIn("Path(sys.argv[1]).read_bytes", self.source)
+
+    def test_secret_absence_checks_fail_closed(self) -> None:
+        self.assertIn("stdin_excludes_stream_key()", self.source)
+        self.assertIn("file_excludes_stream_key()", self.source)
+        self.assertIn('if ! stdin_excludes_stream_key <<<"$status_payload"; then', self.source)
+        self.assertIn('if ! file_excludes_stream_key "$egress_logs_file"; then', self.source)
+        self.assertIn('emit_failure_stage "secret-redaction-status"', self.source)
+        self.assertIn('emit_failure_stage "secret-redaction-logs"', self.source)
 
     def test_status_wait_performs_final_observation(self) -> None:
         wait = self.source.split("wait_egress_status() {", 1)[1].split(
@@ -90,7 +108,7 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
             'if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then',
             redaction,
         )
-        self.assertIn('if grep -Fq "$stream_key" "$egress_logs_file"; then', redaction)
+        self.assertIn('if ! file_excludes_stream_key "$egress_logs_file"; then', redaction)
         self.assertNotRegex(
             redaction,
             r'logs\s+--no-color\s+egress-gateway\s*\|\s*grep\s+-Fq',
@@ -110,9 +128,11 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
 
     def test_failure_diagnostics_redact_generated_stream_key(self) -> None:
         helper = self.source.split("redact_stream_key() {", 1)[1].split(
-            "\n}\n\ncleanup()", 1
+            "\n}\n\nstdin_excludes_stream_key()", 1
         )[0]
         self.assertIn('.replace(secret, "<redacted>")', helper)
+        self.assertIn('Path(sys.argv[1]).read_text', helper)
+        self.assertIn('"$stream_key_file"', helper)
 
         cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
         for service in ("continuity", "egress-gateway", "egress-target"):
@@ -127,6 +147,12 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
         )[0]
         self.assertIn("read_egress_status | redact_stream_key", status_wait)
         self.assertNotIn("last=$(read_egress_status)", status_wait)
+
+        target_path = self.source.split("target_path_ready() {", 1)[1].split(
+            "\n}\n\nwait_target_path()", 1
+        )[0]
+        self.assertIn('Path(sys.argv[1]).read_text', target_path)
+        self.assertIn('"$stream_key_file" <<<"$payload"', target_path)
 
         target_wait = self.source.split("wait_target_path() {", 1)[1].split(
             "\n}\n\n# The generated project", 1
