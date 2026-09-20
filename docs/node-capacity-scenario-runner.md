@@ -6,12 +6,28 @@ Issue #13 の canonical load plan を、実際の負荷ハーネスへ安全に�
 
 ## 実行例
 
+安全側で最初の失敗後に止める探索 run:
+
 ```bash
 python3 scripts/run-node-capacity-scenario.py \
   --plan artifacts/node-capacity-plan.json \
   --scenario normal-input \
   --trials-jsonl artifacts/normal-input.trials.jsonl \
   --timeout-seconds 900 \
+  --failure-policy stop \
+  --runner /opt/irlight/bin/node-capacity-harness \
+  --json
+```
+
+Issue #13 の complete coverage evidence を採るため、承認済み plan の全 level を明示的に実行する run:
+
+```bash
+python3 scripts/run-node-capacity-scenario.py \
+  --plan artifacts/node-capacity-plan.json \
+  --scenario normal-input \
+  --trials-jsonl artifacts/normal-input.complete.trials.jsonl \
+  --timeout-seconds 900 \
+  --failure-policy continue \
   --runner /opt/irlight/bin/node-capacity-harness \
   --json
 ```
@@ -57,15 +73,15 @@ harness は計測を完了後、指定された `RESULT_JSON` を新規作成し
 
 result は 64 KiB 以下の UTF-8 JSON regular file である必要があります。duplicate key、NaN / Infinity、extra/missing field、symlink result、既存 trial schema に反する型や値は fail-closed です。stdout / stderr は evidence transport に使わず破棄します。
 
-## 負荷レベルの進め方
+## 負荷レベルと failure policy
 
-runner は plan にある concurrency level を昇順に実行します。
+runner は plan にある concurrency level を昇順にだけ実行し、plan 外の負荷 level を勝手に追加しません。`--failure-policy` は必須で、失敗境界より上の planned load を自動実行するかどうかを operator が明示します。
 
-- `pass` の間だけ次の planned level へ進む。
-- 最初の `fail` を記録した時点で、それより高い level は実行しない。
-- plan の全 level が `pass` した場合、plan 外の負荷を勝手に追加しない。`boundary_found=false` として終了し、必要なら operator が新しい canonical plan に追加 level を明示する。
+- `stop`: 最初の `fail` を記録した時点で終了する。安全側の探索用で、`completed_plan=false` になります。
+- `continue`: 最初の `fail` 後も **canonical plan に既に明示された level だけ**を続ける。Issue #13 の coverage validator は各 scenario で planned level 全件を要求するため、complete coverage evidence を作る場合はこちらを明示します。
+- 全 level が `pass` した場合はどちらの policy でも `boundary_found=false` で終了する。runner は未承認のさらに高い load を生成しません。失敗境界が必要なら、operator が追加 level を含む新しい canonical plan を作ります。
 
-このため、失敗境界を得るために根拠なくさらに高負荷を掛けることはありません。
+`continue` は障害後の追加負荷を意味するため、Node shape、harness、監視、停止手順がその実行を許容すると確認した場合だけ使用してください。どちらの policy でも、既存 raw-trial validator が fail 後の pass、failed session を含む pass、型不正などを拒否します。
 
 ## 次の evidence chain
 
@@ -81,7 +97,7 @@ run-node-capacity-scenario.py
   -> write-node-capacity-review-bundle.py
 ```
 
-report assembly では `run_id`、Node profile、software revision、scenario、operator が選んだ safety margin を明示します。review bundle まで進めることで proposal だけでなく coverage manifest、load plan、全 measured reports の exact bytes を digest で固定できます。
+report assembly では `run_id`、Node profile、software revision、scenario、operator が選んだ safety margin を明示します。coverage manifest へ進めるには各 scenario の planned load level がすべて測定済みである必要があります。review bundle まで進めることで proposal だけでなく coverage manifest、load plan、全 measured reports の exact bytes を digest で固定できます。
 
 ## Safety boundary
 
