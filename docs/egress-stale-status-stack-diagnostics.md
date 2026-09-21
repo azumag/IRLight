@@ -16,7 +16,9 @@ A smoke sends `SIGUSR2` only after all of the following are true:
 
 - its existing `wait_egress_status RECONNECTING 45` check has failed;
 - the egress gateway container is still running;
-- recent redacted gateway logs contain the readiness marker confirming that the handler is armed.
+- the complete redacted log for that bounded, isolated gateway container contains the readiness marker confirming that the handler is armed.
+
+The readiness marker is emitted once at process startup. The smoke therefore does not use a fixed log tail for this guard: a noisy 45-second failure window could otherwise push a correctly emitted startup marker outside that tail and cause the diagnostic request to be skipped even though the handler remains armed. The complete log is inspected only on the already-failing timeout path and is passed through the existing generated-secret redactor before the marker check.
 
 If any guard fails, the smoke skips the signal and continues normal failure evidence collection. The signal is therefore never sent on a passing reconnect path, and it is never sent to a process that has not positively confirmed the handler. The existing 45-second timeout is not extended. The stop-terminal smoke requests the stack before its `IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE` marker and before failure-stage emission, so the normal cleanup log capture can retain the traceback.
 
