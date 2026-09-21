@@ -210,9 +210,10 @@ except Exception:
 if len(secrets) != 1:
     raise SystemExit(2)
 path = b"conflict/" + secrets[0]
+quote = bytes([39])
 markers = {
-    "publishing": b"is publishing to path \'" + path + b"\'",
-    "conflict": b"someone is already publishing to path \'" + path + b"\'",
+    "publishing": b"is publishing to path " + quote + path + quote,
+    "conflict": b"someone is already publishing to path " + quote + path + quote,
 }
 marker = markers.get(sys.argv[2])
 if marker is None:
