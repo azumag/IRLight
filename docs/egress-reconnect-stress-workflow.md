@@ -9,12 +9,16 @@ GitHub Actions の `Egress reconnect stress` を `workflow_dispatch` から明�
 - `scenario`: `reconnect` / `stop-terminal` / `both`
 - `runs`: 選択した scenario ごとの反復回数。GitHub Actions では `1` / `3` / `5` の固定選択とし、既定は `3`
 
-実処理は `scripts/stress-egress-reconnect.sh` へ委譲します。そこから既存の `smoke-egress-reconnect.sh` / `smoke-egress-stop-terminal.sh` を呼ぶため、#546〜#549 で整備した secret-safe evidence、redacted failure diagnostics、SIGUSR2 thread-stack diagnostics の境界を再利用します。
+実処理は `scripts/stress-egress-reconnect.sh` へ委譲します。そこから既存の `smoke-egress-reconnect.sh` / `smoke-egress-stop-terminal.sh` を呼ぶため、#546〜#551 で整備した secret-safe evidence、redacted failure diagnostics、SIGUSR2 thread-stack diagnostics の境界を再利用します。
+
+stress run で scenario が失敗した場合は、その1回の smoke 出力を `umask 077` の run-local temporary file にだけ保持し、`scripts/extract-egress-stack-fingerprint.py` で allowlist・件数・byte 上限付きの stack fingerprint に縮約します。raw traceback / source line / destination URL / stream key / token / container log 自体は artifact にコピーしません。fingerprint は workflow step summary に追記し、その summary だけを failure artifact として3日間保持します。extractor が安全に分類できない場合は固定 `stack_fingerprint=UNAVAILABLE` に fail-closed します。
 
 ## 安全性とコスト境界
 
 この workflow は `pull_request` や `schedule` trigger を持たず、通常 CI からは実行されません。`permissions` は `contents: read` のみで、repository secret や実配信先 credential を要求しません。既存 smoke のローカル Docker target だけを使用し、Twitch / YouTube / Kick 等の外部サービスへ接続しません。
 
 ローカル helper 自体は最大50回まで許可しますが、GitHub Actions 側では runner 使用量を診断目的で不用意に増やさないため最大5回に制限します。同一 stress workflow の並行実行も concurrency group で直列化し、自動キャンセルによる中途半端な診断結果も避けます。
+
+failure artifact は bounded fingerprint を含む step summary のみで、raw smoke log を upload しません。通常 runner log には従来どおり smoke の redacted diagnostics が表示されますが、artifact retention を追加する対象は allowlist 済みの summary に限定します。
 
 この workflow の追加は production runtime、45秒の `RECONNECTING` contract、retry / stall policy、status vocabulary を変更しません。再発を捕捉して原因を分類するための operator 明示実行経路だけを追加します。
