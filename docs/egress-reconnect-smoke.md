@@ -37,7 +37,7 @@ stage token に secret 値や外部入力は含めません。再接続 timeout�
 
 `scripts/smoke-egress-stop-terminal.sh` も同じ annotation 契約を使います。explicit stop と terminal unsafe-destination のどこで最初に失敗したかを、Docker smoke artifact の `Stage` から判別できます。
 
-`reconnecting` timeout では、通常の reconnect smoke と同じ secret-safe 境界で `IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE` を stderr と GitHub Step Summary に残します。公開するのは allowlist 済み status/reason、検証済み非負 attempt、connected、`next_retry_at` の有無、gateway liveness だけです。raw status JSON は helper の stdin から読み、generated stream key、credentialed URL、raw status、raw logs を marker に含めません。parse failure や未知値は raw 値へフォールバックせず `UNREADABLE` / `OTHER` / `-` に fail closed します。この診断追加でも既存の45秒 `RECONNECTING` contract は延長しません。
+`reconnecting` timeout では、通常の reconnect smoke と同じ secret-safe 境界で `IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE` を stderr と GitHub Step Summary に残します。公開するのは allowlist 済み status/reason、検証済み非負 attempt、connected、`next_retry_at` の有無、gateway liveness だけです。`gateway` は `running` / `not-running` に正規化し、helper に想定外値が渡った場合も `unknown` に縮退させます。raw status JSON は helper の stdin から読み、generated stream key、credentialed URL、raw status、raw logs を marker に含めません。parse failure や未知値は raw 値へフォールバックせず `UNREADABLE` / `OTHER` / `-` に fail closed します。この診断追加でも既存の45秒 `RECONNECTING` contract は延長しません。
 
 主な stage は次のとおりです。
 
