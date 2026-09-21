@@ -73,6 +73,31 @@ class EgressStopTerminalSmokeIsolationTest(unittest.TestCase):
         self.assertIn("status=UNREADABLE reason=UNREADABLE", helper)
         self.assertIn('gateway=$gateway_state', helper)
 
+    def test_reconnect_timeout_stack_dump_is_opt_in_and_handler_guarded(self) -> None:
+        self.assertIn('EGRESS_STACK_SIGNAL_DIAGNOSTICS: "1"', self.source)
+        helper = self.source.split("request_egress_stack_dump() {", 1)[1].split(
+            "\n}\n\nemit_reconnect_timeout_evidence() {", 1
+        )[0]
+        self.assertIn('ps --status running --services', helper)
+        self.assertIn('IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2', helper)
+        self.assertIn('kill -s SIGUSR2 egress-gateway', helper)
+        self.assertIn('IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=gateway-not-running', helper)
+        self.assertIn('IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=handler-unconfirmed', helper)
+        self.assertIn('IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=signal-failed', helper)
+        self.assertIn('IRLIGHT_EGRESS_STACK_DUMP_REQUESTED signal=SIGUSR2', helper)
+        self.assertIn('redact_generated_secrets', helper)
+        self.assertNotIn("secret_file", helper)
+        self.assertNotIn("stream_key", helper)
+
+        failure = self.source.split(
+            'if ! wait_egress_status RECONNECTING 45; then', 1
+        )[1].split("fi", 1)[0]
+        stack_position = failure.index("request_egress_stack_dump")
+        evidence_position = failure.index("emit_reconnect_timeout_evidence")
+        stage_position = failure.index('emit_failure_stage "reconnecting"')
+        self.assertLess(stack_position, evidence_position)
+        self.assertLess(evidence_position, stage_position)
+
 
 if __name__ == "__main__":
     unittest.main()
