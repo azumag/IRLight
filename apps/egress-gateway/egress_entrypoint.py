@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import egress
@@ -50,9 +51,14 @@ def _install_stack_diagnostics() -> None:
     except Exception:
         installed = False
     if installed:
-        # Fixed non-secret readiness marker used by reconnect smoke before it
-        # sends the diagnostic-only signal on a timeout.
-        LOG.info("IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=%s", STACK_SIGNAL_NAME)
+        # egress.main() configures logging after this hook. Emit a fixed,
+        # non-secret marker directly so smoke tests can verify the handler is
+        # armed before sending a diagnostic-only signal.
+        print(
+            f"IRLIGHT_EGRESS_STACK_SIGNAL_READY signal={STACK_SIGNAL_NAME}",
+            file=sys.stderr,
+            flush=True,
+        )
     else:
         # Do not include exception/configuration details in this diagnostic.
         LOG.warning("egress stack signal diagnostics unavailable")
