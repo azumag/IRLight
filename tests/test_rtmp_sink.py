@@ -129,6 +129,18 @@ class RtmpSinkProgressTest(unittest.TestCase):
                 self.assertEqual(progress.transport_bytes_out, 0)
                 self.assertEqual(progress.progress_marker, (0, 1024))
 
+    def test_malformed_rtmp2_ack_counter_does_not_become_progress(self) -> None:
+        for malformed in (True, "1024", 1024.5, None):
+            with self.subTest(value=malformed):
+                progress = sink_progress(
+                    "rtmp2sink",
+                    {"out-bytes-total": 4096, "out-bytes-acked": malformed},
+                    observed_sink_buffers=3,
+                )
+                self.assertTrue(progress.ready)
+                self.assertEqual(progress.transport_bytes_acked, 0)
+                self.assertEqual(progress.progress_marker, (4096, 0))
+
     def test_malformed_legacy_rendered_counter_does_not_become_progress(self) -> None:
         for malformed in (True, "12", 12.5, None):
             with self.subTest(value=malformed):
