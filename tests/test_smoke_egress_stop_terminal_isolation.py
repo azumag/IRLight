@@ -40,6 +40,39 @@ class EgressStopTerminalSmokeIsolationTest(unittest.TestCase):
         self.assertIn('secret_file="$tmp_dir/egress_url"', self.source)
         self.assertIn('chmod 600 "$secret_file"', self.source)
 
+    def test_reconnecting_timeout_emits_allowlisted_secret_safe_evidence(self) -> None:
+        helper = self.source.split("emit_reconnect_timeout_evidence() {", 1)[1].split(
+            "\n}\n\nwait_egress_status() {", 1
+        )[0]
+        self.assertIn('payload="$(read_egress_status)"', helper)
+        self.assertIn('gateway_state="not-running"', helper)
+        self.assertIn("value = json.load(sys.stdin)", helper)
+        self.assertIn('status = status_value if status_value in allowed_statuses else "OTHER"', helper)
+        self.assertIn('reason = "OTHER"', helper)
+        self.assertIn('next_retry_present = "yes"', helper)
+        self.assertIn("IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE", helper)
+        self.assertIn("GITHUB_STEP_SUMMARY", helper)
+        self.assertNotIn("redaction_values_file", helper)
+        self.assertNotIn("secret_file", helper)
+        self.assertNotIn("stream_key", helper)
+        self.assertNotIn("print(value)", helper)
+        self.assertNotIn("print(payload)", helper)
+
+        failure = self.source.split(
+            'if ! wait_egress_status RECONNECTING 45; then', 1
+        )[1].split("fi", 1)[0]
+        evidence_position = failure.index("emit_reconnect_timeout_evidence")
+        stage_position = failure.index('emit_failure_stage "reconnecting"')
+        self.assertLess(evidence_position, stage_position)
+
+    def test_reconnect_evidence_fails_closed_for_unreadable_status(self) -> None:
+        helper = self.source.split("emit_reconnect_timeout_evidence() {", 1)[1].split(
+            "\n}\n\nwait_egress_status() {", 1
+        )[0]
+        self.assertIn("except Exception:\n    raise SystemExit(2)", helper)
+        self.assertIn("status=UNREADABLE reason=UNREADABLE", helper)
+        self.assertIn('gateway=$gateway_state', helper)
+
 
 if __name__ == "__main__":
     unittest.main()

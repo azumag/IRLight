@@ -178,6 +178,70 @@ read_egress_status() {
   "${compose[@]}" exec -T continuity cat /state/egress.json 2>/dev/null || true
 }
 
+emit_reconnect_timeout_evidence() {
+  local payload gateway_state evidence
+  payload="$(read_egress_status)"
+  gateway_state="not-running"
+  if "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx egress-gateway; then
+    gateway_state="running"
+  fi
+
+  if ! evidence="$(python3 -c '
+import json
+import sys
+
+allowed_statuses = {
+    "STARTING", "CONNECTED", "RECONNECTING", "AUTH_FAILED", "FAILED", "STOPPED"
+}
+allowed_reasons = {
+    "AUTH_FAILED", "PUBLISH_CONFLICT", "PUBLISH_REJECTED", "LOCAL_PIPELINE_FAILED",
+    "TLS_FAILED", "DNS_FAILED", "TIMEOUT", "UNREACHABLE", "UPSTREAM_UNAVAILABLE",
+    "UPSTREAM_EOS", "EGRESS_PIPELINE_FAILED", "RETRY_EXHAUSTED", "USER_STOPPED",
+    "SECRET_UNAVAILABLE", "DESTINATION_UNSAFE"
+}
+gateway = sys.argv[1] if sys.argv[1] in {"running", "not-running"} else "unknown"
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+status_value = value.get("status")
+status = status_value if status_value in allowed_statuses else "OTHER"
+reason_value = value.get("reason_code")
+if reason_value is None:
+    reason = "NONE"
+elif reason_value in allowed_reasons:
+    reason = reason_value
+else:
+    reason = "OTHER"
+attempt_value = value.get("attempt")
+attempt = (
+    str(attempt_value)
+    if isinstance(attempt_value, int) and not isinstance(attempt_value, bool) and attempt_value >= 0
+    else "-"
+)
+connected_value = value.get("connected")
+connected = "yes" if connected_value is True else "no" if connected_value is False else "-"
+next_retry_present = "yes" if value.get("next_retry_at") is not None else "no"
+print(
+    "IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE "
+    f"status={status} reason={reason} attempt={attempt} connected={connected} "
+    f"next_retry_present={next_retry_present} gateway={gateway}"
+)
+' "$gateway_state" <<<"$payload" 2>/dev/null)"; then
+    evidence="IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE status=UNREADABLE reason=UNREADABLE attempt=- connected=- next_retry_present=- gateway=$gateway_state"
+  fi
+
+  printf '%s\n' "$evidence" >&2
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo
+      echo '#### Egress stop-terminal reconnect timeout evidence'
+      echo
+      printf '`%s`\n' "$evidence"
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+}
+
 wait_egress_status() {
   local expected="$1"
   local timeout="${2:-45}"
@@ -238,6 +302,7 @@ if ! "${compose[@]}" stop egress-target >/dev/null; then
   exit 1
 fi
 if ! wait_egress_status RECONNECTING 45; then
+  emit_reconnect_timeout_evidence
   emit_failure_stage "reconnecting"
   exit 1
 fi
