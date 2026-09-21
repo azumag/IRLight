@@ -10,8 +10,10 @@ Egress Gateway の接続監視・状態更新に使う runtime timer は、produ
 | --- | ---: | --- |
 | `EGRESS_CONNECT_TIMEOUT_SECONDS` | 15 | 初回 publish 成立待ち |
 | `EGRESS_STATUS_HEARTBEAT_SECONDS` | 5 | 接続中 status heartbeat 間隔 |
-| `EGRESS_CONNECT_STABILITY_SECONDS` | 3 | publish 成立後の安定確認時間 |
+| `EGRESS_CONNECT_STABILITY_SECONDS` | 3 | publish 成立後の連続した安定確認時間 |
 | `EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS` | 5 | 接続成立後の output progress 停止検知 |
+
+`EGRESS_CONNECT_STABILITY_SECONDS` は最初に一度 ready を観測してからの単純な経過時間ではない。`CONNECTED` 確定前に sink が not-ready へ戻った場合は stability window を破棄し、次に ready へ戻った時点から全期間を数え直す。malformed / missing な GStreamer counter は ready として補完せず、安定確認時間にも算入しない。production default の `rtmpsink` と opt-in `rtmp2sink` の双方で同じ連続性契約を使う。
 
 Python の `float()` は `NaN`、`Infinity`、`-Infinity` を通常の変換成功として扱うため、比較や `max(0.0, value)` だけでは安全な上限にならない。Egress Gateway はこれらの非有限値と malformed value を起動時に拒否し、実際の Egress pipeline、DNS guard、Destination 接続を開始しない。
 
@@ -30,5 +32,6 @@ Python の `float()` は `NaN`、`Infinity`、`-Infinity` を通常の変換成�
 - 4 timer それぞれで既定値と通常の有限値が従来どおり使える。
 - `NaN` / `Infinity` / `-Infinity` をすべて拒否する。
 - malformed value の元文字列を exception chain や startup log へ露出させない。
+- ready → not-ready → ready では最後の ready から stability window を数え直し、連続 ready が規定時間続いた場合だけ接続成立へ昇格する。
 - Egress Gateway image が validator module を含み、production CMD が validator を通る entrypoint を起動する。
 - 通常 CI と RTMPS / SRT / disconnect recovery E2E を弱めず成功させる。
