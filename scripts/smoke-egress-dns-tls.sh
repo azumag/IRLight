@@ -9,6 +9,7 @@ tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-dns-tls.override.yml"
 dns_secret="$tmp_dir/dns-egress-url"
 tls_secret="$tmp_dir/tls-egress-url"
+stream_key_file="$tmp_dir/tls-stream-key"
 stream_key="ci-egress-tls-secret-$RANDOM"
 
 cat >"$dns_secret" <<'EOF'
@@ -16,10 +17,12 @@ rtmp://egress-dns-does-not-exist.invalid/live/dns-test
 EOF
 chmod 600 "$dns_secret"
 
+printf '%s' "$stream_key" >"$stream_key_file"
 cat >"$tls_secret" <<EOF
 rtmps://egress-tls-target:1936/live/$stream_key
 EOF
-chmod 600 "$tls_secret"
+chmod 600 "$tls_secret" "$stream_key_file"
+unset stream_key
 
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
   -keyout "$tmp_dir/server.key" \
@@ -103,14 +106,51 @@ compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.ym
 
 redact_generated_secrets() {
   python3 -c '
+from pathlib import Path
 import sys
 
+secret = Path(sys.argv[1]).read_bytes()
+if not secret:
+    raise SystemExit(1)
 data = sys.stdin.buffer.read()
-for raw in sys.argv[1:]:
-    if raw:
-        data = data.replace(raw.encode("utf-8"), b"<redacted>")
-sys.stdout.buffer.write(data)
-' "$stream_key"
+sys.stdout.buffer.write(data.replace(secret, b"<redacted>"))
+' "$stream_key_file"
+}
+
+stdin_excludes_stream_key() {
+  python3 -c '
+from pathlib import Path
+import sys
+
+secret = Path(sys.argv[1]).read_bytes()
+data = sys.stdin.buffer.read()
+raise SystemExit(0 if secret and secret not in data else 1)
+' "$stream_key_file"
+}
+
+file_excludes_stream_key() {
+  local candidate="$1"
+  python3 -c '
+from pathlib import Path
+import sys
+
+secret = Path(sys.argv[1]).read_bytes()
+data = Path(sys.argv[2]).read_bytes()
+raise SystemExit(0 if secret and secret not in data else 1)
+' "$stream_key_file" "$candidate"
+}
+
+status_matches_reason() {
+  local expected_status="$1"
+  local expected_reason="$2"
+  python3 -c '
+import json,sys
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if value.get("status") == sys.argv[1] and value.get("reason_code") == sys.argv[2] else 1)
+' "$expected_status" "$expected_reason"
 }
 
 emit_redacted_compose_logs() {
@@ -160,14 +200,7 @@ wait_status_reason() {
   local payload=""
   while (( SECONDS < deadline )); do
     payload="$(read_status)"
-    if python3 -c '
-import json,sys
-try:
-    value=json.loads(sys.argv[1])
-except Exception:
-    raise SystemExit(1)
-raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_code") == sys.argv[3] else 1)
-' "$payload" "$expected_status" "$expected_reason" 2>/dev/null; then
+    if status_matches_reason "$expected_status" "$expected_reason" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -201,8 +234,8 @@ wait_status_reason RECONNECTING DNS_FAILED 45
 wait_status_reason RECONNECTING TLS_FAILED 60
 
 status_payload="$(read_status)"
-if grep -Fq "$stream_key" <<<"$status_payload"; then
-  echo "egress status leaked TLS stream key" >&2
+if ! stdin_excludes_stream_key <<<"$status_payload"; then
+  echo "egress status stream-key check failed closed" >&2
   exit 1
 fi
 
@@ -211,8 +244,8 @@ if ! "${compose[@]}" logs --no-color egress-tls >"$egress_tls_logs" 2>&1; then
   echo "failed to read egress TLS logs for secret redaction check" >&2
   exit 1
 fi
-if grep -Fq "$stream_key" "$egress_tls_logs"; then
-  echo "egress TLS logs leaked stream key" >&2
+if ! file_excludes_stream_key "$egress_tls_logs"; then
+  echo "egress TLS log stream-key check failed closed" >&2
   exit 1
 fi
 
