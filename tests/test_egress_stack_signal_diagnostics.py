@@ -37,8 +37,10 @@ class EgressStackSignalDiagnosticsTest(unittest.TestCase):
 
         self.assertFalse(install_stack_signal_handler(register=register, output=io.StringIO()))
 
-    def test_entrypoint_confirms_handler_before_gateway_run(self) -> None:
+    def test_entrypoint_keeps_signal_diagnostics_opt_in(self) -> None:
         source = (EGRESS_DIR / "egress_entrypoint.py").read_text(encoding="utf-8")
+        self.assertIn("EGRESS_STACK_SIGNAL_DIAGNOSTICS", source)
+        self.assertIn('os.getenv(_STACK_SIGNAL_DIAGNOSTICS_ENV) != "1"', source)
         self.assertIn("install_stack_signal_handler()", source)
         self.assertIn("IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=", source)
         main_body = source.split("def main() -> int:", 1)[1]
@@ -55,9 +57,10 @@ class EgressStackSignalDiagnosticsTest(unittest.TestCase):
         smoke = (ROOT / "scripts" / "smoke-egress-reconnect.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn('EGRESS_STACK_SIGNAL_DIAGNOSTICS: "1"', smoke)
         helper = smoke.split("request_egress_stack_dump() {", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2", helper)
-        self.assertIn('kill -s SIGUSR2 egress-gateway', helper)
+        self.assertIn("kill -s SIGUSR2 egress-gateway", helper)
         self.assertLess(
             helper.index("IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2"),
             helper.index("kill -s SIGUSR2 egress-gateway"),
