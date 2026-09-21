@@ -9,10 +9,12 @@ tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-conflict.override.yml"
 target_config="$tmp_dir/mediamtx-conflict.yml"
 secret_file="$tmp_dir/egress_url"
+redaction_values_file="$tmp_dir/redaction-values"
 stream_key="ci-conflict-$RANDOM"
 path_name="conflict/$stream_key"
 export EGRESS_SECRET_FILE="$secret_file"
 
+printf '%s\n' "$stream_key" >"$redaction_values_file"
 cat >"$target_config" <<EOF
 logLevel: info
 rtmp: yes
@@ -26,7 +28,7 @@ EOF
 cat >"$secret_file" <<EOF
 rtmp://egress-conflict-target:1935/$path_name
 EOF
-chmod 600 "$secret_file"
+chmod 600 "$secret_file" "$redaction_values_file" "$target_config"
 
 cat >"$override" <<EOF
 services:
@@ -85,17 +87,74 @@ services:
       - irlight-relay-secrets:/run/irlight/relay-secrets:ro
       - $secret_file:/run/irlight/secrets/egress_url:ro
 EOF
+chmod 600 "$override"
+unset stream_key path_name
 
 compose=(docker compose -p "$smoke_project" -f "$repo_root/docker-compose.poc.yml" -f "$override")
 
-redact_stream_key() {
+redact_generated_secrets() {
   python3 -c '
+from pathlib import Path
 import sys
 
+try:
+    secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+except Exception:
+    raise SystemExit(1)
+if not secrets:
+    raise SystemExit(1)
 data = sys.stdin.buffer.read()
-data = data.replace(sys.argv[1].encode("utf-8"), b"<redacted>")
+for secret in secrets:
+    data = data.replace(secret, b"<redacted>")
 sys.stdout.buffer.write(data)
-' "$stream_key"
+' "$redaction_values_file"
+}
+
+stdin_excludes_generated_secrets() {
+  python3 -c '
+from pathlib import Path
+import sys
+
+try:
+    secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+except Exception:
+    raise SystemExit(1)
+data = sys.stdin.buffer.read()
+raise SystemExit(0 if secrets and all(secret not in data for secret in secrets) else 1)
+' "$redaction_values_file"
+}
+
+file_excludes_generated_secrets() {
+  local candidate="$1"
+  python3 -c '
+from pathlib import Path
+import sys
+
+try:
+    secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+    data = Path(sys.argv[2]).read_bytes()
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if secrets and all(secret not in data for secret in secrets) else 1)
+' "$redaction_values_file" "$candidate"
+}
+
+status_matches_reason() {
+  local expected_status="$1"
+  local expected_reason="$2"
+  python3 -c '
+import json,sys
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(
+    0
+    if value.get("status") == sys.argv[1]
+    and value.get("reason_code") == sys.argv[2]
+    else 1
+)
+' "$expected_status" "$expected_reason"
 }
 
 emit_redacted_compose_logs() {
@@ -105,7 +164,7 @@ emit_redacted_compose_logs() {
   local logs_rc=0
 
   "${compose[@]}" logs --no-color --tail="$tail_lines" "$service" >"$raw_file" 2>&1 || logs_rc=$?
-  if ! redact_stream_key <"$raw_file" >&2; then
+  if ! redact_generated_secrets <"$raw_file" >&2; then
     echo "failed to redact $service diagnostics; output withheld" >&2
     return 1
   fi
@@ -130,6 +189,36 @@ compose_logs_contain_marker() {
     return 2
   fi
   grep -Fq -- "$marker" "$output_file"
+}
+
+target_logs_contain_path_marker() {
+  local marker_kind="$1"
+  local output_file="$2"
+
+  if ! capture_compose_logs egress-conflict-target "$output_file"; then
+    return 2
+  fi
+  python3 -c '
+from pathlib import Path
+import sys
+
+try:
+    secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+    data = Path(sys.argv[3]).read_bytes()
+except Exception:
+    raise SystemExit(2)
+if len(secrets) != 1:
+    raise SystemExit(2)
+path = b"conflict/" + secrets[0]
+markers = {
+    "publishing": b"is publishing to path \'" + path + b"\'",
+    "conflict": b"someone is already publishing to path \'" + path + b"\'",
+}
+marker = markers.get(sys.argv[2])
+if marker is None:
+    raise SystemExit(2)
+raise SystemExit(0 if marker in data else 1)
+' "$redaction_values_file" "$marker_kind" "$output_file"
 }
 
 cleanup() {
@@ -162,20 +251,13 @@ wait_status_reason() {
   local payload=""
   while (( SECONDS < deadline )); do
     payload="$(read_status)"
-    if python3 -c '
-import json,sys
-try:
-    value=json.loads(sys.argv[1])
-except Exception:
-    raise SystemExit(1)
-raise SystemExit(0 if value.get("status") == sys.argv[2] and value.get("reason_code") == sys.argv[3] else 1)
-' "$payload" "$expected_status" "$expected_reason" 2>/dev/null; then
+    if status_matches_reason "$expected_status" "$expected_reason" <<<"$payload" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
   local safe_payload
-  if safe_payload="$(printf '%s' "$payload" | redact_stream_key 2>/dev/null)"; then
+  if safe_payload="$(printf '%s' "$payload" | redact_generated_secrets 2>/dev/null)"; then
     echo "egress status did not become $expected_status/$expected_reason; last=$safe_payload" >&2
   else
     echo "egress status did not become $expected_status/$expected_reason; last=<redaction-failed>" >&2
@@ -231,13 +313,13 @@ for _ in $(seq 1 20); do
     echo "first publisher holder exited before conflict test" >&2
     exit 1
   fi
-  if compose_logs_contain_marker egress-conflict-target "is publishing to path '$path_name'" "$holder_poll_logs"; then
+  if target_logs_contain_path_marker publishing "$holder_poll_logs"; then
     break
   fi
   sleep 1
 done
 holder_final_logs="$tmp_dir/egress-conflict-target.holder-final.log"
-if compose_logs_contain_marker egress-conflict-target "is publishing to path '$path_name'" "$holder_final_logs"; then
+if target_logs_contain_path_marker publishing "$holder_final_logs"; then
   :
 else
   marker_rc=$?
@@ -257,7 +339,7 @@ wait_status_reason FAILED PUBLISH_REJECTED 45
 # stable terminal PUBLISH_REJECTED reason while the target logs prove this
 # particular test was the same-path publisher conflict.
 conflict_evidence_logs="$tmp_dir/egress-conflict-target.conflict-evidence.log"
-if compose_logs_contain_marker egress-conflict-target "someone is already publishing to path '$path_name'" "$conflict_evidence_logs"; then
+if target_logs_contain_path_marker conflict "$conflict_evidence_logs"; then
   :
 else
   marker_rc=$?
@@ -287,8 +369,12 @@ if ! "${compose[@]}" ps --status running --services | grep -qx conflict-holder; 
 fi
 
 status_payload="$(read_status)"
-if grep -Fq "$stream_key" <<<"$status_payload"; then
-  echo "egress conflict status leaked stream key" >&2
+if [[ -z "$status_payload" ]]; then
+  echo "failed to read egress conflict status for secret redaction check" >&2
+  exit 1
+fi
+if ! stdin_excludes_generated_secrets <<<"$status_payload"; then
+  echo "egress conflict status leaked stream key or secret check failed" >&2
   exit 1
 fi
 egress_logs_file="$tmp_dir/egress-conflict.log"
@@ -296,8 +382,8 @@ if ! "${compose[@]}" logs --no-color egress-conflict >"$egress_logs_file" 2>&1; 
   echo "failed to read egress conflict logs for secret redaction check" >&2
   exit 1
 fi
-if grep -Fq "$stream_key" "$egress_logs_file"; then
-  echo "egress conflict logs leaked stream key" >&2
+if ! file_excludes_generated_secrets "$egress_logs_file"; then
+  echo "egress conflict logs leaked stream key or secret check failed" >&2
   exit 1
 fi
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
