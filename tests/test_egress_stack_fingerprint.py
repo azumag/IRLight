@@ -72,7 +72,12 @@ secret=still-not-copied
     def test_ci_suite_persists_fingerprint_only_for_legacy_timeout_smokes(self) -> None:
         source = SUITE.read_text(encoding="utf-8")
         self.assertIn("extract-egress-stack-fingerprint.py", source)
-        self.assertIn("scripts/smoke-egress-reconnect.sh|scripts/smoke-egress-stop-terminal.sh", source)
+        self.assertIn("smoke-egress-reconnect.sh|smoke-egress-stop-terminal.sh", source)
+        self.assertIn('smoke_name="${smoke##*/}"', source)
+        # Preserve the canonical one-to-one legacy/rtmp2 entries used by the
+        # migration-order contract; diagnostics match by basename instead.
+        self.assertEqual(source.count("scripts/smoke-egress-reconnect.sh"), 1)
+        self.assertEqual(source.count("scripts/smoke-egress-stop-terminal.sh"), 1)
         self.assertIn("Egress stack fingerprint (allowlisted and bounded)", source)
         self.assertIn("failure_contexts+=(", source)
         self.assertNotIn("cat \"$scenario_log\"", source)
