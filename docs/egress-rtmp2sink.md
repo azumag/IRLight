@@ -55,6 +55,14 @@ The explicit-stop scenario is intentionally shared with the legacy smoke. It
 proves that selecting `rtmp2sink` does not weaken the existing user-stop
 precedence or terminal-failure contract while migration evidence is collected.
 
+`tests/test_rtmp2_smoke_wiring.py` protects the migration harness itself. It
+requires every `rtmp2sink` wrapper to force `EGRESS_RTMP_SINK_FACTORY=rtmp2sink`,
+requires the shared scenario's temporary Compose definition to forward that
+selection into the Egress Gateway container, and requires the shared Docker
+suite to keep both the legacy gate and the matching `rtmp2sink` probe. This
+prevents a wrapper/configuration regression from producing a green migration
+result while accidentally exercising the legacy sink.
+
 These probes intentionally use only local synthetic credentials. Passing them
 is evidence for the migration, not authorization to flip the production
 default. Twitch, YouTube, Kick, and Custom destination behavior still needs
