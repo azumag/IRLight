@@ -74,6 +74,18 @@ class EgressReconnectStressHarnessTest(unittest.TestCase):
         self.assertNotIn("docker compose", source)
         self.assertNotIn("stream_key", source)
 
+    def test_failure_path_retains_only_bounded_stack_fingerprint(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("umask 077", source)
+        self.assertIn("extract-egress-stack-fingerprint.py", source)
+        self.assertIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no",
+            source,
+        )
+        self.assertIn("GITHUB_STEP_SUMMARY", source)
+        self.assertIn("tee \"$log_file\"", source)
+        self.assertNotIn("upload-artifact", source)
+
     def test_manual_workflow_is_opt_in_read_only_and_bounded(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", source)
@@ -93,6 +105,21 @@ class EgressReconnectStressHarnessTest(unittest.TestCase):
         )
         self.assertIn("bash ./scripts/stress-egress-reconnect.sh", source)
         self.assertNotIn("secrets.", source)
+
+    def test_manual_workflow_uploads_only_safe_failure_summary(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("id: egress_stress", source)
+        self.assertIn(
+            "failure() && steps.egress_stress.outcome == 'failure'", source
+        )
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            source,
+        )
+        self.assertIn('cp -- "$GITHUB_STEP_SUMMARY" "$evidence_dir/summary.md"', source)
+        self.assertIn("retention-days: 3", source)
+        self.assertNotIn("docker logs", source)
+        self.assertNotIn("/tmp/irlight-egress", source)
 
 
 if __name__ == "__main__":

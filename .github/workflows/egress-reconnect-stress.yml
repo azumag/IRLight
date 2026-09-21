@@ -41,5 +41,28 @@ jobs:
       - name: Validate stress harness shell syntax
         run: bash -n ./scripts/stress-egress-reconnect.sh
       - name: Exercise legacy egress reconnect stress harness
+        id: egress_stress
         shell: bash
-        run: bash ./scripts/stress-egress-reconnect.sh
+        run: |
+          stress_status=0
+          bash ./scripts/stress-egress-reconnect.sh || stress_status=$?
+
+          if (( stress_status != 0 )); then
+            evidence_dir="$RUNNER_TEMP/irlight-egress-reconnect-stress-diagnostics"
+            mkdir -p "$evidence_dir"
+            if [[ -s "$GITHUB_STEP_SUMMARY" ]]; then
+              cp -- "$GITHUB_STEP_SUMMARY" "$evidence_dir/summary.md"
+            else
+              printf '%s\n' 'Egress reconnect stress fingerprint unavailable.' >"$evidence_dir/summary-unavailable.txt"
+            fi
+          fi
+
+          exit "$stress_status"
+      - name: Retain reconnect stress failure evidence
+        if: ${{ failure() && steps.egress_stress.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: egress-reconnect-stress-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/irlight-egress-reconnect-stress-diagnostics
+          if-no-files-found: warn
+          retention-days: 3
