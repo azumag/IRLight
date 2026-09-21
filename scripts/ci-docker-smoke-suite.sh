@@ -67,6 +67,28 @@ extract_failure_stage() {
   printf '%s' "$stage"
 }
 
+extract_egress_stack_fingerprint() {
+  local smoke="$1"
+  local log_file="$2"
+  local smoke_name
+
+  smoke_name="${smoke##*/}"
+  case "$smoke_name" in
+    smoke-egress-reconnect.sh|smoke-egress-stop-terminal.sh)
+      # Match by basename so these diagnostics do not duplicate the canonical
+      # `scripts/...` entries whose one-to-one ordering with rtmp2 wrappers is
+      # guarded by test_rtmp2_smoke_wiring.py.
+      # The helper itself is allowlist-only and bounded. The scenario log is
+      # never copied into the durable artifact; only its fixed-format result is.
+      python3 ./scripts/extract-egress-stack-fingerprint.py <"$log_file" 2>/dev/null || \
+        printf '%s' 'IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no'
+      ;;
+    *)
+      printf '%s' ''
+      ;;
+  esac
+}
+
 capture_runner_resources() {
   local output_file="$1"
 
@@ -86,7 +108,7 @@ capture_runner_resources() {
 
 write_step_summary() {
   local summary_file="${GITHUB_STEP_SUMMARY:-}"
-  local result smoke outcome status duration stage context context_file
+  local result smoke outcome status duration stage context context_file stack_fingerprint
   local resource_before_file resource_after_file
   local project service container image state docker_status
 
@@ -106,7 +128,7 @@ write_step_summary() {
     done
 
     for context in "${failure_contexts[@]}"; do
-      IFS='|' read -r smoke context_file resource_before_file resource_after_file <<<"$context"
+      IFS='|' read -r smoke context_file resource_before_file resource_after_file stack_fingerprint <<<"$context"
       echo
       printf '#### Failure context: `%s`\n\n' "$smoke"
 
@@ -124,6 +146,12 @@ write_step_summary() {
       echo '```'
       echo '</details>'
       echo
+
+      if [[ -n "$stack_fingerprint" ]]; then
+        echo 'Egress stack fingerprint (allowlisted and bounded):'
+        echo
+        printf '`%s`\n\n' "$stack_fingerprint"
+      fi
 
       if [[ ! -s "$context_file" ]]; then
         echo 'No Compose-managed containers remained at the failure boundary.'
@@ -143,6 +171,7 @@ write_step_summary() {
 emit_failure_context() {
   local smoke="$1"
   local resource_before_file="$2"
+  local stack_fingerprint="$3"
   local safe_name="${smoke//\//_}"
   local container_state_file resource_after_file
 
@@ -162,6 +191,9 @@ emit_failure_context() {
   cat "$resource_before_file" 2>/dev/null || echo '(resource baseline unavailable)'
   echo 'Runner resources at failure boundary:'
   cat "$resource_after_file" 2>/dev/null || echo '(failure resource snapshot unavailable)'
+  if [[ -n "$stack_fingerprint" ]]; then
+    printf '%s\n' "$stack_fingerprint"
+  fi
   echo 'Compose projects:'
   docker compose ls --all || true
 
@@ -179,7 +211,7 @@ emit_failure_context() {
   else
     echo '(none)'
   fi
-  failure_contexts+=("$smoke|$container_state_file|$resource_before_file|$resource_after_file")
+  failure_contexts+=("$smoke|$container_state_file|$resource_before_file|$resource_after_file|$stack_fingerprint")
 }
 
 for smoke in "${smokes[@]}"; do
@@ -192,7 +224,7 @@ for smoke in "${smokes[@]}"; do
   echo "::group::$smoke"
 
   # Keep the scenario output live while retaining a run-local copy from which
-  # only a narrowly allowlisted stage token is extracted. PIPESTATUS preserves
+  # only narrowly allowlisted diagnostics are extracted. PIPESTATUS preserves
   # the smoke exit code instead of treating a successful tee as a passing smoke.
   timeout --signal=TERM --kill-after=10s "${smoke_timeout_seconds}s" bash "$smoke" 2>&1 | tee "$scenario_log"
   status=${PIPESTATUS[0]}
@@ -205,6 +237,7 @@ for smoke in "${smokes[@]}"; do
     results+=("$smoke|PASS|0|$duration|-")
   else
     stage="$(extract_failure_stage "$scenario_log")"
+    stack_fingerprint="$(extract_egress_stack_fingerprint "$smoke" "$scenario_log")"
     if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
       echo "::error title=Docker smoke timed out::$smoke exceeded ${smoke_timeout_seconds}s (status $status)"
     else
@@ -214,7 +247,7 @@ for smoke in "${smokes[@]}"; do
       "$smoke" "$status" "$duration" "$stage"
     results+=("$smoke|FAIL|$status|$duration|$stage")
     failures+=("$smoke:$status:$stage")
-    emit_failure_context "$smoke" "$resource_before_file" >&2
+    emit_failure_context "$smoke" "$resource_before_file" "$stack_fingerprint" >&2
   fi
   echo "::endgroup::"
 done

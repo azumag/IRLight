@@ -181,14 +181,17 @@ read_egress_status() {
 }
 
 request_egress_stack_dump() {
-  local recent_logs
+  local readiness_logs
   if ! "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx egress-gateway; then
     echo "IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=gateway-not-running" >&2
     return 0
   fi
 
-  recent_logs="$("${compose[@]}" logs --no-color --tail=80 egress-gateway 2>&1 | redact_generated_secrets || true)"
-  if ! grep -Fq 'IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2' <<<"$recent_logs"; then
+  # The readiness marker is emitted once at process startup. Read the complete
+  # redacted log of this bounded, isolated smoke container so a noisy 45-second
+  # failure window cannot evict that marker from an arbitrary tail window.
+  readiness_logs="$("${compose[@]}" logs --no-color egress-gateway 2>&1 | redact_generated_secrets || true)"
+  if ! grep -Fq 'IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2' <<<"$readiness_logs"; then
     # Never send SIGUSR2 unless the process explicitly confirmed that the
     # faulthandler signal hook is armed; the default action would terminate it.
     echo "IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=handler-unconfirmed" >&2
