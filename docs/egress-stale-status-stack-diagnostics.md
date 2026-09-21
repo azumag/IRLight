@@ -30,9 +30,17 @@ The signal handler does not print the status JSON, destination URL, destination 
 
 The handler is diagnostic-only. Registration failure must not stop the media path. Receiving the registered signal does not terminate the gateway, kill the pipeline, alter retry policy, extend the reconnect timeout, or create a new public egress status.
 
+## Durable failure fingerprint
+
+Raw gateway logs and raw `faulthandler` tracebacks are intentionally not copied into the Docker failure artifact. When either legacy reconnect smoke fails, the shared Docker-suite wrapper passes the run-local scenario log through `scripts/extract-egress-stack-fingerprint.py` before the temporary log is discarded. The extractor is allowlist-only: it retains only IRLight egress Python basenames, safe function names, and line numbers. It never copies source lines, arbitrary paths, thread IDs, exception text, URL/host values, credentials, environment values, or other log text.
+
+The fingerprint is bounded to at most four threads, eight retained frames per thread, and 1024 output bytes. Unexpected syntax or a trace without an allowlisted frame becomes the fixed value `stack_fingerprint=UNAVAILABLE`; excess frames are marked `capped=yes`. Only this fixed-format fingerprint is added to the step summary that CI already uploads as the short-lived Docker failure artifact. Passing smokes produce no fingerprint or extra artifact noise.
+
+This durable form is deliberately less detailed than the live job log, but it is sufficient to preserve the distinction needed by #545 even when the raw Actions log is no longer convenient to retrieve.
+
 ## Reading a failure
 
-Combine the resulting traceback with `IRLIGHT_EGRESS_RECONNECT_EVIDENCE` or `IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE` from the failing smoke.
+Combine the resulting traceback or durable fingerprint with `IRLIGHT_EGRESS_RECONNECT_EVIDENCE` or `IRLIGHT_EGRESS_STOP_TERMINAL_RECONNECT_EVIDENCE` from the failing smoke.
 
 - A stack stopped in `_poll_sink()` near the sink stats read makes the GStreamer stats/poll path the leading blocking candidate.
 - A stack stopped in `EgressAttempt.run()` at `pipeline.set_state(Gst.State.NULL)` makes synchronous teardown the leading blocking candidate. In that case the outer gateway cannot write `RECONNECTING` until the attempt returns.
