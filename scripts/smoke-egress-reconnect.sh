@@ -8,13 +8,16 @@ smoke_project="irlight-egress-reconnect-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-reconnect.override.yml"
 secret_file="$tmp_dir/egress_url"
+stream_key_file="$tmp_dir/stream_key"
 stream_key="ci-egress-secret-$RANDOM"
 export EGRESS_SECRET_FILE="$secret_file"
 
+printf '%s' "$stream_key" >"$stream_key_file"
 cat >"$secret_file" <<EOF
 rtmp://egress-target:1935/live/$stream_key
 EOF
-chmod 600 "$secret_file"
+chmod 600 "$secret_file" "$stream_key_file"
+unset stream_key
 
 cat >"$override" <<'YAML'
 services:
@@ -68,10 +71,33 @@ emit_failure_stage() {
 
 redact_stream_key() {
   python3 -c '
+from pathlib import Path
 import sys
-secret = sys.argv[1]
-sys.stdout.write(sys.stdin.read().replace(secret, "<redacted>"))
-' "$stream_key"
+secret = Path(sys.argv[1]).read_text(encoding="utf-8")
+data = sys.stdin.read()
+sys.stdout.write(data.replace(secret, "<redacted>"))
+' "$stream_key_file"
+}
+
+stdin_excludes_stream_key() {
+  python3 -c '
+from pathlib import Path
+import sys
+secret = Path(sys.argv[1]).read_bytes()
+data = sys.stdin.buffer.read()
+raise SystemExit(0 if secret and secret not in data else 1)
+' "$stream_key_file"
+}
+
+file_excludes_stream_key() {
+  local candidate="$1"
+  python3 -c '
+from pathlib import Path
+import sys
+secret = Path(sys.argv[1]).read_bytes()
+data = Path(sys.argv[2]).read_bytes()
+raise SystemExit(0 if secret and secret not in data else 1)
+' "$stream_key_file" "$candidate"
 }
 
 cleanup() {
@@ -167,15 +193,17 @@ target_path_ready() {
   local payload
   payload="$(target_api 2>/dev/null || true)"
   python3 -c '
+from pathlib import Path
 import json,sys
-name=sys.argv[1]
+secret = Path(sys.argv[1]).read_text(encoding="utf-8")
+name = f"live/{secret}"
 try:
     value=json.load(sys.stdin)
 except Exception:
     raise SystemExit(1)
 items=value.get("items", [])
 raise SystemExit(0 if any(item.get("name") == name and item.get("ready") is True for item in items) else 1)
-' "live/$stream_key" <<<"$payload" 2>/dev/null
+' "$stream_key_file" <<<"$payload" 2>/dev/null
 }
 
 wait_target_path() {
@@ -222,8 +250,8 @@ if ! wait_target_path 60; then
 fi
 
 status_payload="$(read_egress_status)"
-if grep -Fq "$stream_key" <<<"$status_payload"; then
-  echo "egress status leaked stream key" >&2
+if ! stdin_excludes_stream_key <<<"$status_payload"; then
+  echo "egress status stream-key check failed closed" >&2
   emit_failure_stage "secret-redaction-status"
   exit 1
 fi
@@ -234,8 +262,8 @@ if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then
   emit_failure_stage "secret-redaction-logs-read"
   exit 1
 fi
-if grep -Fq "$stream_key" "$egress_logs_file"; then
-  echo "egress logs leaked stream key" >&2
+if ! file_excludes_stream_key "$egress_logs_file"; then
+  echo "egress log stream-key check failed closed" >&2
   emit_failure_stage "secret-redaction-logs"
   exit 1
 fi
