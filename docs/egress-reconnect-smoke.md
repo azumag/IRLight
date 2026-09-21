@@ -58,3 +58,21 @@ stage token に secret 値や外部入力は含めません。再接続 timeout�
 Stop / terminal smoke の失敗時 diagnostics も、run-local private file に一度収集した後、初期 stream key と unsafe-destination 用の generated secret の両方を `<redacted>` に置換してから CI へ出します。status timeout や unexpected terminal exit の payload も同じ redactor を通し、redactor または log read が失敗した場合に raw payload へフォールバックしません。
 
 stage token は hard-coded ASCII token に限定し、secret や外部入力を workflow annotation へ反射しません。既存の retry、timeout、status、reason-code assertion は診断追加のために緩和しません。
+
+## Intermittent failure の手動 stress runner
+
+Issue #545 のような intermittent な legacy `rtmpsink` outage-detection failure を再現するときは、`scripts/stress-egress-reconnect.sh` で既存 smoke を繰り返せます。この helper 自体は新しい Docker/credential 経路を持たず、`smoke-egress-reconnect.sh` と `smoke-egress-stop-terminal.sh` を順番に呼ぶだけなので、既存の secret redaction、bounded evidence、SIGUSR2 thread-stack diagnostics をそのまま利用します。
+
+```bash
+# reconnect と stop-terminal をそれぞれ10回（既定）
+scripts/stress-egress-reconnect.sh
+
+# reconnect だけを20回
+IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO=reconnect \
+IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS=20 \
+  scripts/stress-egress-reconnect.sh
+```
+
+`IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS` は 1〜50 に制限し、`IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO` は `reconnect` / `stop-terminal` / `both` のみ受理します。各 run は sequential に実行し、最初の failure で停止して `scenario` と iteration だけを固定形式で出します。runner 自身は destination URL、stream key、raw status/log を新たに保存・反射しません。
+
+これは再現・診断用の **手動 helper** であり、通常の `ci-docker-smoke-suite.sh` には組み込みません。intermittent failure を追うためだけに全 PR の Docker 利用量を増やさず、必要なときに operator が明示実行します。45秒 `RECONNECTING` contract、production runtime、retry/stall policy を変更するものでもありません。
