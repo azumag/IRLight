@@ -151,9 +151,15 @@ def _require_catalog_timestamp(
         normalized = float(value)
     except (OverflowError, TypeError, ValueError):
         raise CatalogStateError(f"{context} has invalid {field}") from None
-    if not math.isfinite(normalized):
+    if not math.isfinite(normalized) or normalized < 0:
         raise CatalogStateError(f"{context} has invalid {field}")
     return normalized
+
+
+def _validated_catalog_now() -> float:
+    return _require_catalog_timestamp(
+        {"now": time.time()}, "now", context="catalog clock"
+    )
 
 
 def _require_catalog_optional_timestamp(
@@ -297,8 +303,8 @@ def create_destination(
     _validate_destination_server_url(server_url)
     with _catalog_lock(exclusive=True):
         catalog = _load()
+        now = _validated_catalog_now()
         item_id = str(uuid.uuid4())
-        now = time.time()
         item = {
             "id": item_id,
             "user_id": user_id,
@@ -349,6 +355,7 @@ def update_destination(
     with _catalog_lock(exclusive=True):
         catalog = _load()
         item = _get_owned(catalog, "destinations", destination_id, user_id)
+        now = _validated_catalog_now()
         if display_name is not None:
             item["display_name"] = display_name
         if server_url is not None:
@@ -362,7 +369,7 @@ def update_destination(
             item["secret_ref"] = secret_ref
         if enabled is not None:
             item["enabled"] = enabled
-        item["updated_at"] = time.time()
+        item["updated_at"] = now
         catalog["destinations"][destination_id] = item
         _save(catalog)
         return dict(item)
@@ -423,7 +430,7 @@ def verify_destination(
         current = _get_owned(catalog, "destinations", destination_id, user_id)
         if current.get("server_url") != url:
             raise CatalogVerifyFailed("destination changed during verification")
-        now = time.time()
+        now = _validated_catalog_now()
         current["verification_status"] = "VERIFIED"
         current["last_verified_at"] = now
         current["last_verification_error"] = None
@@ -450,10 +457,11 @@ def _record_verification_failure(
         item = _get_owned(catalog, "destinations", destination_id, user_id)
         if item.get("server_url") != expected_url:
             return
+        now = _validated_catalog_now()
         item["verification_status"] = "FAILED"
         item["last_verification_error"] = reason[:200]
         item["verification_transport"] = None
-        item["updated_at"] = time.time()
+        item["updated_at"] = now
         catalog["destinations"][destination_id] = item
         _save(catalog)
 
@@ -461,8 +469,8 @@ def _record_verification_failure(
 def create_asset(*, user_id: str, source_object_key: str) -> dict[str, Any]:
     with _catalog_lock(exclusive=True):
         catalog = _load()
+        now = _validated_catalog_now()
         asset_id = str(uuid.uuid4())
-        now = time.time()
         item = {
             "id": asset_id,
             "user_id": user_id,
