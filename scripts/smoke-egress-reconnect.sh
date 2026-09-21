@@ -164,7 +164,9 @@ emit_reconnect_timeout_evidence() {
 
   if ! evidence="$(python3 -c '
 import json
+import math
 import sys
+import time
 
 allowed_statuses = {
     "STARTING", "CONNECTED", "RECONNECTING", "AUTH_FAILED", "FAILED", "STOPPED"
@@ -197,14 +199,31 @@ attempt = (
 )
 connected_value = value.get("connected")
 connected = "yes" if connected_value is True else "no" if connected_value is False else "-"
+rendered_value = value.get("rendered_buffers")
+rendered = (
+    str(rendered_value)
+    if isinstance(rendered_value, int) and not isinstance(rendered_value, bool) and rendered_value >= 0
+    else "-"
+)
+observed_value = value.get("observed_at")
+status_age_seconds = "-"
+if (
+    isinstance(observed_value, (int, float))
+    and not isinstance(observed_value, bool)
+    and math.isfinite(float(observed_value))
+):
+    age_seconds = time.time() - float(observed_value)
+    if age_seconds >= 0:
+        status_age_seconds = str(min(999, int(age_seconds)))
 next_retry_present = "yes" if value.get("next_retry_at") is not None else "no"
 print(
     "IRLIGHT_EGRESS_RECONNECT_EVIDENCE "
     f"status={status} reason={reason} attempt={attempt} connected={connected} "
+    f"rendered={rendered} status_age_seconds={status_age_seconds} "
     f"next_retry_present={next_retry_present} gateway={gateway}"
 )
 ' "$gateway_state" <<<"$payload" 2>/dev/null)"; then
-    evidence="IRLIGHT_EGRESS_RECONNECT_EVIDENCE status=UNREADABLE reason=UNREADABLE attempt=- connected=- next_retry_present=- gateway=$gateway_state"
+    evidence="IRLIGHT_EGRESS_RECONNECT_EVIDENCE status=UNREADABLE reason=UNREADABLE attempt=- connected=- rendered=- status_age_seconds=- next_retry_present=- gateway=$gateway_state"
   fi
 
   printf '%s\n' "$evidence" >&2
