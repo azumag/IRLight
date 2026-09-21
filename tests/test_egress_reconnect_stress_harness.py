@@ -8,11 +8,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "stress-egress-reconnect.sh"
+_STRESS_ENV_KEYS = (
+    "IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS",
+    "IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO",
+)
 
 
 class EgressReconnectStressHarnessTest(unittest.TestCase):
     def _run(self, *, env: dict[str, str] | None = None, args: list[str] | None = None):
         run_env = os.environ.copy()
+        for key in _STRESS_ENV_KEYS:
+            run_env.pop(key, None)
         if env:
             run_env.update(env)
         return subprocess.run(
