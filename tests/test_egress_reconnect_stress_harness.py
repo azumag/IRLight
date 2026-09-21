@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "stress-egress-reconnect.sh"
+WORKFLOW = ROOT / ".github" / "workflows" / "egress-reconnect-stress.yml"
 _STRESS_ENV_KEYS = (
     "IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS",
     "IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO",
@@ -72,6 +73,26 @@ class EgressReconnectStressHarnessTest(unittest.TestCase):
         self.assertIn("run_smoke stop-terminal smoke-egress-stop-terminal.sh", source)
         self.assertNotIn("docker compose", source)
         self.assertNotIn("stream_key", source)
+
+    def test_manual_workflow_is_opt_in_read_only_and_bounded(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", source)
+        self.assertNotIn("pull_request:", source)
+        self.assertNotIn("schedule:", source)
+        self.assertIn("permissions:\n  contents: read", source)
+        self.assertIn("group: egress-reconnect-stress", source)
+        self.assertIn("timeout-minutes: 45", source)
+        self.assertIn('default: "3"', source)
+        self.assertIn('          - "1"\n          - "3"\n          - "5"', source)
+        self.assertIn(
+            "IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS: ${{ inputs.runs }}", source
+        )
+        self.assertIn(
+            "IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO: ${{ inputs.scenario }}",
+            source,
+        )
+        self.assertIn("bash ./scripts/stress-egress-reconnect.sh", source)
+        self.assertNotIn("secrets.", source)
 
 
 if __name__ == "__main__":
