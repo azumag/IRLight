@@ -356,6 +356,10 @@ class EgressAttempt:
         if progress_changed:
             self._last_progress_marker = progress.progress_marker
             self._last_rendered_at = now
+        if not self.connected_once and not progress.ready:
+            # The stability window is continuous. A missing or malformed stats
+            # sample must not let an earlier ready observation age into CONNECTED.
+            self._first_rendered_at = None
         if progress.ready and not self.connected_once:
             if self._first_rendered_at is None:
                 self._first_rendered_at = now
