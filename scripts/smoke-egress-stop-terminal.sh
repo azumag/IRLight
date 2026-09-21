@@ -6,6 +6,7 @@ export EGRESS_RTMP_SINK_FACTORY="${EGRESS_RTMP_SINK_FACTORY:-rtmpsink}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke_project="irlight-egress-stop-terminal-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 override="$tmp_dir/egress-stop-terminal.override.yml"
 secret_file="$tmp_dir/egress_url"
 redaction_values_file="$tmp_dir/redaction-values"
