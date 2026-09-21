@@ -36,7 +36,7 @@ def destination_url_for_sink(
 
     Only legacy rtmpsink/librtmp accepts the whitespace-separated
     ``timeout=<seconds>`` session parameter. rtmp2sink parses the RTMP URI
-    itself and has a native timeout property, so its URL must remain byte-for-
+    itself rather than librtmp session syntax, so its URL must remain byte-for-
     byte unchanged here.
     """
 
