@@ -47,6 +47,7 @@ services:
       EGRESS_RTMP_SINK_FACTORY: "${EGRESS_RTMP_SINK_FACTORY}"
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
+      EGRESS_STACK_SIGNAL_DIAGNOSTICS: "1"
       # This target deliberately lives on the isolated Compose RFC1918 network.
       # Production keeps the runtime DNS guard fail-closed by default.
       EGRESS_ALLOW_PRIVATE_TARGETS: "1"
@@ -109,7 +110,7 @@ cleanup() {
     echo "--- continuity logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 continuity 2>&1 | redact_stream_key >&2 || true
     echo "--- egress gateway logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-gateway 2>&1 | redact_stream_key >&2 || true
+    "${compose[@]}" logs --no-color --tail=400 egress-gateway 2>&1 | redact_stream_key >&2 || true
     echo "--- target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 egress-target 2>&1 | redact_stream_key >&2 || true
   fi
@@ -152,6 +153,31 @@ wait_target_api() {
 
 read_egress_status() {
   "${compose[@]}" exec -T egress-gateway cat /state/egress.json 2>/dev/null || true
+}
+
+request_egress_stack_dump() {
+  local recent_logs
+  if ! "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx egress-gateway; then
+    echo "IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=gateway-not-running" >&2
+    return 0
+  fi
+
+  recent_logs="$("${compose[@]}" logs --no-color --tail=80 egress-gateway 2>&1 | redact_stream_key || true)"
+  if ! grep -Fq 'IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2' <<<"$recent_logs"; then
+    # Never send SIGUSR2 unless the process explicitly confirmed that the
+    # faulthandler signal hook is armed; the default action would terminate it.
+    echo "IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=handler-unconfirmed" >&2
+    return 0
+  fi
+
+  if "${compose[@]}" kill -s SIGUSR2 egress-gateway >/dev/null 2>&1; then
+    echo "IRLIGHT_EGRESS_STACK_DUMP_REQUESTED signal=SIGUSR2" >&2
+    # Give Docker's log collector a bounded moment to retain the synchronous
+    # faulthandler output before the failure cleanup captures container logs.
+    sleep 1
+  else
+    echo "IRLIGHT_EGRESS_STACK_DUMP_SKIPPED reason=signal-failed" >&2
+  fi
 }
 
 emit_reconnect_timeout_evidence() {
@@ -359,6 +385,7 @@ if ! "${compose[@]}" stop egress-target >/dev/null; then
   exit 1
 fi
 if ! wait_egress_status RECONNECTING 45; then
+  request_egress_stack_dump
   emit_reconnect_timeout_evidence
   emit_failure_stage "egress-reconnecting"
   exit 1
