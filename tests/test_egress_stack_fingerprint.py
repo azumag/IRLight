@@ -99,6 +99,14 @@ secret=still-not-copied
         self.assertEqual(source.count("scripts/smoke-egress-stop-terminal.sh"), 1)
         self.assertIn("Egress stack fingerprint (allowlisted and bounded)", source)
         self.assertIn("failure_contexts+=(", source)
+        self.assertIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+            source,
+        )
+        self.assertNotIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no",
+            source,
+        )
         self.assertNotIn("cat \"$scenario_log\"", source)
 
 
