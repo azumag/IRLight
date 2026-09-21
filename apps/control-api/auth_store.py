@@ -172,7 +172,7 @@ def _validated_clock_now() -> float:
         current = float(candidate)
     except (OverflowError, ValueError):
         raise AuthStateError("authentication clock is invalid") from None
-    if not math.isfinite(current):
+    if not math.isfinite(current) or current < 0:
         raise AuthStateError("authentication clock is invalid")
     return current
 
@@ -256,6 +256,8 @@ def _validate_users(value: dict[str, Any]) -> dict[str, Any]:
         updated_at = _require_finite_number(
             item, "updated_at", context="user state record"
         )
+        if created_at < 0:
+            raise AuthStateError("user state record has invalid created_at")
         if updated_at < created_at:
             raise AuthStateError("user state record has invalid updated_at")
         display_name = item.get("display_name")
@@ -375,6 +377,9 @@ def register_user(
     if len(password) < 8:
         raise AuthError("password must be at least 8 characters")
 
+    # Validate the effective writer clock before expensive derivation or state
+    # access. A broken clock must not create authority that the reader rejects.
+    now = _validated_clock_now()
     # PBKDF2 is intentionally performed before taking the process/file lock;
     # concurrent logins and session operations must not be serialized behind
     # the deliberately expensive password derivation.
@@ -385,7 +390,6 @@ def register_user(
             raise EmailAlreadyRegistered(normalized)
 
         user_id = str(uuid.uuid4())
-        now = time.time()
         user = {
             "id": user_id,
             "email": normalized,
@@ -427,9 +431,9 @@ def get_user(user_id: str) -> dict[str, Any] | None:
 def create_session(
     user_id: str, *, ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
 ) -> dict[str, Any]:
+    now = _validated_clock_now()
     token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
     csrf_token = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
-    now = time.time()
     expires_at = now + max(ttl_seconds, 0)
     with _state_lock(exclusive=True):
         sessions = _validate_sessions(
