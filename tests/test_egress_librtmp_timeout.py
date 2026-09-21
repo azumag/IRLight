@@ -18,9 +18,9 @@ from rtmp_session import (  # noqa: E402
 
 class LibrtmpSessionTimeoutTest(unittest.TestCase):
     def test_default_timeout_bounds_remote_outage_detection(self) -> None:
-        self.assertEqual(DEFAULT_LIBRTMP_SESSION_TIMEOUT_SECONDS, 30)
-        self.assertEqual(parse_librtmp_session_timeout(None), 30)
-        self.assertEqual(parse_librtmp_session_timeout(""), 30)
+        self.assertEqual(DEFAULT_LIBRTMP_SESSION_TIMEOUT_SECONDS, 20)
+        self.assertEqual(parse_librtmp_session_timeout(None), 20)
+        self.assertEqual(parse_librtmp_session_timeout(""), 20)
 
     def test_timeout_rounds_up_and_is_bounded(self) -> None:
         self.assertEqual(parse_librtmp_session_timeout("10.1"), 11)
@@ -51,6 +51,15 @@ class LibrtmpSessionTimeoutTest(unittest.TestCase):
                 "rtmp://live.example/app/key live=1",
                 30,
             )
+
+    def test_legacy_reconnect_smokes_exercise_production_timeout_default(self) -> None:
+        for relative in (
+            "scripts/smoke-egress-reconnect.sh",
+            "scripts/smoke-egress-stop-terminal.sh",
+        ):
+            with self.subTest(script=relative):
+                smoke = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertNotIn("EGRESS_LIBRTMP_SESSION_TIMEOUT_SECONDS", smoke)
 
 
 class EgressDockerEntrypointTest(unittest.TestCase):

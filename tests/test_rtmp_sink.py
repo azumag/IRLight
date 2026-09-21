@@ -31,6 +31,17 @@ class RtmpSinkSelectionTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parse_rtmp_sink_factory(value)
 
+    def test_legacy_default_librtmp_timeout_leaves_reconnect_margin(self) -> None:
+        secret_url = "rtmps://live.example/app/private-stream-key"
+        self.assertEqual(
+            destination_url_for_sink(
+                secret_url,
+                sink_factory=DEFAULT_RTMP_SINK_FACTORY,
+                librtmp_timeout_raw=None,
+            ),
+            f"{secret_url} timeout=20",
+        )
+
     def test_legacy_librtmp_timeout_is_not_appended_to_rtmp2_url(self) -> None:
         secret_url = "rtmps://live.example/app/private-stream-key"
         self.assertEqual(
