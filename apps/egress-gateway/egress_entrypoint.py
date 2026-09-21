@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 import egress
@@ -9,6 +10,7 @@ from rtmp_sink import destination_url_for_sink, parse_rtmp_sink_factory
 from runtime_timer_config import RuntimeTimerConfigError, finite_env_float
 from secret_inputs import read_destination_url as _read_secret_destination_url
 from secret_inputs import read_input_uri
+from stack_watchdog import ConnectedStatusStackWatchdog
 
 
 LOG = logging.getLogger("irlight.egress.entrypoint")
@@ -43,6 +45,21 @@ def _validate_runtime_timers() -> None:
         finite_env_float(name, default)
 
 
+def _start_stack_watchdog() -> None:
+    try:
+        heartbeat_seconds = finite_env_float("EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0)
+        status_file = Path(os.getenv("EGRESS_STATUS_FILE", "/state/egress.json"))
+        ConnectedStatusStackWatchdog(
+            status_file,
+            heartbeat_seconds=heartbeat_seconds,
+            started_at=time.time(),
+        ).start()
+    except Exception:
+        # Diagnostics are best-effort and must never block the media path.
+        # Keep this generic: exception text can expose local configuration.
+        LOG.warning("egress stale-status stack diagnostics unavailable")
+
+
 def main() -> int:
     try:
         _validate_runtime_timers()
@@ -51,6 +68,7 @@ def main() -> int:
         # generic as well so environment contents never reach logs.
         LOG.error("invalid finite egress runtime timer configuration")
         return 2
+    _start_stack_watchdog()
     # Bind credential-bearing readers before egress.main() constructs the
     # gateway. This keeps the GStreamer-heavy module independent from the
     # testable secret-file boundary while covering the production entrypoint.
