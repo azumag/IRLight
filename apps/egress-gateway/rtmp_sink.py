@@ -48,10 +48,17 @@ def destination_url_for_sink(
 
 
 def _nonnegative_int(value: object) -> int:
-    try:
-        return max(0, int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError):
+    """Return a trustworthy non-negative GStreamer counter value.
+
+    GStreamer counter properties are expected to arrive as Python ``int``
+    values. Do not coerce bools, numeric strings, or floats into counters: a
+    malformed stats payload must not become connection/liveness evidence.
+    Missing, malformed, and negative values therefore fail closed to zero.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
         return 0
+    return max(0, value)
 
 
 @dataclass(frozen=True)

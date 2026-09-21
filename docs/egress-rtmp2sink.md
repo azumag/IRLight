@@ -21,6 +21,12 @@ an ACK change is visible to the same stall detector. GStreamer bus errors
 remain authoritative and terminate/retry an attempt according to the existing
 stable reason-code policy.
 
+Sink counters are accepted as liveness evidence only when GStreamer exposes
+them as actual non-boolean integer values. Missing values, negative values,
+bools, numeric strings, floats, and other malformed values fail closed to zero
+instead of being coerced into apparent progress. This applies to the legacy
+`rendered` counter as well as the `rtmp2sink` transport counters.
+
 `rendered_buffers` remains in the public status schema for compatibility. On
 this experimental path it counts FLV buffers observed at the sink pad; it is a
 diagnostic counter, not the connection predicate.
