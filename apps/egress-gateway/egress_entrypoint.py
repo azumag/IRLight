@@ -20,6 +20,7 @@ _FINITE_RUNTIME_TIMERS = (
     ("EGRESS_CONNECT_STABILITY_SECONDS", 3.0),
     ("EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS", 5.0),
 )
+_STACK_SIGNAL_DIAGNOSTICS_ENV = "EGRESS_STACK_SIGNAL_DIAGNOSTICS"
 
 
 def _read_destination_url(path: Path) -> str:
@@ -46,6 +47,9 @@ def _validate_runtime_timers() -> None:
 
 
 def _install_stack_diagnostics() -> None:
+    # Preserve production signal semantics unless a diagnostic harness opts in.
+    if os.getenv(_STACK_SIGNAL_DIAGNOSTICS_ENV) != "1":
+        return
     try:
         installed = install_stack_signal_handler()
     except Exception:
