@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EgressSmokeEarlyTempCleanupTest(unittest.TestCase):
+    # Setup can fail before Compose exists; the first trap must therefore stay temp-only.
     CASES = {
         "scripts/smoke-egress-reconnect.sh": 'printf \'%s\' "$stream_key" >"$stream_key_file"',
         "scripts/smoke-egress-dns-tls.sh": 'cat >"$dns_secret"',
