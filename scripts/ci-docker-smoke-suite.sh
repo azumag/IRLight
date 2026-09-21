@@ -70,9 +70,14 @@ extract_failure_stage() {
 extract_egress_stack_fingerprint() {
   local smoke="$1"
   local log_file="$2"
+  local smoke_name
 
-  case "$smoke" in
-    scripts/smoke-egress-reconnect.sh|scripts/smoke-egress-stop-terminal.sh)
+  smoke_name="${smoke##*/}"
+  case "$smoke_name" in
+    smoke-egress-reconnect.sh|smoke-egress-stop-terminal.sh)
+      # Match by basename so these diagnostics do not duplicate the canonical
+      # `scripts/...` entries whose one-to-one ordering with rtmp2 wrappers is
+      # guarded by test_rtmp2_smoke_wiring.py.
       # The helper itself is allowlist-only and bounded. The scenario log is
       # never copied into the durable artifact; only its fixed-format result is.
       python3 ./scripts/extract-egress-stack-fingerprint.py <"$log_file" 2>/dev/null || \
