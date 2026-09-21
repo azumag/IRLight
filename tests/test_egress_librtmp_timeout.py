@@ -18,9 +18,9 @@ from rtmp_session import (  # noqa: E402
 
 class LibrtmpSessionTimeoutTest(unittest.TestCase):
     def test_default_timeout_bounds_remote_outage_detection(self) -> None:
-        self.assertEqual(DEFAULT_LIBRTMP_SESSION_TIMEOUT_SECONDS, 30)
-        self.assertEqual(parse_librtmp_session_timeout(None), 30)
-        self.assertEqual(parse_librtmp_session_timeout(""), 30)
+        self.assertEqual(DEFAULT_LIBRTMP_SESSION_TIMEOUT_SECONDS, 20)
+        self.assertEqual(parse_librtmp_session_timeout(None), 20)
+        self.assertEqual(parse_librtmp_session_timeout(""), 20)
 
     def test_timeout_rounds_up_and_is_bounded(self) -> None:
         self.assertEqual(parse_librtmp_session_timeout("10.1"), 11)
