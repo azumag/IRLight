@@ -42,9 +42,20 @@ diagnostic counter, not the connection predicate.
 
 `rtmp2sink` receives the credentialed RTMP/RTMPS URL only through the existing
 secret-file path. The legacy whitespace `timeout=<seconds>` librtmp session
-parameter is **not** appended when `rtmp2sink` is selected. Raw sink errors and
-destination URLs are still excluded from status and logs, and the existing
-runtime destination/DNS guard runs before either sink is constructed.
+parameter is **not** appended when `rtmp2sink` is selected because that syntax
+belongs to the legacy librtmp transport, not the `rtmp2sink` URI contract. The
+credentialed URL therefore remains byte-for-byte unchanged on the rtmp2 path.
+Raw sink errors and destination URLs are still excluded from status and logs,
+and the existing runtime destination/DNS guard runs before either sink is
+constructed.
+
+`rtmp2sink` does not expose a dedicated `timeout` property in the current
+GStreamer element contract. IRLight therefore does not claim or configure one.
+Connection establishment and post-connect liveness remain bounded by the
+Egress Gateway state machine (`EGRESS_CONNECT_TIMEOUT_SECONDS` and
+`EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS`), GStreamer bus errors, and the existing
+retry policy. This documentation statement does not change those timer values
+or runtime behavior.
 
 ## TLS
 
