@@ -4,7 +4,9 @@ Issue #545 tracks an intermittent legacy `rtmpsink` case where a stopped RTMP ta
 
 ## Trigger and signal boundary
 
-At process startup the egress entrypoint registers `SIGUSR2` with Python `faulthandler` and emits the fixed readiness marker:
+The stack signal hook is opt-in. Production keeps its previous signal behavior unless `EGRESS_STACK_SIGNAL_DIAGNOSTICS=1` is explicitly supplied by a diagnostic harness. The reconnect smoke supplies that value to its isolated egress gateway.
+
+When enabled, the egress entrypoint registers `SIGUSR2` with Python `faulthandler` and emits the fixed readiness marker:
 
 ```text
 IRLIGHT_EGRESS_STACK_SIGNAL_READY signal=SIGUSR2
@@ -22,7 +24,7 @@ If any guard fails, the smoke skips the signal and continues normal failure evid
 
 ## Secret boundary
 
-The signal handler does not print the status JSON, destination URL, destination host, stream key, plugin error text, or Python local variables. `faulthandler` emits traceback metadata containing source filenames, function names, and line numbers. The smoke's readiness and request/skip markers are fixed strings and do not include generated credentials.
+The signal handler does not print the status JSON, destination URL, destination host, stream key, plugin error text, or Python local variables. `faulthandler` emits traceback metadata containing source filenames, function names, and line numbers. The smoke's readiness and request/skip markers are fixed strings and do not include generated credentials. Failure cleanup still passes the larger gateway log window through the existing stream-key redactor before writing it to CI output.
 
 The handler is diagnostic-only. Registration failure must not stop the media path. Receiving the registered signal does not terminate the gateway, kill the pipeline, alter retry policy, extend the reconnect timeout, or create a new public egress status.
 
