@@ -126,12 +126,12 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
         self.assertIn("redact_generated_secrets()", self.source)
         self.assertIn("emit_redacted_compose_logs()", self.source)
         self.assertIn("emit_redacted_compose_logs continuity 120 || true", self.source)
-        self.assertIn("emit_redacted_compose_logs egress-gateway 160 || true", self.source)
+        self.assertIn("emit_redacted_compose_logs egress-gateway 400 || true", self.source)
         self.assertIn("emit_redacted_compose_logs egress-target 120 || true", self.source)
         self.assertIn('"$redaction_values_file"', self.source)
         self.assertNotIn('"$stream_key" "$unsafe_secret"', self.source)
         self.assertNotIn(
-            '"${compose[@]}" logs --no-color --tail=160 egress-gateway >&2 || true',
+            '"${compose[@]}" logs --no-color --tail=400 egress-gateway >&2 || true',
             self.source,
         )
         self.assertNotIn(
