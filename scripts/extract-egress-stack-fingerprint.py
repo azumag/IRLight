@@ -30,6 +30,8 @@ ALLOWED_FILES = {
 MAX_THREADS = 4
 MAX_FRAMES_PER_THREAD = 8
 MAX_OUTPUT_BYTES = 1024
+MAX_INPUT_BYTES = 256 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 UNAVAILABLE = "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no"
 
 _THREAD_RE = re.compile(r"(?:Current thread|Thread) 0x[0-9A-Fa-f]+")
@@ -46,7 +48,7 @@ class ThreadFrames:
 def _format(threads: list[ThreadFrames], capped: bool) -> str:
     usable = [thread for thread in threads if thread.frames]
     if not usable:
-        return UNAVAILABLE
+        return UNAVAILABLE.replace("capped=no", "capped=yes") if capped else UNAVAILABLE
 
     def render() -> str:
         groups = []
@@ -71,10 +73,10 @@ def _format(threads: list[ThreadFrames], capped: bool) -> str:
     return result
 
 
-def extract(lines: list[str]) -> str:
+def extract(lines: list[str], *, input_capped: bool = False) -> str:
     threads: list[ThreadFrames] = []
     current: ThreadFrames | None = None
-    capped = False
+    capped = input_capped
 
     for line in lines:
         if _THREAD_RE.search(line):
@@ -102,15 +104,33 @@ def extract(lines: list[str]) -> str:
     return _format(threads, capped)
 
 
+def _read_bounded_tail() -> tuple[bytes, bool]:
+    """Retain only the newest bounded input, where timeout stack dumps occur."""
+
+    tail = bytearray()
+    input_capped = False
+
+    while True:
+        chunk = sys.stdin.buffer.read(READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        tail.extend(chunk)
+        if len(tail) > MAX_INPUT_BYTES:
+            input_capped = True
+            del tail[:-MAX_INPUT_BYTES]
+
+    return bytes(tail), input_capped
+
+
 def main() -> int:
-    # Bound input as well as output. A normal faulthandler dump is far smaller;
-    # refusing excess bytes prevents a malformed CI log from making this
-    # diagnostic helper an unbounded memory consumer.
-    raw = sys.stdin.buffer.read(256 * 1024 + 1)
-    if len(raw) > 256 * 1024:
-        raw = raw[: 256 * 1024]
+    # Bound input as well as output. The SIGUSR2 faulthandler dump is requested
+    # at the failure boundary, so retain the newest bytes instead of the start
+    # of a noisy scenario log. Streaming through a fixed-size tail keeps memory
+    # bounded while preserving late diagnostic evidence. If older bytes are
+    # discarded, carry that incompleteness into capped=yes.
+    raw, input_capped = _read_bounded_tail()
     text = raw.decode("utf-8", errors="replace")
-    print(extract(text.splitlines()))
+    print(extract(text.splitlines(), input_capped=input_capped))
     return 0
 
 

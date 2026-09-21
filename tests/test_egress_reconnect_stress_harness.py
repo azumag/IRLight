@@ -79,6 +79,10 @@ class EgressReconnectStressHarnessTest(unittest.TestCase):
         self.assertIn("umask 077", source)
         self.assertIn("extract-egress-stack-fingerprint.py", source)
         self.assertIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+            source,
+        )
+        self.assertNotIn(
             "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no",
             source,
         )

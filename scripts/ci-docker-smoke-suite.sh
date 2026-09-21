@@ -80,8 +80,10 @@ extract_egress_stack_fingerprint() {
       # guarded by test_rtmp2_smoke_wiring.py.
       # The helper itself is allowlist-only and bounded. The scenario log is
       # never copied into the durable artifact; only its fixed-format result is.
+      # If extraction itself fails, evidence completeness is unknown, so fail
+      # closed as capped instead of claiming the input was completely classified.
       python3 ./scripts/extract-egress-stack-fingerprint.py <"$log_file" 2>/dev/null || \
-        printf '%s' 'IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no'
+        printf '%s' 'IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes'
       ;;
     *)
       printf '%s' ''

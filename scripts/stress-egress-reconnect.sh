@@ -69,9 +69,11 @@ emit_stack_fingerprint() {
   # Reuse the same allowlist-only, byte-bounded extractor as the shared Docker
   # suite so a stress-only recurrence leaves useful evidence without retaining
   # destination URLs, stream keys, source lines, or arbitrary traceback text.
+  # An extractor failure cannot prove the input was completely classified, so
+  # report the fixed incomplete-evidence fallback rather than capped=no.
   fingerprint="$(
     python3 "$repo_root/scripts/extract-egress-stack-fingerprint.py" <"$log_file" 2>/dev/null || \
-      printf '%s' 'IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no'
+      printf '%s' 'IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes'
   )"
   printf '%s\n' "$fingerprint" >&2
 

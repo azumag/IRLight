@@ -69,6 +69,36 @@ secret=still-not-copied
         self.assertEqual(output.count("egress.py:"), 8)
         self.assertLessEqual(len(output.encode("utf-8")), 1024)
 
+    def test_input_byte_cap_retains_late_stack_and_marks_capped(self) -> None:
+        payload = (
+            ("x" * (256 * 1024 + 128))
+            + "\nCurrent thread 0x1 (most recent call first):\n"
+            + '  File "/app/egress.py", line 412 in run\n'
+        )
+        output = self.run_extractor(payload)
+
+        self.assertIn("egress.py:run:412", output)
+        self.assertIn("capped=yes", output)
+        self.assertLessEqual(len(output.encode("utf-8")), 1024)
+
+    def test_input_byte_cap_discards_early_stack_and_marks_capped_unavailable(self) -> None:
+        payload = (
+            "Current thread 0x1 (most recent call first):\n"
+            '  File "/app/egress.py", line 412 in run\n'
+            + ("x" * (256 * 1024 + 128))
+        )
+        self.assertEqual(
+            self.run_extractor(payload),
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+        )
+
+    def test_input_byte_cap_without_stack_is_capped_unavailable(self) -> None:
+        payload = "x" * (256 * 1024 + 1)
+        self.assertEqual(
+            self.run_extractor(payload),
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+        )
+
     def test_ci_suite_persists_fingerprint_only_for_legacy_timeout_smokes(self) -> None:
         source = SUITE.read_text(encoding="utf-8")
         self.assertIn("extract-egress-stack-fingerprint.py", source)
@@ -80,6 +110,14 @@ secret=still-not-copied
         self.assertEqual(source.count("scripts/smoke-egress-stop-terminal.sh"), 1)
         self.assertIn("Egress stack fingerprint (allowlisted and bounded)", source)
         self.assertIn("failure_contexts+=(", source)
+        self.assertIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+            source,
+        )
+        self.assertNotIn(
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=no",
+            source,
+        )
         self.assertNotIn("cat \"$scenario_log\"", source)
 
 
