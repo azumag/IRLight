@@ -17,7 +17,7 @@ def install_stack_signal_handler(
     """Install a secret-safe all-thread traceback signal handler.
 
     ``faulthandler`` writes stack metadata only (file, function and line), not
-    Python local variables.  Returning False instead of raising keeps this
+    Python local variables. Returning False instead of raising keeps this
     diagnostic optional and prevents it from affecting the media path.
     """
 
@@ -31,6 +31,6 @@ def install_stack_signal_handler(
             all_threads=True,
             chain=False,
         )
-    except (OSError, RuntimeError, ValueError):
+    except Exception:
         return False
     return True
