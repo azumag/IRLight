@@ -47,6 +47,7 @@ services:
       EGRESS_RTMP_SINK_FACTORY: "${EGRESS_RTMP_SINK_FACTORY}"
       EGRESS_URL_FILE: /run/irlight/secrets/egress_url
       EGRESS_STATUS_FILE: /state/egress.json
+      EGRESS_STACK_SIGNAL_DIAGNOSTICS: "1"
       # This target deliberately lives on the isolated Compose RFC1918 network.
       # Production keeps the runtime DNS guard fail-closed by default.
       EGRESS_ALLOW_PRIVATE_TARGETS: "1"
@@ -109,7 +110,7 @@ cleanup() {
     echo "--- continuity logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 continuity 2>&1 | redact_stream_key >&2 || true
     echo "--- egress gateway logs ---" >&2
-    "${compose[@]}" logs --no-color --tail=160 egress-gateway 2>&1 | redact_stream_key >&2 || true
+    "${compose[@]}" logs --no-color --tail=400 egress-gateway 2>&1 | redact_stream_key >&2 || true
     echo "--- target logs ---" >&2
     "${compose[@]}" logs --no-color --tail=120 egress-target 2>&1 | redact_stream_key >&2 || true
   fi
