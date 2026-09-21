@@ -19,9 +19,11 @@ failure diagnostics 自体も secret の観測面になり得るため、失敗�
 
 外部 target 停止後に `RECONNECTING` を観測できず timeout した場合は、通常の redacted log に加えて `IRLIGHT_EGRESS_RECONNECT_EVIDENCE` という1行の secret-safe evidence を stderr と GitHub Step Summary に残します。Step Summary は shared Docker suite の failure artifact に保存されるため、raw Compose logs を artifact 化せずに intermittent failure を分類できます。
 
-公開する値は allowlist 済みの status / reason code、非負整数として検証した attempt、boolean に正規化した connected / `next_retry_at` の有無、`egress-gateway` container が running かどうかだけです。status JSON 自体は Python helper の stdin から読み、destination URL / host / path、generated stream key、raw JSON、raw container logs は evidence line に含めません。不正 JSON や想定外値は raw 値を反射せず `UNREADABLE` / `OTHER` / `-` に縮退します。
+公開する値は allowlist 済みの status / reason code、非負整数として検証した attempt と `rendered_buffers`、boolean に正規化した connected / `next_retry_at` の有無、`egress-gateway` container が running かどうか、status の `observed_at` から計算した bounded な経過秒数だけです。`observed_at` 自体は公開せず、経過秒数は非有限値・未来値を拒否したうえで 0〜999 秒へ制限します。これにより、target 停止後も status heartbeat / legacy rendered counter が進んでいるのか、最後の status 更新自体が長時間止まっているのかを secret-safe evidence だけで切り分けやすくします。
 
-この evidence は timeout を延長したり `CONNECTED -> RECONNECTING -> CONNECTED` の契約を緩めるものではありません。target 停止後に gateway が `CONNECTED` のまま固着したのか、terminal/unknown state に遷移したのか、gateway process 自体が停止したのかを切り分けるための診断面だけを追加します。
+status JSON 自体は Python helper の stdin から読み、destination URL / host / path、generated stream key、raw timestamp、raw JSON、raw container logs は evidence line に含めません。不正 JSON や想定外値は raw 値を反射せず `UNREADABLE` / `OTHER` / `-` に縮退します。
+
+この evidence は timeout を延長したり `CONNECTED -> RECONNECTING -> CONNECTED` の契約を緩めるものではありません。target 停止後に gateway が `CONNECTED` のまま固着したのか、status/progress が更新中なのか停止しているのか、terminal/unknown state に遷移したのか、gateway process 自体が停止したのかを切り分けるための診断面だけを追加します。
 
 ## Failure stages
 
