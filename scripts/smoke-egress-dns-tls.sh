@@ -6,6 +6,7 @@ export EGRESS_RTMP_SINK_FACTORY="${EGRESS_RTMP_SINK_FACTORY:-rtmpsink}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke_project="irlight-egress-dns-tls-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 override="$tmp_dir/egress-dns-tls.override.yml"
 dns_secret="$tmp_dir/dns-egress-url"
 tls_secret="$tmp_dir/tls-egress-url"
