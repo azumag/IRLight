@@ -164,7 +164,7 @@ cleanup() {
     echo "--- continuity logs (redacted) ---" >&2
     emit_redacted_compose_logs continuity 120 || true
     echo "--- egress gateway logs (redacted) ---" >&2
-    emit_redacted_compose_logs egress-gateway 160 || true
+    emit_redacted_compose_logs egress-gateway 400 || true
     echo "--- target logs (redacted) ---" >&2
     emit_redacted_compose_logs egress-target 120 || true
   fi
