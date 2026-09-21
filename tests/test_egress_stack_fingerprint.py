@@ -69,6 +69,25 @@ secret=still-not-copied
         self.assertEqual(output.count("egress.py:"), 8)
         self.assertLessEqual(len(output.encode("utf-8")), 1024)
 
+    def test_input_byte_cap_marks_retained_prefix_as_capped(self) -> None:
+        payload = (
+            "Current thread 0x1 (most recent call first):\n"
+            '  File "/app/egress.py", line 412 in run\n'
+            + ("x" * (256 * 1024 + 128))
+        )
+        output = self.run_extractor(payload)
+
+        self.assertIn("egress.py:run:412", output)
+        self.assertIn("capped=yes", output)
+        self.assertLessEqual(len(output.encode("utf-8")), 1024)
+
+    def test_input_byte_cap_marks_missing_tail_as_capped_unavailable(self) -> None:
+        payload = "x" * (256 * 1024 + 1)
+        self.assertEqual(
+            self.run_extractor(payload),
+            "IRLIGHT_EGRESS_STACK_FINGERPRINT stack_fingerprint=UNAVAILABLE capped=yes",
+        )
+
     def test_ci_suite_persists_fingerprint_only_for_legacy_timeout_smokes(self) -> None:
         source = SUITE.read_text(encoding="utf-8")
         self.assertIn("extract-egress-stack-fingerprint.py", source)
