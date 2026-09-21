@@ -13,6 +13,7 @@ from rtmp_sink import (  # noqa: E402
     RTMP2_SINK_FACTORY,
     destination_url_for_sink,
     parse_rtmp_sink_factory,
+    progress_marker_advanced,
     sink_progress,
 )
 
@@ -116,6 +117,42 @@ class RtmpSinkProgressTest(unittest.TestCase):
             observed_sink_buffers=4,
         )
         self.assertNotEqual(first.progress_marker, second.progress_marker)
+
+    def test_progress_marker_requires_monotonic_advance(self) -> None:
+        previous = (4096, 2048)
+        for current in ((8192, 2048), (4096, 4096), (8192, 4096)):
+            with self.subTest(current=current):
+                self.assertTrue(progress_marker_advanced(previous, current))
+
+    def test_equal_or_regressed_marker_is_not_progress(self) -> None:
+        previous = (4096, 2048)
+        for current in (
+            (4096, 2048),
+            (0, 0),
+            (2048, 2048),
+            (4096, 1024),
+            (8192, 1024),
+        ):
+            with self.subTest(current=current):
+                self.assertFalse(progress_marker_advanced(previous, current))
+
+    def test_malformed_counter_drop_cannot_refresh_liveness(self) -> None:
+        healthy = sink_progress(
+            "rtmp2sink",
+            {"out-bytes-total": 4096, "out-bytes-acked": 2048},
+            observed_sink_buffers=4,
+        )
+        malformed = sink_progress(
+            "rtmp2sink",
+            {"out-bytes-total": None, "out-bytes-acked": 2048},
+            observed_sink_buffers=5,
+        )
+        self.assertFalse(
+            progress_marker_advanced(
+                healthy.progress_marker,
+                malformed.progress_marker,
+            )
+        )
 
     def test_malformed_rtmp2_transport_counter_does_not_become_progress(self) -> None:
         for malformed in (True, "2048", 2048.5, None):

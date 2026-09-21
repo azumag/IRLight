@@ -27,6 +27,13 @@ bools, numeric strings, floats, and other malformed values fail closed to zero
 instead of being coerced into apparent progress. This applies to the legacy
 `rendered` counter as well as the `rtmp2sink` transport counters.
 
+Within one egress attempt, cumulative counters must also advance monotonically
+before they refresh the stall timer or heartbeat. An unchanged marker, a
+counter decrease, or a malformed snapshot that normalizes back to zero is not
+forward progress. IRLight keeps the last trusted marker and lets the existing
+stall timeout rebuild the attempt rather than allowing a reset to extend
+liveness indefinitely.
+
 `rendered_buffers` remains in the public status schema for compatibility. On
 this experimental path it counts FLV buffers observed at the sink pad; it is a
 diagnostic counter, not the connection predicate.

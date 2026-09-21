@@ -23,7 +23,12 @@ from destination_guard import (
     validate_destination_runtime,
 )
 from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
-from rtmp_sink import RTMP2_SINK_FACTORY, parse_rtmp_sink_factory, sink_progress
+from rtmp_sink import (
+    RTMP2_SINK_FACTORY,
+    parse_rtmp_sink_factory,
+    progress_marker_advanced,
+    sink_progress,
+)
 from secret_inputs import read_destination_url, read_input_uri as _read_input_uri
 
 
@@ -344,7 +349,10 @@ class EgressAttempt:
         rendered = max(self.rendered_buffers, progress.rendered_buffers)
         self.rendered_buffers = rendered
         now = time.monotonic()
-        progress_changed = progress.progress_marker != self._last_progress_marker
+        progress_changed = progress_marker_advanced(
+            self._last_progress_marker,
+            progress.progress_marker,
+        )
         if progress_changed:
             self._last_progress_marker = progress.progress_marker
             self._last_rendered_at = now

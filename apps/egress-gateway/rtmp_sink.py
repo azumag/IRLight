@@ -61,6 +61,26 @@ def _nonnegative_int(value: object) -> int:
     return max(0, value)
 
 
+def progress_marker_advanced(
+    previous: tuple[int, int],
+    current: tuple[int, int],
+) -> bool:
+    """Return whether cumulative sink counters advanced monotonically.
+
+    These counters are cumulative within one egress attempt. A decrease can
+    mean a malformed stats snapshot or an unexpected transport reset and must
+    not refresh the liveness timer. Keep the last trusted marker until both
+    counters catch up; otherwise the existing stall timeout rebuilds the
+    attempt instead of treating a reset as forward progress.
+    """
+
+    return (
+        current[0] >= previous[0]
+        and current[1] >= previous[1]
+        and current != previous
+    )
+
+
 @dataclass(frozen=True)
 class SinkProgress:
     """Safe progress signals used by the egress liveness state machine.
