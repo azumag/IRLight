@@ -8,14 +8,16 @@ smoke_project="irlight-egress-stop-terminal-smoke-$$-$RANDOM"
 tmp_dir="$(mktemp -d)"
 override="$tmp_dir/egress-stop-terminal.override.yml"
 secret_file="$tmp_dir/egress_url"
+redaction_values_file="$tmp_dir/redaction-values"
 stream_key="ci-egress-stop-secret-$RANDOM"
-unsafe_secret=""
 export EGRESS_SECRET_FILE="$secret_file"
 
+printf '%s\n' "$stream_key" >"$redaction_values_file"
 cat >"$secret_file" <<EOF
 rtmp://egress-target:1935/live/$stream_key
 EOF
-chmod 600 "$secret_file"
+chmod 600 "$secret_file" "$redaction_values_file"
+unset stream_key
 
 cat >"$override" <<'YAML'
 services:
@@ -63,14 +65,76 @@ emit_failure_stage() {
 
 redact_generated_secrets() {
   python3 -c '
+from pathlib import Path
 import sys
 
+secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+if not secrets:
+    raise SystemExit(1)
 data = sys.stdin.buffer.read()
-for raw in sys.argv[1:]:
-    if raw:
-        data = data.replace(raw.encode("utf-8"), b"<redacted>")
+for secret in secrets:
+    data = data.replace(secret, b"<redacted>")
 sys.stdout.buffer.write(data)
-' "$stream_key" "$unsafe_secret"
+' "$redaction_values_file"
+}
+
+stdin_excludes_generated_secrets() {
+  python3 -c '
+from pathlib import Path
+import sys
+
+secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+data = sys.stdin.buffer.read()
+raise SystemExit(0 if secrets and all(secret not in data for secret in secrets) else 1)
+' "$redaction_values_file"
+}
+
+file_excludes_generated_secrets() {
+  local candidate="$1"
+  python3 -c '
+from pathlib import Path
+import sys
+
+secrets = [value for value in Path(sys.argv[1]).read_bytes().splitlines() if value]
+data = Path(sys.argv[2]).read_bytes()
+raise SystemExit(0 if secrets and all(secret not in data for secret in secrets) else 1)
+' "$redaction_values_file" "$candidate"
+}
+
+status_matches_reason() {
+  local expected_status="$1"
+  local expected_reason="$2"
+  python3 -c '
+import json,sys
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(
+    0
+    if value.get("status") == sys.argv[1]
+    and value.get("reason_code") == sys.argv[2]
+    else 1
+)
+' "$expected_status" "$expected_reason"
+}
+
+status_has_long_reconnect_backoff() {
+  python3 -c '
+import json,sys,time
+try:
+    value=json.load(sys.stdin)
+    next_retry=value.get("next_retry_at")
+    valid=(
+        value.get("status") == "RECONNECTING"
+        and isinstance(next_retry, (int, float))
+        and not isinstance(next_retry, bool)
+        and next_retry - time.time() > 10
+    )
+except Exception:
+    valid=False
+raise SystemExit(0 if valid else 1)
+'
 }
 
 emit_redacted_compose_logs() {
@@ -148,21 +212,7 @@ assert_status_reason() {
   local expected_reason="$2"
   local payload
   payload="$(read_egress_status)"
-  python3 -c '
-import json,sys
-try:
-    value=json.loads(sys.argv[1])
-except Exception:
-    raise SystemExit(1)
-expected_status=sys.argv[2]
-expected_reason=sys.argv[3]
-raise SystemExit(
-    0
-    if value.get("status") == expected_status
-    and value.get("reason_code") == expected_reason
-    else 1
-)
-' "$payload" "$expected_status" "$expected_reason"
+  status_matches_reason "$expected_status" "$expected_reason" <<<"$payload"
 }
 
 if ! "${compose[@]}" config >/dev/null; then
@@ -193,21 +243,7 @@ if ! wait_egress_status RECONNECTING 45; then
 fi
 
 before_stop="$(read_egress_status)"
-if ! python3 -c '
-import json,sys,time
-try:
-    value=json.loads(sys.argv[1])
-    next_retry=value.get("next_retry_at")
-    valid=(
-        value.get("status") == "RECONNECTING"
-        and isinstance(next_retry, (int, float))
-        and not isinstance(next_retry, bool)
-        and next_retry - time.time() > 10
-    )
-except Exception:
-    valid=False
-raise SystemExit(0 if valid else 1)
-' "$before_stop"; then
+if ! status_has_long_reconnect_backoff <<<"$before_stop"; then
   emit_failure_stage "backoff-window"
   exit 1
 fi
@@ -254,10 +290,12 @@ fi
 # Phase 2: an unsafe metadata/private destination must fail before GStreamer
 # attempts to connect and must not enter the reconnect loop.
 unsafe_secret="unsafe-stop-secret-$RANDOM"
+printf '%s\n' "$unsafe_secret" >>"$redaction_values_file"
 cat >"$secret_file" <<EOF
 rtmp://169.254.169.254/live/$unsafe_secret
 EOF
-chmod 600 "$secret_file"
+chmod 600 "$secret_file" "$redaction_values_file"
+unset unsafe_secret
 
 set +e
 terminal_output="$("${compose[@]}" run --rm --no-deps \
@@ -283,8 +321,8 @@ if ! assert_status_reason FAILED DESTINATION_UNSAFE; then
   exit 1
 fi
 
-if grep -Fq "$unsafe_secret" <<<"$terminal_output"; then
-  echo "terminal guard output leaked destination secret" >&2
+if ! stdin_excludes_generated_secrets <<<"$terminal_output"; then
+  echo "terminal guard output generated-secret check failed closed" >&2
   emit_failure_stage "secret-redaction-terminal-output"
   exit 1
 fi
@@ -295,8 +333,8 @@ if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file" 2>&1; t
   emit_failure_stage "secret-redaction-logs-read"
   exit 1
 fi
-if grep -Fq "$stream_key" "$egress_logs_file" || grep -Fq "$unsafe_secret" "$egress_logs_file"; then
-  echo "egress gateway logs leaked generated destination secret" >&2
+if ! file_excludes_generated_secrets "$egress_logs_file"; then
+  echo "egress gateway log generated-secret check failed closed" >&2
   emit_failure_stage "secret-redaction-logs"
   exit 1
 fi

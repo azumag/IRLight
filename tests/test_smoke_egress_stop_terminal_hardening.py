@@ -68,13 +68,68 @@ class EgressStopTerminalSmokeHardeningTest(unittest.TestCase):
             with self.subTest(contract=contract):
                 self.assertIn(contract, self.source)
 
+    def test_generated_secrets_are_private_and_unset_after_url_construction(self) -> None:
+        self.assertIn("umask 077", self.source)
+        self.assertIn('redaction_values_file="$tmp_dir/redaction-values"', self.source)
+        self.assertIn('printf \'%s\\n\' "$stream_key" >"$redaction_values_file"', self.source)
+        self.assertIn('chmod 600 "$secret_file" "$redaction_values_file"', self.source)
+        self.assertIn("unset stream_key", self.source)
+        self.assertIn('printf \'%s\\n\' "$unsafe_secret" >>"$redaction_values_file"', self.source)
+        self.assertIn("unset unsafe_secret", self.source)
+
+    def test_generated_secrets_never_reach_helper_argv(self) -> None:
+        after_stream_unset = self.source.split("unset stream_key", 1)[1]
+        self.assertIsNone(re.search(r"\$stream_key(?:[^A-Za-z0-9_]|$)", after_stream_unset))
+        after_unsafe_unset = self.source.split("unset unsafe_secret", 1)[1]
+        self.assertIsNone(re.search(r"\$unsafe_secret(?:[^A-Za-z0-9_]|$)", after_unsafe_unset))
+        self.assertNotRegex(self.source, r"grep[^\n]*\$(?:stream_key|unsafe_secret)")
+        redactor = self.source.split("redact_generated_secrets() {", 1)[1].split(
+            "\n}\n\nstdin_excludes_generated_secrets()", 1
+        )[0]
+        self.assertIn("Path(sys.argv[1]).read_bytes().splitlines()", redactor)
+        self.assertIn('"$redaction_values_file"', redactor)
+
+    def test_status_payloads_stay_off_helper_argv(self) -> None:
+        reason_helper = self.source.split("status_matches_reason() {", 1)[1].split(
+            "\n}\n\nstatus_has_long_reconnect_backoff()", 1
+        )[0]
+        backoff_helper = self.source.split("status_has_long_reconnect_backoff() {", 1)[1].split(
+            "\n}\n\nemit_redacted_compose_logs()", 1
+        )[0]
+        assertion = self.source.split("assert_status_reason() {", 1)[1].split(
+            "\n}\n\nif !", 1
+        )[0]
+        self.assertIn("json.load(sys.stdin)", reason_helper)
+        self.assertIn("json.load(sys.stdin)", backoff_helper)
+        self.assertIn(
+            'status_matches_reason "$expected_status" "$expected_reason" <<<"$payload"',
+            assertion,
+        )
+        self.assertIn('status_has_long_reconnect_backoff <<<"$before_stop"', self.source)
+        self.assertNotIn('"$payload" "$expected_status" "$expected_reason"', self.source)
+        self.assertNotRegex(self.source, r"python3 -c '[^']*' \"\$before_stop\"")
+
+    def test_secret_absence_checks_fail_closed(self) -> None:
+        self.assertIn("stdin_excludes_generated_secrets()", self.source)
+        self.assertIn("file_excludes_generated_secrets()", self.source)
+        self.assertIn(
+            'if ! stdin_excludes_generated_secrets <<<"$terminal_output"; then',
+            self.source,
+        )
+        self.assertIn(
+            'if ! file_excludes_generated_secrets "$egress_logs_file"; then',
+            self.source,
+        )
+        self.assertIn("secrets and all(secret not in data for secret in secrets)", self.source)
+
     def test_failure_cleanup_redacts_generated_secrets_before_emitting_logs(self) -> None:
         self.assertIn("redact_generated_secrets()", self.source)
         self.assertIn("emit_redacted_compose_logs()", self.source)
         self.assertIn("emit_redacted_compose_logs continuity 120 || true", self.source)
         self.assertIn("emit_redacted_compose_logs egress-gateway 160 || true", self.source)
         self.assertIn("emit_redacted_compose_logs egress-target 120 || true", self.source)
-        self.assertIn('"$stream_key" "$unsafe_secret"', self.source)
+        self.assertIn('"$redaction_values_file"', self.source)
+        self.assertNotIn('"$stream_key" "$unsafe_secret"', self.source)
         self.assertNotIn(
             '"${compose[@]}" logs --no-color --tail=160 egress-gateway >&2 || true',
             self.source,
