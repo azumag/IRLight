@@ -5,8 +5,14 @@ umask 077
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runs="${IRLIGHT_EGRESS_RECONNECT_STRESS_RUNS:-10}"
 scenario="${IRLIGHT_EGRESS_RECONNECT_STRESS_SCENARIO:-both}"
-diagnostic_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-egress-reconnect-stress.XXXXXX")"
-trap 'rm -rf "$diagnostic_tmp_dir"' EXIT
+diagnostic_tmp_dir=""
+
+cleanup() {
+  if [[ -n "$diagnostic_tmp_dir" ]]; then
+    rm -rf "$diagnostic_tmp_dir"
+  fi
+}
+trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
@@ -50,6 +56,8 @@ case "$scenario" in
     exit 2
     ;;
 esac
+
+diagnostic_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/irlight-egress-reconnect-stress.XXXXXX")"
 
 emit_stack_fingerprint() {
   local scenario_name="$1"
