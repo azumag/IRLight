@@ -98,6 +98,10 @@ class EgressStopTerminalSmokeIsolationTest(unittest.TestCase):
         self.assertLess(stack_position, evidence_position)
         self.assertLess(evidence_position, stage_position)
 
+    def test_failure_cleanup_retains_large_redacted_gateway_log_window(self) -> None:
+        cleanup = self.source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn("emit_redacted_compose_logs egress-gateway 400", cleanup)
+
 
 if __name__ == "__main__":
     unittest.main()
