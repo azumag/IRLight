@@ -15,6 +15,14 @@ smoke は生成した stream key が次の観測面へ露出していないこ�
 
 failure diagnostics 自体も secret の観測面になり得るため、失敗時に収集する Continuity / Egress Gateway / target の logs は generated stream key を固定文字列で `<redacted>` に置換してから CI へ出します。status timeout も同じ redactor を通し、target path timeout では stream key を含み得る Control API snapshot をそのまま出力しません。redactor が失敗した場合に raw diagnostics へフォールバックする挙動は持たせません。
 
+## RECONNECTING timeout evidence
+
+外部 target 停止後に `RECONNECTING` を観測できず timeout した場合は、通常の redacted log に加えて `IRLIGHT_EGRESS_RECONNECT_EVIDENCE` という1行の secret-safe evidence を stderr と GitHub Step Summary に残します。Step Summary は shared Docker suite の failure artifact に保存されるため、raw Compose logs を artifact 化せずに intermittent failure を分類できます。
+
+公開する値は allowlist 済みの status / reason code、非負整数として検証した attempt、boolean に正規化した connected / `next_retry_at` の有無、`egress-gateway` container が running かどうかだけです。status JSON 自体は Python helper の stdin から読み、destination URL / host / path、generated stream key、raw JSON、raw container logs は evidence line に含めません。不正 JSON や想定外値は raw 値を反射せず `UNREADABLE` / `OTHER` / `-` に縮退します。
+
+この evidence は timeout を延長したり `CONNECTED -> RECONNECTING -> CONNECTED` の契約を緩めるものではありません。target 停止後に gateway が `CONNECTED` のまま固着したのか、terminal/unknown state に遷移したのか、gateway process 自体が停止したのかを切り分けるための診断面だけを追加します。
+
 ## Failure stages
 
 CI の Docker smoke suite は static stage annotation を artifact に残します。secret redaction 関連は次の stage を使います。

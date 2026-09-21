@@ -71,6 +71,31 @@ class EgressReconnectSmokeHardeningTest(unittest.TestCase):
         self.assertGreaterEqual(wait.count("target_path_ready"), 2)
         self.assertIn("final-observation rule", wait)
 
+    def test_reconnect_timeout_evidence_is_secret_safe_and_allowlisted(self) -> None:
+        helper = self.source.split("emit_reconnect_timeout_evidence() {", 1)[1].split(
+            "\n}\n\negress_status_matches()", 1
+        )[0]
+        self.assertIn("json.load(sys.stdin)", helper)
+        self.assertIn("allowed_statuses = {", helper)
+        self.assertIn("allowed_reasons = {", helper)
+        self.assertIn('gateway_state="not-running"', helper)
+        self.assertIn('gateway_state="running"', helper)
+        self.assertIn("IRLIGHT_EGRESS_RECONNECT_EVIDENCE", helper)
+        self.assertIn("GITHUB_STEP_SUMMARY", helper)
+        self.assertNotIn("$stream_key", helper)
+        self.assertNotIn("destination_url", helper)
+        self.assertNotIn('printf \'%s\\n\' "$payload"', helper)
+
+    def test_reconnect_timeout_records_evidence_before_static_stage(self) -> None:
+        outage = self.source.split(
+            'if ! "${compose[@]}" stop egress-target >/dev/null; then', 1
+        )[1].split("\nif ! \"${compose[@]}\" ps --status running --services", 1)[0]
+        timeout_block = outage.split("if ! wait_egress_status RECONNECTING 45; then", 1)[1]
+        self.assertLess(
+            timeout_block.index("emit_reconnect_timeout_evidence"),
+            timeout_block.index('emit_failure_stage "egress-reconnecting"'),
+        )
+
     def test_failure_stage_annotation_matches_ci_suite_contract(self) -> None:
         self.assertIn(
             "::error title=IRLight docker smoke failure::stage=%s",
