@@ -212,6 +212,33 @@ class AuthKdfAdmissionTest(unittest.TestCase):
 
             self.assertTrue(replaced)
 
+    def test_unlock_failure_still_closes_slot_and_directory_fds(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-cleanup-") as temp_dir:
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=Path(temp_dir))
+            real_flock = fcntl.flock
+            real_close = os.close
+            closed_fds: list[int] = []
+
+            def fail_unlock(fd: int, operation: int) -> None:
+                if operation == fcntl.LOCK_UN:
+                    raise OSError("simulated unlock failure")
+                real_flock(fd, operation)
+
+            def record_close(fd: int) -> None:
+                closed_fds.append(fd)
+                real_close(fd)
+
+            with (
+                patch("auth_kdf_admission.fcntl.flock", side_effect=fail_unlock),
+                patch("auth_kdf_admission.os.close", side_effect=record_close),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated unlock failure"):
+                    with auth_kdf_slot(config):
+                        pass
+
+            self.assertEqual(len(closed_fds), 2)
+            self.assertEqual(len(set(closed_fds)), 2)
+
 
 class AuthKdfAdmissionApiTest(unittest.TestCase):
     def test_register_busy_is_retryable_503_without_invoking_password_work(self) -> None:
