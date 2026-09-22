@@ -31,9 +31,26 @@ PROJECT_RE = re.compile(r"^irlight-poc-soak-[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 DEFAULT_COLLECTOR_TIMEOUT_SECONDS = 180.0
 MAX_COLLECTOR_STDOUT_BYTES = 64 * 1024
 MAX_COLLECTOR_STDERR_BYTES = 64 * 1024
+SAMPLE_FIELDS = {
+    "elapsed_seconds",
+    "memory_rss_bytes",
+    "cpu_percent",
+    "open_fds",
+    "processes",
+    "zombies",
+    "bitrate_bps",
+    "av_sync_drift_ms",
+    "timestamp_errors",
+    "unexpected_reconnects",
+}
 
 
-def _finite_nonnegative(value: object, label: str, *, positive: bool = False) -> float:
+def _finite_number(
+    value: object,
+    label: str,
+    *,
+    minimum: float | None = None,
+) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SoakSamplingError(f"{label} must be a finite number")
     try:
@@ -42,11 +59,22 @@ def _finite_nonnegative(value: object, label: str, *, positive: bool = False) ->
         raise SoakSamplingError(f"{label} must be a finite number") from None
     if not math.isfinite(normalized):
         raise SoakSamplingError(f"{label} must be a finite number")
-    minimum_ok = normalized > 0.0 if positive else normalized >= 0.0
-    if not minimum_ok:
-        relation = "> 0" if positive else ">= 0"
-        raise SoakSamplingError(f"{label} must be {relation}")
+    if minimum is not None and normalized < minimum:
+        raise SoakSamplingError(f"{label} must be >= {minimum:g}")
     return normalized
+
+
+def _finite_nonnegative(value: object, label: str, *, positive: bool = False) -> float:
+    normalized = _finite_number(value, label, minimum=0.0)
+    if positive and normalized <= 0.0:
+        raise SoakSamplingError(f"{label} must be > 0")
+    return normalized
+
+
+def _nonnegative_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SoakSamplingError(f"{label} must be a non-negative integer")
+    return value
 
 
 def validate_project_name(project: str) -> str:
@@ -57,21 +85,38 @@ def validate_project_name(project: str) -> str:
     return project
 
 
-def sample_targets(duration_seconds: float, interval_seconds: float) -> list[float]:
+def next_sampling_target(
+    *,
+    elapsed_seconds: float,
+    duration_seconds: float,
+    interval_seconds: float,
+) -> float | None:
+    """Return the next nominal target strictly after elapsed time.
+
+    Missed interval boundaries are skipped instead of replayed. This prevents
+    slow collection from producing duplicate/catch-up samples that violate the
+    soak report's strictly increasing elapsed-time contract.
+    """
+
+    elapsed = _finite_nonnegative(elapsed_seconds, "elapsed_seconds")
     duration = _finite_nonnegative(duration_seconds, "duration_seconds", positive=True)
     interval = _finite_nonnegative(interval_seconds, "interval_seconds", positive=True)
-    targets = [0.0]
-    next_target = interval
-    while next_target < duration:
-        targets.append(next_target)
-        try:
-            next_target += interval
-        except OverflowError:
-            break
-        if not math.isfinite(next_target):
-            break
-    targets.append(duration)
-    return targets
+    if elapsed >= duration:
+        return None
+
+    ratio = elapsed / interval
+    if not math.isfinite(ratio):
+        return duration
+    multiple = math.floor(ratio) + 1
+    try:
+        nominal = multiple * interval
+    except OverflowError:
+        return duration
+    if not math.isfinite(nominal) or nominal >= duration:
+        return duration
+    if nominal <= elapsed:
+        return duration
+    return nominal
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -85,6 +130,43 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _reject_constant(value: str) -> None:
     raise SoakSamplingError(f"collector returned non-standard JSON number: {value}")
+
+
+def _validate_sample(sample: dict[str, Any], *, expected_elapsed: float) -> None:
+    fields = set(sample)
+    if fields != SAMPLE_FIELDS:
+        missing = sorted(SAMPLE_FIELDS - fields)
+        extra = sorted(fields - SAMPLE_FIELDS)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={','.join(missing)}")
+        if extra:
+            details.append(f"extra={','.join(extra)}")
+        raise SoakSamplingError(
+            f"collector sample fields do not match schema ({'; '.join(details)})"
+        )
+
+    elapsed = _finite_nonnegative(sample["elapsed_seconds"], "collector elapsed_seconds")
+    requested = _finite_nonnegative(expected_elapsed, "expected_elapsed")
+    if not math.isclose(elapsed, requested, rel_tol=0.0, abs_tol=1e-6):
+        raise SoakSamplingError("collector elapsed_seconds does not match requested observation")
+
+    _nonnegative_int(sample["memory_rss_bytes"], "memory_rss_bytes")
+    _finite_nonnegative(sample["cpu_percent"], "cpu_percent")
+    _nonnegative_int(sample["open_fds"], "open_fds")
+    processes = _nonnegative_int(sample["processes"], "processes")
+    zombies = _nonnegative_int(sample["zombies"], "zombies")
+    if zombies > processes:
+        raise SoakSamplingError("zombies cannot exceed processes")
+
+    bitrate = sample["bitrate_bps"]
+    if bitrate is not None:
+        _finite_nonnegative(bitrate, "bitrate_bps")
+    drift = sample["av_sync_drift_ms"]
+    if drift is not None:
+        _finite_number(drift, "av_sync_drift_ms")
+    _nonnegative_int(sample["timestamp_errors"], "timestamp_errors")
+    _nonnegative_int(sample["unexpected_reconnects"], "unexpected_reconnects")
 
 
 def parse_collector_output(stdout: str, *, expected_elapsed: float) -> dict[str, Any]:
@@ -103,9 +185,7 @@ def parse_collector_output(stdout: str, *, expected_elapsed: float) -> dict[str,
         raise SoakSamplingError("collector returned invalid JSON") from exc
     if not isinstance(sample, dict):
         raise SoakSamplingError("collector JSON root must be an object")
-    elapsed = _finite_nonnegative(sample.get("elapsed_seconds"), "collector elapsed_seconds")
-    if not math.isclose(elapsed, expected_elapsed, rel_tol=0.0, abs_tol=1e-6):
-        raise SoakSamplingError("collector elapsed_seconds does not match requested observation")
+    _validate_sample(sample, expected_elapsed=expected_elapsed)
     return sample
 
 
@@ -229,21 +309,33 @@ def run_sampling(
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> int:
-    targets = sample_targets(duration_seconds, interval_seconds)
+    duration = _finite_nonnegative(duration_seconds, "duration_seconds", positive=True)
+    interval = _finite_nonnegative(interval_seconds, "interval_seconds", positive=True)
     started_at = _validated_monotonic(monotonic())
 
     baseline = collect(0.0)
     if not isinstance(baseline, dict):
         raise SoakSamplingError("collector did not return an object")
-    baseline_elapsed = _finite_nonnegative(
-        baseline.get("elapsed_seconds"), "collector elapsed_seconds"
-    )
-    if baseline_elapsed != 0.0:
-        raise SoakSamplingError("baseline sample must use elapsed_seconds=0")
+    _validate_sample(baseline, expected_elapsed=0.0)
     _write_sample(output, baseline)
 
     written = 1
-    for target in targets[1:]:
+    previous_elapsed = 0.0
+    while True:
+        after_collection = _validated_monotonic(monotonic())
+        if after_collection < started_at:
+            raise SoakSamplingError("monotonic clock moved backwards before run start")
+        elapsed_after_collection = after_collection - started_at
+        target = next_sampling_target(
+            elapsed_seconds=elapsed_after_collection,
+            duration_seconds=duration,
+            interval_seconds=interval,
+        )
+        if target is None:
+            if previous_elapsed >= duration:
+                break
+            target = duration
+
         try:
             deadline = started_at + target
         except OverflowError:
@@ -256,18 +348,18 @@ def run_sampling(
             monotonic=monotonic,
             sleeper=sleeper,
         )
+        if elapsed <= previous_elapsed:
+            raise SoakSamplingError("sampling elapsed time did not advance")
+
         sample = collect(elapsed)
         if not isinstance(sample, dict):
             raise SoakSamplingError("collector did not return an object")
-        observed = _finite_nonnegative(
-            sample.get("elapsed_seconds"), "collector elapsed_seconds"
-        )
-        if not math.isclose(observed, elapsed, rel_tol=0.0, abs_tol=1e-6):
-            raise SoakSamplingError(
-                "collector elapsed_seconds does not match scheduled observation"
-            )
+        _validate_sample(sample, expected_elapsed=elapsed)
         _write_sample(output, sample)
         written += 1
+        previous_elapsed = elapsed
+        if elapsed >= duration:
+            break
     return written
 
 
@@ -303,11 +395,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=repo_root / "docker-compose.poc.yml",
     )
-    parser.add_argument(
-        "--collector",
-        type=Path,
-        default=repo_root / "scripts" / "collect-soak-resource-sample.py",
-    )
     parser.add_argument("--duration-seconds", type=float, required=True)
     parser.add_argument("--interval-seconds", type=float, required=True)
     parser.add_argument("--media-metrics-file", type=Path)
@@ -323,6 +410,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    repo_root = Path(__file__).resolve().parents[1]
+    collector_path = repo_root / "scripts" / "collect-soak-resource-sample.py"
     try:
         validate_project_name(args.project)
         duration = _finite_nonnegative(
@@ -343,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def collect(elapsed: float) -> dict[str, Any]:
             child_argv = build_collector_argv(
-                collector_path=args.collector,
+                collector_path=collector_path,
                 project=args.project,
                 compose_file=args.compose_file,
                 elapsed_seconds=elapsed,
