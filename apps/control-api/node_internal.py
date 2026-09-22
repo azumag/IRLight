@@ -1291,7 +1291,10 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
                     detail="assigned Session is no longer available",
                 )
             return _bootstrap_response(
-                node, assigned_session, request.node_access_token
+                node,
+                assigned_session,
+                request.node_access_token,
+                audio_updated_at=node.get("created_at"),
             )
         raise HTTPException(status_code=409, detail="bootstrap token already consumed")
 
@@ -1395,14 +1398,26 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
     )
     _write_authority(authority)
 
-    return _bootstrap_response(node, assigned_session, request.node_access_token)
+    return _bootstrap_response(
+        node,
+        assigned_session,
+        request.node_access_token,
+        audio_updated_at=bootstrap_at,
+    )
 
 
 def _bootstrap_response(
     node: dict[str, Any],
     assigned_session: dict[str, Any] | None,
     node_access_token: str,
+    *,
+    audio_updated_at: object,
 ) -> dict[str, Any]:
+    response_updated_at = _require_finite_number(
+        audio_updated_at,
+        "bootstrap response timestamp",
+        minimum=0,
+    )
     egress_mode = str(node.get("egress_mode", "DIRECT_PUSH"))
     egress_url, peer_ip = _resolve_egress_delivery(assigned_session)
     if egress_mode == "DIRECT_PUSH" and egress_url and not peer_ip:
@@ -1420,7 +1435,7 @@ def _bootstrap_response(
         "audio_version": 0,
         "audio_command_id": None,
         "audio_idempotency_key": None,
-        "audio_updated_at": time.time(),
+        "audio_updated_at": response_updated_at,
         "egress_mode": egress_mode,
         "media_mtx_config_ref": "config/mediamtx.yml",
         "node_access_token": node_access_token,
