@@ -237,7 +237,7 @@ class EgressObservationRequest(StrictRequest):
     attempt: int = Field(default=0, ge=0)
     reason_code: str | None = Field(default=None, max_length=100)
     rendered_buffers: int = Field(default=0, ge=0)
-    next_retry_at: float | None = None
+    next_retry_at: float | None = Field(default=None, ge=0)
     destination_scheme: str | None = Field(default=None, max_length=20)
     destination_host: str | None = Field(default=None, max_length=253)
     observed_at: float = Field(ge=0)
