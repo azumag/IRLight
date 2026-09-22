@@ -145,13 +145,34 @@ def reap_child(
     if not process.is_alive():
         return ChildReapResult("exited", process.exitcode)
 
-    process.terminate()
+    terminate_sent = False
+    try:
+        process.terminate()
+        terminate_sent = True
+    except ProcessLookupError:
+        # The child can exit between is_alive() and the signal syscall. That is
+        # already a safe fencing outcome; still join below to reap it.
+        pass
     process.join(terminate_timeout)
     if not process.is_alive():
-        return ChildReapResult("terminated", process.exitcode)
+        disposition = "terminated" if terminate_sent else "exited"
+        return ChildReapResult(disposition, process.exitcode)
 
-    process.kill()
+    kill_sent = False
+    try:
+        process.kill()
+        kill_sent = True
+    except ProcessLookupError:
+        # A terminate may win the race immediately before kill. Reap and report
+        # the strongest signal that was actually sent.
+        pass
     process.join(kill_timeout)
     if process.is_alive():
         raise AttemptSupervisorError("attempt child remained alive after kill")
-    return ChildReapResult("killed", process.exitcode)
+    if kill_sent:
+        disposition = "killed"
+    elif terminate_sent:
+        disposition = "terminated"
+    else:
+        disposition = "exited"
+    return ChildReapResult(disposition, process.exitcode)
