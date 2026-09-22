@@ -45,7 +45,10 @@ def _finite_argument(value: Any, *, field: str) -> float:
 
 
 def _runtime_timestamp(value: float | None, *, field: str) -> float:
-    return _finite_argument(time.time() if value is None else value, field=field)
+    number = _finite_argument(time.time() if value is None else value, field=field)
+    if number < 0:
+        raise ValueError(f"{field} must be a finite non-negative number")
+    return number
 
 
 def _require_nonempty_string(
@@ -212,18 +215,22 @@ class IngestCredentialStore:
             expires_at = _require_finite_number(
                 record, "expires_at", context="ingest credential record"
             )
+            if created_at < 0:
+                raise IngestCredentialError(
+                    "ingest credential record has invalid created_at"
+                )
             if expires_at <= created_at:
                 raise IngestCredentialError(
                     "ingest credential record has invalid expires_at"
                 )
-            _optional_finite_number(
-                record, "revoked_at", context="ingest credential record"
-            )
-            _optional_finite_number(
-                record,
-                "last_authenticated_at",
-                context="ingest credential record",
-            )
+            for field in ("revoked_at", "last_authenticated_at"):
+                optional_timestamp = _optional_finite_number(
+                    record, field, context="ingest credential record"
+                )
+                if optional_timestamp is not None and optional_timestamp < 0:
+                    raise IngestCredentialError(
+                        f"ingest credential record has invalid {field}"
+                    )
 
     def _persist(self) -> None:
         self._validate_credentials(self._credentials)
@@ -286,6 +293,7 @@ class IngestCredentialStore:
             raise ValueError(f"scope must be one of {sorted(CREDENTIAL_SCOPES)}")
         normalized = self._normalize_protocols(protocols)
         issued_at = _runtime_timestamp(now, field="now")
+        expires_at = _runtime_timestamp(issued_at + ttl, field="expires_at")
         secret = secrets.token_urlsafe(32)
         credential_id = str(uuid.uuid4())
         record = {
@@ -297,7 +305,7 @@ class IngestCredentialStore:
             "secret_sha256": self._digest(secret),
             "protocols": normalized,
             "created_at": issued_at,
-            "expires_at": issued_at + ttl,
+            "expires_at": expires_at,
             "revoked_at": None,
             "last_authenticated_at": None,
         }
@@ -363,7 +371,7 @@ class IngestCredentialStore:
             if record is None or (user_id is not None and record.get("user_id") != user_id):
                 raise KeyError(credential_id)
             if record.get("revoked_at") is None:
-                record["revoked_at"] = time.time()
+                record["revoked_at"] = _runtime_timestamp(None, field="now")
                 self._persist()
             return self.public_record(record)
 
