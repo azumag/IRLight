@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -23,6 +24,22 @@ from state_safety import load_json_authority, was_initialized
 
 class SessionCapacityInspectError(RuntimeError):
     """Raised when capacity authority cannot be inspected safely."""
+
+
+_SESSION_TIMESTAMP_FIELDS = (
+    "created_at",
+    "updated_at",
+    "relay_client_updated_at",
+    "node_registered_at",
+    "node_last_heartbeat_at",
+    "provisioning_started_at",
+    "ready_at",
+    "first_ingest_at",
+    "last_ingest_at",
+    "hold_deadline_at",
+    "recovery_candidate_since",
+    "absolute_deadline_at",
+)
 
 
 def _reject_json_constant(_value: str) -> None:
@@ -100,6 +117,37 @@ def _read_optional_json_authority(
     return value
 
 
+def _require_nonnegative_timestamp(value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SessionCapacityInspectError("Session authority has invalid timestamp")
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise SessionCapacityInspectError("Session authority has invalid timestamp") from None
+    if not math.isfinite(normalized) or normalized < 0:
+        raise SessionCapacityInspectError("Session authority has invalid timestamp")
+
+
+def _validate_nonnegative_session_timestamps(
+    sessions: dict[str, dict[str, Any]],
+    leases: dict[str, dict[str, Any]],
+) -> None:
+    """Reject pre-epoch lifecycle evidence before capacity is reported."""
+
+    for record in sessions.values():
+        for field in _SESSION_TIMESTAMP_FIELDS:
+            if field in record:
+                _require_nonnegative_timestamp(record.get(field))
+        for event in record.get("events", []):
+            _require_nonnegative_timestamp(event.get("occurred_at"))
+
+    for lease in leases.values():
+        _require_nonnegative_timestamp(lease.get("created_at"))
+        _require_nonnegative_timestamp(lease.get("expires_at"))
+
+
 def _read_sessions(state_dir: Path) -> dict[str, dict[str, Any]]:
     raw = _read_optional_json_authority(
         state_dir / "sessions.json",
@@ -112,7 +160,8 @@ def _read_sessions(state_dir: Path) -> dict[str, dict[str, Any]]:
     try:
         SessionStore._validate_sessions(sessions)
         SessionStore._validate_cleanup_leases(leases)
-    except SessionStateError as exc:
+        _validate_nonnegative_session_timestamps(sessions, leases)
+    except (SessionStateError, SessionCapacityInspectError) as exc:
         raise SessionCapacityInspectError(
             "Session authority failed validation"
         ) from exc
