@@ -1,0 +1,28 @@
+name: Egress process-isolation canary
+
+on:
+  pull_request:
+    paths:
+      - "apps/egress-gateway/**"
+      - "docker-compose.poc.yml"
+      - "scripts/smoke-egress-isolated-reconnect.sh"
+      - ".github/workflows/egress-process-isolation-canary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: egress-process-isolation-canary-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-legacy-reconnect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify legacy attempt fencing and recovery
+        run: |
+          timeout --signal=TERM --kill-after=10s 600s \
+            bash scripts/smoke-egress-isolated-reconnect.sh
