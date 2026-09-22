@@ -53,10 +53,16 @@ class SessionCapacityPreEpochGuardTest(unittest.TestCase):
         fields = (
             "created_at",
             "updated_at",
-            "absolute_deadline_at",
-            "hold_deadline_at",
+            "relay_client_updated_at",
+            "node_registered_at",
             "node_last_heartbeat_at",
+            "provisioning_started_at",
+            "ready_at",
+            "first_ingest_at",
+            "last_ingest_at",
+            "hold_deadline_at",
             "recovery_candidate_since",
+            "absolute_deadline_at",
         )
         for field in fields:
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
