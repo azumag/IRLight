@@ -22,6 +22,23 @@ SPEC.loader.exec_module(MODULE)
 SoakSamplingError = MODULE.SoakSamplingError
 
 
+def sample(elapsed: float, **changes: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "elapsed_seconds": elapsed,
+        "memory_rss_bytes": 1,
+        "cpu_percent": 2.0,
+        "open_fds": 3,
+        "processes": 4,
+        "zombies": 0,
+        "bitrate_bps": 5_000_000.0,
+        "av_sync_drift_ms": -2.5,
+        "timestamp_errors": 0,
+        "unexpected_reconnects": 0,
+    }
+    value.update(changes)
+    return value
+
+
 class FakeClock:
     def __init__(self, value: float = 100.0) -> None:
         self.value = value
@@ -36,19 +53,63 @@ class FakeClock:
 
 
 class SoakSamplingTest(unittest.TestCase):
-    def test_sample_targets_include_baseline_and_exact_final_duration(self) -> None:
-        self.assertEqual(MODULE.sample_targets(65.0, 30.0), [0.0, 30.0, 60.0, 65.0])
-        self.assertEqual(MODULE.sample_targets(10.0, 30.0), [0.0, 10.0])
-        self.assertEqual(MODULE.sample_targets(60.0, 30.0), [0.0, 30.0, 60.0])
+    def test_next_target_skips_missed_intervals_and_targets_duration(self) -> None:
+        self.assertEqual(
+            MODULE.next_sampling_target(
+                elapsed_seconds=0.0,
+                duration_seconds=65.0,
+                interval_seconds=30.0,
+            ),
+            30.0,
+        )
+        self.assertEqual(
+            MODULE.next_sampling_target(
+                elapsed_seconds=30.0,
+                duration_seconds=65.0,
+                interval_seconds=30.0,
+            ),
+            60.0,
+        )
+        self.assertEqual(
+            MODULE.next_sampling_target(
+                elapsed_seconds=61.0,
+                duration_seconds=65.0,
+                interval_seconds=30.0,
+            ),
+            65.0,
+        )
+        self.assertEqual(
+            MODULE.next_sampling_target(
+                elapsed_seconds=7.5,
+                duration_seconds=10.0,
+                interval_seconds=5.0,
+            ),
+            10.0,
+        )
+        self.assertIsNone(
+            MODULE.next_sampling_target(
+                elapsed_seconds=65.0,
+                duration_seconds=65.0,
+                interval_seconds=30.0,
+            )
+        )
 
     def test_sampling_arguments_reject_non_finite_and_non_positive_values(self) -> None:
         invalid = (True, 0.0, -1.0, math.inf, -math.inf, math.nan, 10**1000)
         for value in invalid:
             with self.subTest(value=repr(value)):
                 with self.assertRaises(SoakSamplingError):
-                    MODULE.sample_targets(value, 1.0)
+                    MODULE.next_sampling_target(
+                        elapsed_seconds=0.0,
+                        duration_seconds=value,
+                        interval_seconds=1.0,
+                    )
                 with self.assertRaises(SoakSamplingError):
-                    MODULE.sample_targets(1.0, value)
+                    MODULE.next_sampling_target(
+                        elapsed_seconds=0.0,
+                        duration_seconds=1.0,
+                        interval_seconds=value,
+                    )
 
     def test_project_name_is_limited_to_disposable_soak_namespace(self) -> None:
         self.assertEqual(
@@ -89,22 +150,46 @@ class SoakSamplingTest(unittest.TestCase):
         self.assertIn("--allow-unmeasured-media", unmeasured)
         self.assertNotIn("--media-metrics-file", unmeasured)
 
-    def test_collector_output_is_single_strict_json_object_with_matching_elapsed(self) -> None:
-        sample = MODULE.parse_collector_output(
-            '{"elapsed_seconds":5.0,"memory_rss_bytes":1}\n',
+    def test_collector_output_is_single_strict_schema_object_with_matching_elapsed(self) -> None:
+        expected = sample(5.0)
+        parsed = MODULE.parse_collector_output(
+            json.dumps(expected) + "\n",
             expected_elapsed=5.0,
         )
-        self.assertEqual(sample["elapsed_seconds"], 5.0)
+        self.assertEqual(parsed, expected)
+
+        duplicate = json.dumps(expected).replace(
+            '"elapsed_seconds": 5.0',
+            '"elapsed_seconds": 5.0, "elapsed_seconds": 5.0',
+            1,
+        )
+        non_finite = json.dumps(expected).replace(
+            '"cpu_percent": 2.0', '"cpu_percent": NaN', 1
+        )
+        wrong_elapsed = dict(expected)
+        wrong_elapsed["elapsed_seconds"] = 4.0
+        missing = dict(expected)
+        missing.pop("open_fds")
+        extra = dict(expected)
+        extra["unexpected"] = 1
+        bad_boolean = dict(expected)
+        bad_boolean["timestamp_errors"] = False
+        too_many_zombies = dict(expected)
+        too_many_zombies["zombies"] = 5
 
         invalid_outputs = (
-            '{"elapsed_seconds":5,"elapsed_seconds":5}\n',
-            '{"elapsed_seconds":NaN}\n',
-            '{"elapsed_seconds":4}\n',
-            '{"elapsed_seconds":5}\n{"elapsed_seconds":5}\n',
-            '[]\n',
+            duplicate + "\n",
+            non_finite + "\n",
+            json.dumps(wrong_elapsed) + "\n",
+            json.dumps(expected) + "\n" + json.dumps(expected) + "\n",
+            "[]\n",
+            json.dumps(missing) + "\n",
+            json.dumps(extra) + "\n",
+            json.dumps(bad_boolean) + "\n",
+            json.dumps(too_many_zombies) + "\n",
         )
         for output in invalid_outputs:
-            with self.subTest(output=output), self.assertRaises(SoakSamplingError):
+            with self.subTest(output=output[:80]), self.assertRaises(SoakSamplingError):
                 MODULE.parse_collector_output(output, expected_elapsed=5.0)
 
     def test_collector_timeout_and_failure_are_fail_closed(self) -> None:
@@ -140,10 +225,7 @@ class SoakSamplingTest(unittest.TestCase):
 
         def collect(elapsed: float) -> dict[str, object]:
             collected.append(elapsed)
-            return {
-                "elapsed_seconds": elapsed,
-                "memory_rss_bytes": 1,
-            }
+            return sample(elapsed)
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "samples.jsonl")
@@ -173,7 +255,7 @@ class SoakSamplingTest(unittest.TestCase):
 
         def collect(elapsed: float) -> dict[str, object]:
             samples.append(elapsed)
-            return {"elapsed_seconds": elapsed}
+            return sample(elapsed)
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "samples.jsonl")
@@ -187,9 +269,32 @@ class SoakSamplingTest(unittest.TestCase):
                     sleeper=delayed_sleep,
                 )
 
-        self.assertEqual(samples[0], 0.0)
-        self.assertEqual(samples[1], 7.5)
-        self.assertEqual(samples[2], 12.5)
+        self.assertEqual(samples, [0.0, 7.5, 12.5])
+
+    def test_slow_collection_skips_missed_intervals_without_catch_up_duplicates(self) -> None:
+        clock = FakeClock()
+        samples: list[float] = []
+
+        def collect(elapsed: float) -> dict[str, object]:
+            samples.append(elapsed)
+            clock.value += 17.0
+            return sample(elapsed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "samples.jsonl")
+            with MODULE.open_output_exclusive(path) as output:
+                MODULE.run_sampling(
+                    duration_seconds=30.0,
+                    interval_seconds=5.0,
+                    collect=collect,
+                    output=output,
+                    monotonic=clock.monotonic,
+                    sleeper=clock.sleep,
+                )
+
+        self.assertEqual(samples, [0.0, 20.0, 37.0])
+        self.assertEqual(samples, sorted(set(samples)))
+        self.assertGreaterEqual(samples[-1], 30.0)
 
     def test_existing_output_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,7 +305,7 @@ class SoakSamplingTest(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "original\n")
 
     def test_backward_monotonic_clock_fails_closed(self) -> None:
-        values = iter((100.0, 99.0))
+        values = iter((99.0,))
         with self.assertRaisesRegex(SoakSamplingError, "moved backwards"):
             MODULE.wait_until(
                 101.0,
