@@ -54,9 +54,19 @@ class _FakeProcess:
 
     def terminate(self) -> None:
         self.calls.append(("terminate", None))
+        if self.exits_on == "terminate-race":
+            self.alive = False
+            self.exitcode = 0
+            raise ProcessLookupError("child already exited")
+        if self.exits_on == "terminate-permission":
+            raise PermissionError("signal denied")
 
     def kill(self) -> None:
         self.calls.append(("kill", None))
+        if self.exits_on == "kill-race":
+            self.alive = False
+            self.exitcode = -15
+            raise ProcessLookupError("child exited after terminate")
 
 
 class AttemptResultContractTest(unittest.TestCase):
@@ -151,6 +161,41 @@ class ChildReapingContractTest(unittest.TestCase):
         self.assertFalse(process.alive)
         self.assertIn(("terminate", None), process.calls)
         self.assertIn(("kill", None), process.calls)
+
+    def test_exit_race_before_terminate_is_reaped_as_natural_exit(self) -> None:
+        process = _FakeProcess("terminate-race")
+        result = SUPERVISOR.reap_child(
+            process,
+            natural_timeout_seconds=2,
+            terminate_timeout_seconds=1,
+            kill_timeout_seconds=1,
+        )
+        self.assertEqual(result.disposition, "exited")
+        self.assertFalse(process.alive)
+        self.assertNotIn(("kill", None), process.calls)
+
+    def test_exit_race_before_kill_preserves_terminate_disposition(self) -> None:
+        process = _FakeProcess("kill-race")
+        result = SUPERVISOR.reap_child(
+            process,
+            natural_timeout_seconds=2,
+            terminate_timeout_seconds=1,
+            kill_timeout_seconds=1,
+        )
+        self.assertEqual(result.disposition, "terminated")
+        self.assertFalse(process.alive)
+        self.assertIn(("terminate", None), process.calls)
+        self.assertIn(("kill", None), process.calls)
+
+    def test_non_esrch_signal_errors_are_not_swallowed(self) -> None:
+        process = _FakeProcess("terminate-permission")
+        with self.assertRaises(PermissionError):
+            SUPERVISOR.reap_child(
+                process,
+                natural_timeout_seconds=2,
+                terminate_timeout_seconds=1,
+                kill_timeout_seconds=1,
+            )
 
     def test_unreapable_child_fails_closed(self) -> None:
         process = _FakeProcess(None)
