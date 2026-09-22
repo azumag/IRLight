@@ -63,7 +63,7 @@ def _finite_timestamp(value: Any) -> float:
         raise DestinationSecretError(
             "destination secret state has invalid timestamp"
         ) from exc
-    if not math.isfinite(normalized):
+    if not math.isfinite(normalized) or normalized < 0:
         raise DestinationSecretError("destination secret state has invalid timestamp")
     return normalized
 
