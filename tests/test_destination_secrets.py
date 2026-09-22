@@ -120,6 +120,8 @@ class DestinationSecretStoreTest(unittest.TestCase):
                 ("updated_at", None, False),
                 ("created_at", "100.0", False),
                 ("updated_at", 10**400, False),
+                ("created_at", -1.0, False),
+                ("updated_at", -0.001, False),
                 ("created_at", None, True),
             )
             for field, value, remove in cases:
@@ -141,7 +143,7 @@ class DestinationSecretStoreTest(unittest.TestCase):
                         DestinationSecretStore(tmp, master_key=key)
                     self.assertEqual(path.read_bytes(), damaged)
 
-    def test_non_finite_put_timestamp_does_not_replace_readable_state(self) -> None:
+    def test_invalid_put_timestamp_does_not_replace_readable_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             key = Fernet.generate_key()
             store = DestinationSecretStore(tmp, master_key=key)
@@ -154,23 +156,60 @@ class DestinationSecretStoreTest(unittest.TestCase):
             path = Path(tmp, "destination_secrets.json")
             before = path.read_bytes()
 
-            for now in (float("nan"), float("inf"), float("-inf")):
+            for now in (-1.0, float("nan"), float("inf"), float("-inf"), 10**400):
                 with self.subTest(now=now):
-                    with self.assertRaisesRegex(
-                        DestinationSecretError, "invalid timestamp"
-                    ):
-                        store.put(
-                            user_id="user-a",
-                            secret_ref="primary",
-                            value="replacement",
-                            now=now,
-                        )
+                    with patch.object(store.fernet, "encrypt") as encrypt:
+                        with self.assertRaisesRegex(
+                            DestinationSecretError, "invalid timestamp"
+                        ):
+                            store.put(
+                                user_id="user-a",
+                                secret_ref="primary",
+                                value="replacement",
+                                now=now,
+                            )
+                        encrypt.assert_not_called()
                     self.assertEqual(path.read_bytes(), before)
                     reloaded = DestinationSecretStore(tmp, master_key=key)
                     self.assertEqual(
                         reloaded.resolve(user_id="user-a", secret_ref="primary"),
                         "original",
                     )
+
+    def test_invalid_default_clock_fails_before_encryption_or_state_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DestinationSecretStore(tmp, master_key=Fernet.generate_key())
+            path = Path(tmp, "destination_secrets.json")
+            with patch("destination_secret_store.time.time", return_value=-1.0):
+                with patch.object(store.fernet, "encrypt") as encrypt:
+                    with self.assertRaisesRegex(
+                        DestinationSecretError, "invalid timestamp"
+                    ):
+                        store.put(
+                            user_id="user-a",
+                            secret_ref="primary",
+                            value="secret-value",
+                        )
+                    encrypt.assert_not_called()
+            self.assertFalse(path.exists())
+
+    def test_epoch_zero_timestamp_remains_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Fernet.generate_key()
+            store = DestinationSecretStore(tmp, master_key=key)
+            result = store.put(
+                user_id="user-a",
+                secret_ref="primary",
+                value="secret-value",
+                now=0.0,
+            )
+            self.assertEqual(result["created_at"], 0.0)
+            self.assertEqual(result["updated_at"], 0.0)
+            reloaded = DestinationSecretStore(tmp, master_key=key)
+            self.assertEqual(
+                reloaded.resolve(user_id="user-a", secret_ref="primary"),
+                "secret-value",
+            )
 
     def test_delete_and_missing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
