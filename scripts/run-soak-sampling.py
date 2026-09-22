@@ -316,6 +316,8 @@ def _capture_bounded_process(
             _stop_collector(process)
             raise SoakSamplingError("collector exceeded its bounded execution time") from exc
     finally:
+        if process.poll() is None:
+            _stop_collector(process)
         selector.close()
         process.stdout.close()
         process.stderr.close()
