@@ -19,12 +19,13 @@ def _directive(text: str, key: str) -> str:
 
 
 def _duration_seconds(value: str) -> float:
-    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(ms|s|min|h)", value)
+    # systemd time spans treat a bare number as seconds, e.g. TimeoutStartSec=120.
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(ms|s|min|h)?", value)
     if match is None:
         raise AssertionError(f"unsupported systemd duration in contract test: {value}")
     amount = float(match.group(1))
     unit = match.group(2)
-    multiplier = {"ms": 0.001, "s": 1.0, "min": 60.0, "h": 3600.0}[unit]
+    multiplier = {None: 1.0, "ms": 0.001, "s": 1.0, "min": 60.0, "h": 3600.0}[unit]
     return amount * multiplier
 
 
