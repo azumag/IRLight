@@ -15,6 +15,17 @@ from agent import DeadlineClockError, NodeAgent  # noqa: E402
 from supervisor import FakeSupervisor  # noqa: E402
 
 
+INVALID_CLOCK_CASES: tuple[tuple[str, object], ...] = (
+    ("bool", True),
+    ("string", "100"),
+    ("negative", -1),
+    ("nan", math.nan),
+    ("positive-infinity", math.inf),
+    ("negative-infinity", -math.inf),
+    ("float-overflow", 10**10000),
+)
+
+
 class NodeAgentDeadlineClockTest(unittest.TestCase):
     def _agent(self) -> NodeAgent:
         return NodeAgent(
@@ -39,17 +50,8 @@ class NodeAgentDeadlineClockTest(unittest.TestCase):
         }
 
     def test_bootstrap_rejects_invalid_present_absolute_deadline(self) -> None:
-        invalid_values: tuple[object, ...] = (
-            True,
-            "100",
-            -1,
-            math.nan,
-            math.inf,
-            -math.inf,
-            10**10000,
-        )
-        for value in invalid_values:
-            with self.subTest(value=repr(value)):
+        for label, value in INVALID_CLOCK_CASES:
+            with self.subTest(case=label):
                 agent = self._agent()
                 response = self._bootstrap_response(agent, value)
                 with patch("agent.http_json", return_value=response):
@@ -76,8 +78,8 @@ class NodeAgentDeadlineClockTest(unittest.TestCase):
         self.assertEqual(epoch_agent.absolute_deadline, 0.0)
 
     def test_invalid_pre_start_wall_clock_prevents_media_start(self) -> None:
-        for clock_value in (True, "100", -1, math.nan, math.inf, -math.inf, 10**10000):
-            with self.subTest(clock=repr(clock_value)):
+        for label, clock_value in INVALID_CLOCK_CASES:
+            with self.subTest(case=label):
                 agent = self._agent()
                 response = self._bootstrap_response(agent, 100.0)
                 with patch("agent.http_json", return_value=response), patch(
@@ -88,8 +90,8 @@ class NodeAgentDeadlineClockTest(unittest.TestCase):
                 self.assertEqual(agent.supervisor.started_sessions, [])
 
     def test_invalid_heartbeat_wall_clock_prevents_publish(self) -> None:
-        for clock_value in (True, "100", -1, math.nan, math.inf, -math.inf, 10**10000):
-            with self.subTest(clock=repr(clock_value)):
+        for label, clock_value in INVALID_CLOCK_CASES:
+            with self.subTest(case=label):
                 agent = self._agent()
                 agent.node_id = "node-test"
                 agent.absolute_deadline = 100.0
