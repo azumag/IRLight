@@ -46,19 +46,22 @@ def _require_nonnegative_int(
     return value
 
 
-def _require_finite_number(
-    record: dict[str, Any], field: str, *, context: str
-) -> float:
-    value = record.get(field)
+def _normalize_timestamp(value: object, *, context: str, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EntitlementStateError(f"{context} has invalid {field}")
     try:
         number = float(value)
     except (OverflowError, ValueError):
         raise EntitlementStateError(f"{context} has invalid {field}") from None
-    if not math.isfinite(number):
+    if not math.isfinite(number) or number < 0:
         raise EntitlementStateError(f"{context} has invalid {field}")
     return number
+
+
+def _require_timestamp(
+    record: dict[str, Any], field: str, *, context: str
+) -> float:
+    return _normalize_timestamp(record.get(field), context=context, field=field)
 
 
 def _default_limit() -> int:
@@ -153,7 +156,7 @@ class EntitlementStore:
             _require_nonnegative_int(
                 record, "max_concurrent_sessions", context="entitlement record"
             )
-            _require_finite_number(
+            _require_timestamp(
                 record, "updated_at", context="entitlement record"
             )
 
@@ -230,9 +233,9 @@ class EntitlementStore:
         if not isinstance(plan, str) or not plan.strip():
             raise ValueError("plan must not be empty")
         with self._state_lock(exclusive=True):
-            updated_at = time.time()
-            if not math.isfinite(updated_at):
-                raise EntitlementStateError("entitlement updated_at is not finite")
+            updated_at = _normalize_timestamp(
+                time.time(), context="entitlement record", field="updated_at"
+            )
             entitlement = {
                 "id": f"user:{user_id}",
                 "user_id": user_id,

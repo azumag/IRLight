@@ -41,6 +41,15 @@ class EntitlementAuthorityValidationTest(unittest.TestCase):
             self.assertEqual(entitlement["plan"], "supporter")
             self.assertEqual(entitlement["max_concurrent_sessions"], 3)
 
+    def test_epoch_zero_persisted_timestamp_remains_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            self._write_payload(
+                state_dir,
+                {"entitlements": {"user-a": self._record(updated_at=0.0)}},
+            )
+            entitlement = EntitlementStore(state_dir).get("user-a")
+            self.assertEqual(entitlement["updated_at"], 0.0)
+
     def test_non_finite_json_constants_fail_closed_without_rewrite(self) -> None:
         for value in ("NaN", "Infinity", "-Infinity"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as state_dir:
@@ -71,13 +80,18 @@ class EntitlementAuthorityValidationTest(unittest.TestCase):
             self._record(updated_at=True),
             self._record(updated_at=None),
             self._record(updated_at="1234"),
+            self._record(updated_at=-0.001),
             self._record(updated_at=10**1000),
         ]
         for record in invalid_records:
             with self.subTest(record=record), tempfile.TemporaryDirectory() as state_dir:
-                self._write_payload(state_dir, {"entitlements": {"user-a": record}})
+                path = self._write_payload(
+                    state_dir, {"entitlements": {"user-a": record}}
+                )
+                original = path.read_bytes()
                 with self.assertRaises(EntitlementStateError):
                     EntitlementStore(state_dir)
+                self.assertEqual(path.read_bytes(), original)
 
     def test_missing_required_fields_fail_closed(self) -> None:
         for field in (
@@ -94,22 +108,48 @@ class EntitlementAuthorityValidationTest(unittest.TestCase):
                 with self.assertRaises(EntitlementStateError):
                     EntitlementStore(state_dir)
 
-    def test_writer_rejects_non_finite_timestamp_without_replacing_authority(self) -> None:
+    def test_writer_rejects_invalid_timestamp_without_replacing_authority(self) -> None:
+        invalid_clocks: tuple[object, ...] = (
+            -1.0,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            10**1000,
+        )
+        for invalid_clock in invalid_clocks:
+            with (
+                self.subTest(clock=repr(invalid_clock)),
+                tempfile.TemporaryDirectory() as state_dir,
+            ):
+                store = EntitlementStore(state_dir)
+                store.set("user-a", max_concurrent_sessions=2, plan="supporter")
+                path = Path(state_dir, "entitlements.json")
+                original = path.read_bytes()
+
+                with patch("entitlement_store.time.time", return_value=invalid_clock):
+                    with self.assertRaises(EntitlementStateError):
+                        store.set("user-b", max_concurrent_sessions=1, plan="default")
+
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(
+                    EntitlementStore(state_dir).get("user-a")["max_concurrent_sessions"],
+                    2,
+                )
+                fallback = EntitlementStore(state_dir).get("user-b")
+                self.assertEqual(fallback["id"], "default:user-b")
+                self.assertIsNone(fallback["updated_at"])
+
+    def test_writer_accepts_epoch_zero_clock(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
             store = EntitlementStore(state_dir)
-            store.set("user-a", max_concurrent_sessions=2, plan="supporter")
-            path = Path(state_dir, "entitlements.json")
-            original = path.read_bytes()
+            with patch("entitlement_store.time.time", return_value=0.0):
+                entitlement = store.set(
+                    "user-a", max_concurrent_sessions=2, plan="supporter"
+                )
 
-            with patch("entitlement_store.time.time", return_value=float("nan")):
-                with self.assertRaises(EntitlementStateError):
-                    store.set("user-b", max_concurrent_sessions=1, plan="default")
-
-            self.assertEqual(path.read_bytes(), original)
-            self.assertEqual(
-                EntitlementStore(state_dir).get("user-a")["max_concurrent_sessions"],
-                2,
-            )
+            self.assertEqual(entitlement["updated_at"], 0.0)
+            reloaded = EntitlementStore(state_dir).get("user-a")
+            self.assertEqual(reloaded["updated_at"], 0.0)
 
     def test_set_rejects_type_confusion_before_persist(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:

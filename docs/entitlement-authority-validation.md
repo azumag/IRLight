@@ -12,7 +12,9 @@ Each persisted entitlement is keyed by a non-empty user ID. The record must cont
 - `user_id` equal to the dictionary key
 - a non-empty, non-whitespace `plan`
 - `max_concurrent_sessions` as a non-negative integer (booleans and numeric strings are not accepted)
-- a finite numeric `updated_at` value
+- `updated_at` as a finite, non-negative Unix timestamp (`0.0`, the Unix epoch, remains valid)
+
+The same timestamp rule is applied before `EntitlementStore.set()` mutates in-memory authority. A pre-epoch system clock, NaN/infinity, or a value that cannot be represented as a finite float raises `EntitlementStateError` before a record is added or replaced. The previous `entitlements.json` bytes remain authoritative.
 
 The default entitlement returned for a user with no persisted record remains a runtime fallback derived from `IRLIGHT_DEFAULT_MAX_CONCURRENT_SESSIONS`; it is not a persisted record and therefore intentionally has `updated_at: null`.
 
@@ -20,7 +22,7 @@ The runtime default is parsed fail-closed. A malformed non-integer `IRLIGHT_DEFA
 
 ## Failure and recovery behavior
 
-Invalid persisted authority raises `EntitlementStateError`. Read failures do not rewrite the file, drop the initialization marker, or replace the authority with an empty/default payload. Writers validate the complete in-memory authority before replacement, so a bad timestamp or record cannot overwrite the previous valid file.
+Invalid persisted authority raises `EntitlementStateError`. Read failures do not rewrite the file, drop the initialization marker, or replace the authority with an empty/default payload. Writers validate the effective timestamp before mutation and validate the complete in-memory authority before replacement, so a bad timestamp or record cannot overwrite the previous valid file.
 
 Preserve `entitlements.json` and its `.initialized` marker when recovering from corruption. Do not delete the state volume or marker to force a fresh empty authority; the explicit recovery procedure is tracked in #90.
 
@@ -34,4 +36,4 @@ Committed prepare replays remain replayable without rereading entitlement author
 
 ## Scope
 
-This is the entitlement record-validation and API fail-closed slice of #87. It deliberately does not invent a maximum supported `max_concurrent_sessions` value or change plan semantics; choosing an explicit upper bound is a separate policy decision. Remaining Session/node-authority validation and regression coverage preventing corrupt Session state from affecting capacity or paid-node provisioning are tracked separately under #87.
+This is the entitlement record-validation and API fail-closed slice of #87. It deliberately does not invent a maximum supported `max_concurrent_sessions` value, change plan semantics, or define a future-skew policy for otherwise valid Unix timestamps; those are separate policy decisions. Session lifecycle authority clock/timestamp hardening remains tracked in #559.
