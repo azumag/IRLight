@@ -135,10 +135,9 @@ class EntitlementAuthorityValidationTest(unittest.TestCase):
                     EntitlementStore(state_dir).get("user-a")["max_concurrent_sessions"],
                     2,
                 )
-                self.assertEqual(
-                    EntitlementStore(state_dir).get("user-b")["max_concurrent_sessions"],
-                    1,
-                )
+                fallback = EntitlementStore(state_dir).get("user-b")
+                self.assertEqual(fallback["id"], "default:user-b")
+                self.assertIsNone(fallback["updated_at"])
 
     def test_writer_accepts_epoch_zero_clock(self) -> None:
         with tempfile.TemporaryDirectory() as state_dir:
