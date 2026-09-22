@@ -4,11 +4,10 @@ import importlib.util
 import json
 import math
 import stat
-import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,31 +192,57 @@ class SoakSamplingTest(unittest.TestCase):
                 MODULE.parse_collector_output(output, expected_elapsed=5.0)
 
     def test_collector_timeout_and_failure_are_fail_closed(self) -> None:
-        with mock.patch.object(
-            MODULE.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=1.0),
-        ):
-            with self.assertRaisesRegex(SoakSamplingError, "bounded execution time"):
-                MODULE.collect_one_process(
-                    ["python", "collector.py"],
-                    expected_elapsed=0.0,
-                    timeout_seconds=1.0,
-                )
+        with self.assertRaisesRegex(SoakSamplingError, "bounded execution time"):
+            MODULE.collect_one_process(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                expected_elapsed=0.0,
+                timeout_seconds=0.05,
+            )
 
-        completed = subprocess.CompletedProcess(
-            ["python", "collector.py"],
-            2,
-            stdout="",
-            stderr="synthetic failure",
-        )
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
-            with self.assertRaisesRegex(SoakSamplingError, "synthetic failure"):
-                MODULE.collect_one_process(
-                    ["python", "collector.py"],
-                    expected_elapsed=0.0,
-                    timeout_seconds=1.0,
+        with self.assertRaisesRegex(SoakSamplingError, "synthetic failure"):
+            MODULE.collect_one_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('synthetic failure', file=sys.stderr); sys.exit(2)",
+                ],
+                expected_elapsed=0.0,
+                timeout_seconds=10.0,
+            )
+
+    def test_collector_output_limits_are_enforced_while_child_is_running(self) -> None:
+        for fd, label, limit in (
+            (1, "stdout", MODULE.MAX_COLLECTOR_STDOUT_BYTES),
+            (2, "stderr", MODULE.MAX_COLLECTOR_STDERR_BYTES),
+        ):
+            with self.subTest(label=label):
+                code = (
+                    "import sys,time;"
+                    f"stream=sys.stdout if {fd} == 1 else sys.stderr;"
+                    f"stream.write('x' * {limit + 1});stream.flush();"
+                    "time.sleep(5)"
                 )
+                with self.assertRaisesRegex(
+                    SoakSamplingError,
+                    rf"collector {label} exceeds bounded size",
+                ):
+                    MODULE.collect_one_process(
+                        [sys.executable, "-c", code],
+                        expected_elapsed=0.0,
+                        timeout_seconds=10.0,
+                    )
+
+    def test_collect_one_process_accepts_valid_bounded_utf8_json(self) -> None:
+        expected = sample(0.0)
+        code = f"print({json.dumps(json.dumps(expected))})"
+        self.assertEqual(
+            MODULE.collect_one_process(
+                [sys.executable, "-c", code],
+                expected_elapsed=0.0,
+                timeout_seconds=10.0,
+            ),
+            expected,
+        )
 
     def test_run_sampling_records_actual_elapsed_and_durable_jsonl(self) -> None:
         clock = FakeClock()
