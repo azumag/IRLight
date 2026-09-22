@@ -404,6 +404,9 @@ def _write_legacy_token_fuse(
     the canonical authority commit can at worst burn a token if the later
     write fails; neither build can ever reuse it.
     """
+    consumed_at = _require_finite_number(
+        time.time(), "bootstrap token timestamp", minimum=0
+    )
     _refresh_legacy_paths()
     legacy = (
         _validate_tokens(read_json(_tokens_path(), _default_tokens()))
@@ -412,10 +415,11 @@ def _write_legacy_token_fuse(
     )
     legacy["tokens"][digest] = {
         "consumed": True,
-        "consumed_at": time.time(),
+        "consumed_at": consumed_at,
         "node_id": node_id,
         "session_id": session_id,
     }
+    _validate_tokens(legacy)
     atomic_write_json(_tokens_path(), legacy)
 
 
