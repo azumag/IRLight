@@ -232,10 +232,10 @@ class EntitlementStore:
             raise ValueError("max_concurrent_sessions must be a non-negative integer")
         if not isinstance(plan, str) or not plan.strip():
             raise ValueError("plan must not be empty")
-        updated_at = _normalize_timestamp(
-            time.time(), context="entitlement record", field="updated_at"
-        )
         with self._state_lock(exclusive=True):
+            updated_at = _normalize_timestamp(
+                time.time(), context="entitlement record", field="updated_at"
+            )
             entitlement = {
                 "id": f"user:{user_id}",
                 "user_id": user_id,
