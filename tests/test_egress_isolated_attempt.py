@@ -206,6 +206,36 @@ class IsolatedAttemptContractTest(unittest.TestCase):
         self.assertIn(("terminate", None), process.calls)
         self.assertFalse(process.is_alive())
 
+    def test_child_exit_after_teardown_preserves_validated_terminal_result(self) -> None:
+        clock = _Clock()
+        process = _Process(alive=False)
+        connection = _Connection(
+            clock,
+            [
+                self._result_message(
+                    kind="teardown",
+                    reason="AUTH_FAILED",
+                    connected=False,
+                    rendered=0,
+                    terminal=True,
+                )
+            ],
+        )
+        result = ISOLATED.supervise_attempt_child(
+            process,
+            connection,
+            _Event(),
+            _Event(),
+            connect_timeout_seconds=15,
+            teardown_timeout_seconds=8,
+            terminate_timeout_seconds=2,
+            kill_timeout_seconds=2,
+            monotonic=clock,
+        )
+        self.assertEqual(result.reason_code, "AUTH_FAILED")
+        self.assertTrue(result.terminal)
+        self.assertIn(("join", 0.0), process.calls)
+
     def test_startup_timeout_fences_preconnect_child(self) -> None:
         clock = _Clock()
         process = _Process(alive=True)
