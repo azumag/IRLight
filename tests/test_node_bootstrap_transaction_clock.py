@@ -101,7 +101,7 @@ class NodeBootstrapTransactionClockTest(unittest.TestCase):
         write_fuse.assert_not_called()
         write_authority.assert_not_called()
 
-    def test_bootstrap_authority_reuses_one_validated_clock_sample(self) -> None:
+    def test_bootstrap_response_reuses_one_validated_clock_sample(self) -> None:
         authority = self._authority()
         digest = node_internal.hash_token("bootstrap-token")
         clock = Mock(side_effect=[100.0, -1.0])
@@ -111,12 +111,11 @@ class NodeBootstrapTransactionClockTest(unittest.TestCase):
             patch.object(node_internal, "_resolve_assigned_session", return_value=None),
             patch.object(node_internal, "_write_legacy_token_fuse") as write_fuse,
             patch.object(node_internal, "_write_authority") as write_authority,
-            patch.object(node_internal, "_bootstrap_response", return_value={"ok": True}),
             patch.object(node_internal.time, "time", clock),
+            patch.dict("os.environ", {"NODE_EGRESS_URL": ""}),
         ):
             response = node_internal._bootstrap_locked(self._request(), digest)
 
-        self.assertEqual(response, {"ok": True})
         clock.assert_called_once_with()
         write_authority.assert_called_once_with(authority)
         self.assertEqual(authority["next_node_seq"], 2)
@@ -125,6 +124,7 @@ class NodeBootstrapTransactionClockTest(unittest.TestCase):
         self.assertEqual(node["created_at"], 100.0)
         self.assertEqual(token["consumed_at"], 100.0)
         self.assertEqual(node["absolute_deadline"], 100.0 + 12 * 3600)
+        self.assertEqual(response["audio_updated_at"], 100.0)
         node_internal.validate_node_authority(authority)
         write_fuse.assert_called_once_with(
             digest,
@@ -133,7 +133,58 @@ class NodeBootstrapTransactionClockTest(unittest.TestCase):
             consumed_at=100.0,
         )
 
-    def test_epoch_zero_remains_valid_for_bootstrap_authority(self) -> None:
+    def test_identical_retry_reuses_persisted_created_at_without_wall_clock(self) -> None:
+        authority = self._authority()
+        digest = node_internal.hash_token("bootstrap-token")
+        request = self._request()
+
+        with (
+            patch.object(node_internal, "_read_authority", return_value=authority),
+            patch.object(node_internal, "_resolve_assigned_session", return_value=None),
+            patch.object(node_internal, "_write_legacy_token_fuse"),
+            patch.object(node_internal, "_write_authority"),
+            patch.object(node_internal.time, "time", return_value=321.0),
+            patch.dict("os.environ", {"NODE_EGRESS_URL": ""}),
+        ):
+            initial = node_internal._bootstrap_locked(request, digest)
+
+        retry_clock = Mock(side_effect=AssertionError("retry must not read wall clock"))
+        with (
+            patch.object(node_internal, "_read_authority", return_value=authority),
+            patch.object(node_internal.time, "time", retry_clock),
+            patch.dict("os.environ", {"NODE_EGRESS_URL": ""}),
+        ):
+            retried = node_internal._bootstrap_locked(request, digest)
+
+        retry_clock.assert_not_called()
+        self.assertEqual(initial["node_id"], retried["node_id"])
+        self.assertEqual(initial["audio_updated_at"], 321.0)
+        self.assertEqual(retried["audio_updated_at"], 321.0)
+
+    def test_invalid_explicit_response_timestamp_is_rejected(self) -> None:
+        node = {
+            "node_id": "node-0001",
+            "session_id": "session-clock-test",
+            "session_assigned": False,
+            "absolute_deadline": 1000.0,
+            "egress_mode": "DIRECT_PUSH",
+        }
+        invalid_values = (-1.0, math.nan, math.inf, -math.inf, 10**400)
+
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with patch.object(
+                    node_internal, "_resolve_egress_delivery", return_value=("", None)
+                ):
+                    with self.assertRaises(node_internal.NodeStateError):
+                        node_internal._bootstrap_response(
+                            node,
+                            None,
+                            self._request().node_access_token,
+                            audio_updated_at=value,
+                        )
+
+    def test_epoch_zero_remains_valid_for_bootstrap_authority_and_response(self) -> None:
         authority = self._authority()
         digest = node_internal.hash_token("bootstrap-token")
         with (
@@ -141,16 +192,17 @@ class NodeBootstrapTransactionClockTest(unittest.TestCase):
             patch.object(node_internal, "_resolve_assigned_session", return_value=None),
             patch.object(node_internal, "_write_legacy_token_fuse") as write_fuse,
             patch.object(node_internal, "_write_authority") as write_authority,
-            patch.object(node_internal, "_bootstrap_response", return_value={"ok": True}),
             patch.object(node_internal.time, "time", return_value=0.0),
+            patch.dict("os.environ", {"NODE_EGRESS_URL": ""}),
         ):
-            node_internal._bootstrap_locked(self._request(), digest)
+            response = node_internal._bootstrap_locked(self._request(), digest)
 
         write_authority.assert_called_once_with(authority)
         node = authority["nodes"]["node-0001"]
         token = authority["tokens"][digest]
         self.assertEqual(node["created_at"], 0.0)
         self.assertEqual(token["consumed_at"], 0.0)
+        self.assertEqual(response["audio_updated_at"], 0.0)
         node_internal.validate_node_authority(authority)
         write_fuse.assert_called_once_with(
             digest,
