@@ -421,6 +421,8 @@ class NodeAgent:
         try:
             observation = self.ingest_inspector.observe_and_enforce()
         except RuntimeError as exc:
+            if str(exc) == "ingest observation clock is invalid":
+                raise
             print(f"[agent] ingest inspection failed: {exc}", file=sys.stderr, flush=True)
             fallback_observed_at_raw = time.time()
             if isinstance(fallback_observed_at_raw, bool) or not isinstance(
