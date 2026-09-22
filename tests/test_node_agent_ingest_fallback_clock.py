@@ -19,6 +19,11 @@ class FailingIngestInspector:
         raise RuntimeError("MediaMTX API unavailable")
 
 
+class InvalidClockIngestInspector:
+    def observe_and_enforce(self) -> dict[str, object]:
+        raise RuntimeError("ingest observation clock is invalid")
+
+
 class NodeAgentIngestFallbackClockTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -45,6 +50,15 @@ class NodeAgentIngestFallbackClockTest(unittest.TestCase):
         self.assertEqual(observation["status"], "UNKNOWN")
         self.assertEqual(observation["reasons"], ["MEDIAMTX_API_UNAVAILABLE"])
         self.assertEqual(observation["observed_at"], 123.0)
+
+    def test_inspector_clock_failure_is_not_reclassified_as_mediamtx_failure(self) -> None:
+        self.agent.ingest_inspector = InvalidClockIngestInspector()  # type: ignore[assignment]
+        with patch("agent.time.time", return_value=123.0) as wall_clock:
+            with self.assertRaisesRegex(
+                RuntimeError, "ingest observation clock is invalid"
+            ):
+                self.agent._ingest_observation()
+        wall_clock.assert_not_called()
 
     def test_epoch_zero_is_valid_for_fallback_observation(self) -> None:
         with patch("agent.time.time", return_value=0.0):
