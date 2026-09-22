@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import multiprocessing
 import os
 import sys
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import auth_api  # noqa: E402
+import auth_kdf_admission  # noqa: E402
 from auth_kdf_admission import (  # noqa: E402
     DEFAULT_ADMISSION_DIR,
     DEFAULT_MAX_CONCURRENT_KDFS,
@@ -157,6 +159,85 @@ class AuthKdfAdmissionTest(unittest.TestCase):
                 with auth_kdf_slot(config):
                     self.fail("symlink slot unexpectedly yielded")
             self.assertEqual(target.read_text(encoding="utf-8"), "sentinel")
+
+    def test_directory_replacement_during_acquisition_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-replace-") as temp_dir:
+            root = Path(temp_dir)
+            lock_dir = root / "locks"
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
+            original_open_slot = auth_kdf_admission._open_slot
+            replaced = False
+
+            def replace_before_slot_open(lock_dir_fd: int, slot_name: str) -> int:
+                nonlocal replaced
+                if not replaced:
+                    replaced = True
+                    lock_dir.rename(root / "original-locks")
+                    lock_dir.mkdir(mode=0o700)
+                return original_open_slot(lock_dir_fd, slot_name)
+
+            with patch(
+                "auth_kdf_admission._open_slot",
+                side_effect=replace_before_slot_open,
+            ):
+                with self.assertRaises(AuthKdfAdmissionUnavailable):
+                    with auth_kdf_slot(config):
+                        self.fail("replacement admission directory unexpectedly yielded")
+
+            self.assertTrue(replaced)
+            self.assertFalse((lock_dir / "slot-0.lock").exists())
+            self.assertTrue((root / "original-locks" / "slot-0.lock").exists())
+
+    def test_slot_replacement_after_flock_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-slot-replace-") as temp_dir:
+            lock_dir = Path(temp_dir) / "locks"
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=lock_dir)
+            real_flock = fcntl.flock
+            replaced = False
+
+            def replace_after_lock(fd: int, operation: int) -> None:
+                nonlocal replaced
+                real_flock(fd, operation)
+                if operation == fcntl.LOCK_EX | fcntl.LOCK_NB and not replaced:
+                    replaced = True
+                    slot = lock_dir / "slot-0.lock"
+                    slot.rename(lock_dir / "original-slot.lock")
+                    slot.write_text("", encoding="utf-8")
+                    slot.chmod(0o600)
+
+            with patch("auth_kdf_admission.fcntl.flock", side_effect=replace_after_lock):
+                with self.assertRaises(AuthKdfAdmissionUnavailable):
+                    with auth_kdf_slot(config):
+                        self.fail("replacement slot unexpectedly yielded")
+
+            self.assertTrue(replaced)
+
+    def test_unlock_failure_still_closes_slot_and_directory_fds(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-kdf-cleanup-") as temp_dir:
+            config = AuthKdfAdmissionConfig(max_concurrent=1, lock_dir=Path(temp_dir))
+            real_flock = fcntl.flock
+            real_close = os.close
+            closed_fds: list[int] = []
+
+            def fail_unlock(fd: int, operation: int) -> None:
+                if operation == fcntl.LOCK_UN:
+                    raise OSError("simulated unlock failure")
+                real_flock(fd, operation)
+
+            def record_close(fd: int) -> None:
+                closed_fds.append(fd)
+                real_close(fd)
+
+            with (
+                patch("auth_kdf_admission.fcntl.flock", side_effect=fail_unlock),
+                patch("auth_kdf_admission.os.close", side_effect=record_close),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated unlock failure"):
+                    with auth_kdf_slot(config):
+                        pass
+
+            self.assertEqual(len(closed_fds), 2)
+            self.assertEqual(len(set(closed_fds)), 2)
 
 
 class AuthKdfAdmissionApiTest(unittest.TestCase):
