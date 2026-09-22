@@ -14,7 +14,9 @@ python3 scripts/collect-soak-resource-sample.py \
   >> /tmp/irlight-soak-samples.jsonl
 ```
 
-Repeat collection at the configured interval. The assembler treats this JSONL file as raw evidence: blank lines, duplicate JSON keys, non-object lines, invalid UTF-8, `NaN`, `Infinity`, and JSON nesting beyond the parser limit fail closed. The input must be a stable regular file, not a symlink, FIFO, device, or another special file. The assembler opens the final path without following symlinks where the platform supports it, reads at most 32 MiB plus one detection byte, and rejects pathname replacement or in-place mutation detected across the read. This bound is far above the normal evidence volume for the documented 2–24 hour soak runs while preventing an accidental or adversarial path from turning report assembly into an unbounded memory read. The final ordering, counters, schema fields, target-duration coverage, and passing-run baseline are checked by the canonical soak report validator.
+Repeat collection at the configured interval. The assembler treats this JSONL file as raw evidence: blank lines, duplicate JSON keys, non-object lines, invalid UTF-8, `NaN`, `Infinity`, and JSON nesting beyond the parser limit fail closed. Each complete record must also end with a newline. `run-soak-sampling.py` writes and `fsync`s each sample together with that terminating newline, so a missing final newline is treated as interrupted/truncated evidence rather than allowing a coincidentally valid partial final record to become canonical evidence.
+
+The input must be a stable regular file, not a symlink, FIFO, device, or another special file. The assembler opens the final path without following symlinks where the platform supports it, reads at most 32 MiB plus one detection byte, and rejects pathname replacement or in-place mutation detected across the read. This bound is far above the normal evidence volume for the documented 2–24 hour soak runs while preventing an accidental or adversarial path from turning report assembly into an unbounded memory read. The final ordering, counters, schema fields, target-duration coverage, and passing-run baseline are checked by the canonical soak report validator.
 
 ## Verify cleanup
 
@@ -46,7 +48,9 @@ python3 scripts/assemble-soak-report.py \
 
 `--cleanup-verified` is deliberately explicit. A report claiming `outcome: pass` is rejected unless cleanup was verified, the first sample is the zero baseline, at least two samples exist, and the final sample covers the target duration. Failed or aborted runs may preserve shorter evidence by using `--outcome fail` or `--outcome aborted` and an explanatory cleanup status.
 
-The assembler imports `validate-soak-report.py` and validates the in-memory report before emitting it, so it cannot silently drift to a separate interpretation of schema version 1. The output is deterministic JSON with sorted keys. When `--output` is used, an existing file is not overwritten, and the raw JSONL file cannot be used as the output path. This preserves the original samples for later review.
+The assembler imports `validate-soak-report.py` and validates the in-memory report before emitting it, so it cannot silently drift to a separate interpretation of schema version 1. It also applies the canonical validator's serialized report-size bound before writing or printing the report; this prevents assembly from producing a file that `validate-soak-report.py` would later reject solely because it exceeds its bounded loader contract.
+
+The output is deterministic JSON with sorted keys. When `--output` is used, the file is created exclusively with private `0600` permissions, flushed with `fsync`, and never overwrites an existing file. If the write or durable flush fails, the newly created partial report is removed. The raw JSONL file cannot be used as the output path. Together these rules preserve the original samples and avoid presenting a partially persisted report as completed evidence.
 
 Run the validator independently before attaching evidence to a QA issue or release checklist:
 
