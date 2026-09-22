@@ -114,15 +114,21 @@ def _read_samples_bytes(path: Path) -> bytes:
 
 def load_samples_jsonl(path: Path) -> list[dict[str, Any]]:
     raw_bytes = _read_samples_bytes(path)
+    if not raw_bytes:
+        raise SoakAssemblyError("samples JSONL must contain at least one sample")
+    # run-soak-sampling.py durably writes each complete sample together with its
+    # terminating newline. A missing final newline therefore cannot prove that
+    # the final record crossed the runner's durable sample boundary.
+    if not raw_bytes.endswith(b"\n"):
+        raise SoakAssemblyError(
+            "samples JSONL does not end with a durable sample boundary"
+        )
     try:
         raw = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SoakAssemblyError("cannot read samples: invalid UTF-8") from exc
 
     lines = raw.splitlines()
-    if not lines:
-        raise SoakAssemblyError("samples JSONL must contain at least one sample")
-
     samples: list[dict[str, Any]] = []
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
@@ -194,6 +200,73 @@ def assemble_report(
     return report
 
 
+def render_report(report: dict[str, Any]) -> str:
+    try:
+        rendered = json.dumps(
+            report,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        ) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise SoakAssemblyError("assembled report cannot be serialized safely") from exc
+
+    validator = _load_validator()
+    limit = getattr(validator, "MAX_REPORT_BYTES", None)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise SoakAssemblyError("canonical validator has no valid report size limit")
+    if len(rendered.encode("utf-8")) > limit:
+        raise SoakAssemblyError(
+            f"assembled report exceeds canonical {limit}-byte validator limit"
+        )
+    return rendered
+
+
+def write_report_exclusive(path: Path, rendered: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise SoakAssemblyError("output already exists; refusing to overwrite evidence") from exc
+    except OSError as exc:
+        raise SoakAssemblyError("cannot create assembled report") from exc
+
+    try:
+        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        if mode & 0o077:
+            raise SoakAssemblyError("assembled report permissions are too broad")
+        encoded = rendered.encode("utf-8")
+        view = memoryview(encoded)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short report write")
+            view = view[written:]
+        os.fsync(fd)
+    except (OSError, UnicodeEncodeError) as exc:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise SoakAssemblyError("cannot durably write assembled report") from exc
+    except Exception:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+    else:
+        os.close(fd)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples-jsonl", type=Path, required=True)
@@ -229,18 +302,11 @@ def main(argv: list[str] | None = None) -> int:
             cleanup_details=args.cleanup_details,
             notes=args.notes,
         )
-        rendered = json.dumps(
-            report,
-            ensure_ascii=False,
-            sort_keys=True,
-            allow_nan=False,
-            separators=(",", ":"),
-        ) + "\n"
+        rendered = render_report(report)
         if args.output is None:
             sys.stdout.write(rendered)
         else:
-            with args.output.open("x", encoding="utf-8") as handle:
-                handle.write(rendered)
+            write_report_exclusive(args.output, rendered)
     except (SoakAssemblyError, OSError, UnicodeEncodeError) as exc:
         print(f"soak report assembly failed: {exc}", file=sys.stderr)
         return 2
