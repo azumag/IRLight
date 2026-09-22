@@ -123,6 +123,22 @@ class NodeHeartbeatClockBoundaryTest(unittest.TestCase):
                     constructor(-0.001)
                 self.assertEqual(constructor(0.0).observed_at, 0.0)
 
+    def test_egress_retry_timestamp_matches_persisted_nonnegative_contract(self) -> None:
+        with self.assertRaises(ValidationError):
+            EgressObservationRequest(
+                status="RECONNECTING",
+                observed_at=0.0,
+                next_retry_at=-0.001,
+            )
+        self.assertEqual(
+            EgressObservationRequest(
+                status="RECONNECTING",
+                observed_at=0.0,
+                next_retry_at=0.0,
+            ).next_retry_at,
+            0.0,
+        )
+
     def test_heartbeat_samples_control_plane_clock_once_for_node_events(self) -> None:
         authority = self._authority()
         store = _RecordingStore()
