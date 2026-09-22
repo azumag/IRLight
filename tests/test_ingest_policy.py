@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +88,62 @@ class IngestPolicyTest(unittest.TestCase):
         self.assertEqual(second["status"], "ACCEPTED")
         self.assertAlmostEqual(second["bitrate_bps"], 1_200_000.0)
         self.assertEqual(second["reasons"], [])
+
+    def test_invalid_observation_clock_fails_before_snapshot_or_sampling_mutation(self) -> None:
+        invalid_values: list[object] = [
+            -1.0,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            True,
+            "100",
+            10**400,
+        ]
+        for invalid in invalid_values:
+            with self.subTest(invalid=invalid):
+                inspector = FakeInspector(
+                    [snapshot(inbound_bytes=0), snapshot(inbound_bytes=1_000_000)]
+                )
+                inspector.observe(now=100.0)
+                baseline = (
+                    inspector._last_source_id,
+                    inspector._last_inbound_bytes,
+                    inspector._last_sample_at,
+                    inspector._over_bitrate_samples,
+                    inspector._last_enforced_source_id,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError, "ingest observation clock is invalid"
+                ):
+                    inspector.observe_and_enforce(now=invalid)  # type: ignore[arg-type]
+                self.assertEqual(len(inspector.snapshots), 1)
+                self.assertEqual(
+                    (
+                        inspector._last_source_id,
+                        inspector._last_inbound_bytes,
+                        inspector._last_sample_at,
+                        inspector._over_bitrate_samples,
+                        inspector._last_enforced_source_id,
+                    ),
+                    baseline,
+                )
+                self.assertEqual(inspector.kicks, [])
+
+    def test_invalid_default_clock_fails_before_snapshot(self) -> None:
+        inspector = FakeInspector([snapshot(inbound_bytes=0)])
+        with patch("ingest_policy.time.time", return_value=-1.0):
+            with self.assertRaisesRegex(
+                RuntimeError, "ingest observation clock is invalid"
+            ):
+                inspector.observe()
+        self.assertEqual(len(inspector.snapshots), 1)
+        self.assertIsNone(inspector._last_sample_at)
+
+    def test_epoch_zero_observation_clock_is_valid(self) -> None:
+        online = FakeInspector([snapshot(inbound_bytes=0)]).observe(now=0.0)
+        offline = FakeInspector([None]).observe(now=0.0)
+        self.assertEqual(online["observed_at"], 0.0)
+        self.assertEqual(offline["observed_at"], 0.0)
 
     def test_h265_is_rejected_and_rtmp_source_is_kicked(self) -> None:
         tracks = valid_tracks()
