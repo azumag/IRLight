@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import selectors
 import stat
 import subprocess
 import sys
@@ -31,6 +32,8 @@ PROJECT_RE = re.compile(r"^irlight-poc-soak-[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 DEFAULT_COLLECTOR_TIMEOUT_SECONDS = 180.0
 MAX_COLLECTOR_STDOUT_BYTES = 64 * 1024
 MAX_COLLECTOR_STDERR_BYTES = 64 * 1024
+PROCESS_TERMINATE_GRACE_SECONDS = 1.0
+READ_CHUNK_BYTES = 8 * 1024
 SAMPLE_FIELDS = {
     "elapsed_seconds",
     "memory_rss_bytes",
@@ -221,39 +224,129 @@ def build_collector_argv(
     return argv
 
 
+def _stop_collector(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        process.kill()
+        process.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _capture_bounded_process(
+    argv: list[str],
+    *,
+    timeout_seconds: float,
+) -> tuple[int, bytes, bytes]:
+    timeout = _finite_nonnegative(timeout_seconds, "collector_timeout_seconds", positive=True)
+    started_at = time.monotonic()
+    deadline = started_at + timeout
+    if not math.isfinite(deadline):
+        raise SoakSamplingError("collector timeout deadline overflowed")
+
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise SoakSamplingError("collector could not be executed") from exc
+
+    if process.stdout is None or process.stderr is None:
+        _stop_collector(process)
+        raise SoakSamplingError("collector output pipes could not be created")
+
+    selector = selectors.DefaultSelector()
+    stdout = bytearray()
+    stderr = bytearray()
+    streams = (
+        ("stdout", process.stdout, MAX_COLLECTOR_STDOUT_BYTES, stdout),
+        ("stderr", process.stderr, MAX_COLLECTOR_STDERR_BYTES, stderr),
+    )
+    try:
+        for label, stream, limit, buffer in streams:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, (label, limit, buffer))
+
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                _stop_collector(process)
+                raise SoakSamplingError("collector exceeded its bounded execution time")
+
+            try:
+                events = selector.select(timeout=remaining)
+            except OSError as exc:
+                _stop_collector(process)
+                raise SoakSamplingError("collector output could not be read") from exc
+            if not events:
+                _stop_collector(process)
+                raise SoakSamplingError("collector exceeded its bounded execution time")
+
+            for key, _ in events:
+                label, limit, buffer = key.data
+                read_size = min(READ_CHUNK_BYTES, limit + 1 - len(buffer))
+                try:
+                    chunk = os.read(key.fileobj.fileno(), read_size)
+                except BlockingIOError:
+                    continue
+                except OSError as exc:
+                    _stop_collector(process)
+                    raise SoakSamplingError("collector output could not be read") from exc
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                buffer.extend(chunk)
+                if len(buffer) > limit:
+                    _stop_collector(process)
+                    raise SoakSamplingError(f"collector {label} exceeds bounded size")
+
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            _stop_collector(process)
+            raise SoakSamplingError("collector exceeded its bounded execution time") from exc
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+
+    return returncode, bytes(stdout), bytes(stderr)
+
+
 def collect_one_process(
     argv: list[str],
     *,
     expected_elapsed: float,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    timeout = _finite_nonnegative(timeout_seconds, "collector_timeout_seconds", positive=True)
-    try:
-        completed = subprocess.run(
-            argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise SoakSamplingError("collector exceeded its bounded execution time") from exc
-    except OSError as exc:
-        raise SoakSamplingError("collector could not be executed") from exc
+    returncode, stdout_bytes, stderr_bytes = _capture_bounded_process(
+        argv,
+        timeout_seconds=timeout_seconds,
+    )
 
-    stderr = completed.stderr
-    if len(stderr.encode("utf-8")) > MAX_COLLECTOR_STDERR_BYTES:
-        stderr = stderr.encode("utf-8")[:MAX_COLLECTOR_STDERR_BYTES].decode(
-            "utf-8", errors="replace"
-        )
-    if completed.returncode != 0:
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SoakSamplingError("collector stdout is not valid UTF-8") from exc
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    if returncode != 0:
         # The child collector already avoids secrets by contract. Still keep
         # runner diagnostics bounded and do not echo argv (which can contain
         # operator-local paths).
         detail = stderr.strip()
         suffix = f": {detail}" if detail else ""
-        raise SoakSamplingError(f"collector exited {completed.returncode}{suffix}")
-    return parse_collector_output(completed.stdout, expected_elapsed=expected_elapsed)
+        raise SoakSamplingError(f"collector exited {returncode}{suffix}")
+    return parse_collector_output(stdout, expected_elapsed=expected_elapsed)
 
 
 def _validated_monotonic(value: object) -> float:
