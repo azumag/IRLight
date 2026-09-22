@@ -9,6 +9,7 @@ previously initialized and then lost.
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import math
 import time
@@ -74,14 +75,18 @@ def _expired_token_hashes(
 ) -> tuple[list[str], int]:
     """Return an oldest-first bounded deletion set and total expired count."""
     validated = _validate_sessions(state)
-    expired = [
-        (float(record["expires_at"]), token_hash)
-        for token_hash, record in validated["sessions"].items()
-        if float(record["expires_at"]) <= now
-    ]
-    expired.sort(key=lambda item: (item[0], item[1]))
-    selected = [token_hash for _, token_hash in expired[:max_deletions]]
-    return selected, len(expired)
+    expired_count = 0
+
+    def expired_entries():
+        nonlocal expired_count
+        for token_hash, record in validated["sessions"].items():
+            expires_at = float(record["expires_at"])
+            if expires_at <= now:
+                expired_count += 1
+                yield (expires_at, token_hash)
+
+    selected = heapq.nsmallest(max_deletions, expired_entries())
+    return [token_hash for _, token_hash in selected], expired_count
 
 
 def prune_expired_sessions(
