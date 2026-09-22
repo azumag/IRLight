@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import tempfile
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -94,10 +96,17 @@ class AssembleSoakReportTest(unittest.TestCase):
             self.assertEqual([item["elapsed_seconds"] for item in values], [0, 60])
 
             path.write_text(
-                json.dumps(sample(0)) + "\n\n" + json.dumps(sample(60)),
+                json.dumps(sample(0)) + "\n\n" + json.dumps(sample(60)) + "\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(SoakAssemblyError, "must not be blank"):
+                load_samples_jsonl(path)
+
+    def test_loader_rejects_unterminated_final_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "samples.jsonl"
+            path.write_text(json.dumps(sample(0)), encoding="utf-8")
+            with self.assertRaisesRegex(SoakAssemblyError, "durable sample boundary"):
                 load_samples_jsonl(path)
 
     def test_loader_rejects_duplicate_keys_constants_non_objects_and_invalid_utf8(self) -> None:
@@ -204,7 +213,14 @@ class AssembleSoakReportTest(unittest.TestCase):
                 with self.assertRaisesRegex(SoakAssemblyError, "nesting limit"):
                     load_samples_jsonl(path)
 
-    def test_main_writes_deterministic_report_without_clobbering_raw_samples(self) -> None:
+    def test_render_rejects_report_larger_than_canonical_loader_limit(self) -> None:
+        report = {"value": "large"}
+        validator = types.SimpleNamespace(MAX_REPORT_BYTES=4)
+        with mock.patch.object(MODULE, "_load_validator", return_value=validator):
+            with self.assertRaisesRegex(SoakAssemblyError, "canonical 4-byte"):
+                MODULE.render_report(report)
+
+    def test_main_writes_private_durable_report_without_clobbering_raw_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             samples_path = directory / "samples.jsonl"
@@ -233,10 +249,13 @@ class AssembleSoakReportTest(unittest.TestCase):
                 "--output",
                 str(report_path),
             ]
-            self.assertEqual(MODULE.main(argv), 0)
+            with mock.patch.object(MODULE.os, "fsync", wraps=os.fsync) as fsync:
+                self.assertEqual(MODULE.main(argv), 0)
+                fsync.assert_called_once()
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["run_id"], run_id)
             self.assertEqual(len(report["samples"]), 2)
+            self.assertEqual(stat.S_IMODE(report_path.stat().st_mode) & 0o077, 0)
 
             self.assertEqual(MODULE.main(argv), 2)
             self.assertEqual(
@@ -260,6 +279,14 @@ class AssembleSoakReportTest(unittest.TestCase):
                 ),
                 2,
             )
+
+    def test_failed_output_fsync_removes_partial_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            with mock.patch.object(MODULE.os, "fsync", side_effect=OSError("boom")):
+                with self.assertRaisesRegex(SoakAssemblyError, "durably write"):
+                    MODULE.write_report_exclusive(path, "{}\n")
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":
