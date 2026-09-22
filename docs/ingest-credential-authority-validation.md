@@ -8,7 +8,9 @@ Each credential entry must have a non-empty string key and a dictionary record w
 
 `protocols` must be a non-empty canonical list containing only supported protocol names (`rtmp` and/or `srt`): values are lowercase, duplicate-free, and sorted. `issue()` already normalizes caller input to this representation before persistence, so a duplicate or reordered persisted list cannot be produced by the normal writer and is treated as damaged/unsupported authority. Persisted `scope` values must be `INGEST` or `RELAY_CLIENT`. Credentials created before relay support did not persist `scope`, so an absent scope is intentionally interpreted as legacy `INGEST`; unknown or malformed scopes are rejected rather than guessed.
 
-`created_at` and `expires_at` must be finite JSON numbers and `expires_at` must be later than `created_at`. Optional `revoked_at` and `last_authenticated_at` values, when present, must also be finite numbers. Boolean, string, null (for required timestamps), `NaN`, and positive/negative infinity are rejected. JSON reads reject non-standard non-finite constants, and writes use `allow_nan=False`.
+`created_at` and `expires_at` must be finite, non-negative JSON numbers and `expires_at` must be later than `created_at`. Optional `revoked_at` and `last_authenticated_at` values, when present, must also be finite and non-negative. Boolean, string, null (for required timestamps), negative values, `NaN`, and positive/negative infinity are rejected. JSON reads reject non-standard non-finite constants, and writes use `allow_nan=False`.
+
+Runtime credential clocks use the same non-negative wall-clock boundary. `issue()`, `verify()`, `active_for_session()`, and `revoke_session()` reject a pre-epoch effective `now`; `revoke()` validates its default `time.time()` before mutating an active credential. Unix epoch `0.0` remains valid. Issuance also validates the derived `expires_at` before generating the raw publisher secret, so finite inputs whose addition overflows to a non-finite expiry fail before any credential material or authority mutation is created.
 
 ## Failure and recovery behavior
 
@@ -18,6 +20,6 @@ The store intentionally does not silently discard only the malformed credential.
 
 ## Tests
 
-`tests/test_ingest_authority_validation.py` covers non-finite timestamps, type confusion, missing required fields, identity/digest/protocol/scope invariants, canonical lowercase digests and normalized protocol lists, preservation of legacy pre-relay records without `scope`, non-destructive failure on invalid authority, and rejection of non-finite issuance time inputs before persistence. It also verifies that records emitted by `issue()` satisfy the stricter reader contract and reload successfully.
+`tests/test_ingest_authority_validation.py` covers non-finite and pre-epoch timestamps, type confusion, missing required fields, identity/digest/protocol/scope invariants, canonical lowercase digests and normalized protocol lists, preservation of legacy pre-relay records without `scope`, non-destructive failure on invalid authority, and rejection of invalid issuance time inputs before persistence. It also verifies default-clock rejection before secret generation, derived-expiry overflow rejection, non-destructive revoke failure under a pre-epoch clock, Unix epoch `0.0` compatibility, and that records emitted by `issue()` satisfy the stricter reader contract and reload successfully.
 
 This is one record-level slice of the broader persistent-state hardening tracked in #87. Session, entitlement, and node authority validation remain separate concerns.
