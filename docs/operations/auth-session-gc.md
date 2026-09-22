@@ -28,6 +28,12 @@ Oldest expired records are removed first with a stable token-hash tie breaker.
 If more expired records remain, the JSON result reports `expired_remaining` and
 a later maintenance run may continue cleanup.
 
+Expired-record candidate selection keeps only the oldest `--max-delete`
+entries in its selection buffer instead of materializing and sorting every
+expired Session. The authority itself is still read and validated in full so a
+corrupt record cannot be skipped; the bound applies to the additional
+expired-candidate selection memory, not to parsing the authority file itself.
+
 The collector validates its effective clock value before acquiring the
 authentication-state lock or reading authority. Both an explicitly supplied
 `now` and the default system clock must normalize to a finite runtime number;
