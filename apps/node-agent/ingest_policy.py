@@ -17,6 +17,7 @@ the next media-sampling slice.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -52,6 +53,18 @@ AUDIO_CODECS = {
 }
 ALLOWED_RESOLUTIONS = {(1280, 720), (1920, 1080)}
 SUPPORTED_SOURCE_TYPES = {"rtmpConn", "rtmpsConn", "srtConn"}
+
+
+def _validated_observed_at(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("ingest observation clock is invalid")
+    try:
+        observed_at = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise RuntimeError("ingest observation clock is invalid") from None
+    if not math.isfinite(observed_at) or observed_at < 0:
+        raise RuntimeError("ingest observation clock is invalid")
+    return observed_at
 
 
 @dataclass(frozen=True)
@@ -137,7 +150,7 @@ class IngestPolicyInspector:
         return None
 
     def observe(self, *, now: float | None = None) -> dict[str, Any]:
-        observed_at = time.time() if now is None else now
+        observed_at = _validated_observed_at(time.time() if now is None else now)
         path = self._path_snapshot()
         if not path or not path.get("online") or not isinstance(path.get("source"), dict):
             self._reset_sampling()
