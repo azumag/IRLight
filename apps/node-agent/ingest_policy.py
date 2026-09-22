@@ -55,15 +55,19 @@ ALLOWED_RESOLUTIONS = {(1280, 720), (1920, 1080)}
 SUPPORTED_SOURCE_TYPES = {"rtmpConn", "rtmpsConn", "srtConn"}
 
 
+class IngestObservationClockError(RuntimeError):
+    """The ingest observation clock cannot be safely published."""
+
+
 def _validated_observed_at(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise RuntimeError("ingest observation clock is invalid")
+        raise IngestObservationClockError("ingest observation clock is invalid")
     try:
         observed_at = float(value)
     except (OverflowError, TypeError, ValueError):
-        raise RuntimeError("ingest observation clock is invalid") from None
+        raise IngestObservationClockError("ingest observation clock is invalid") from None
     if not math.isfinite(observed_at) or observed_at < 0:
-        raise RuntimeError("ingest observation clock is invalid")
+        raise IngestObservationClockError("ingest observation clock is invalid")
     return observed_at
 
 
