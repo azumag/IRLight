@@ -396,7 +396,11 @@ def _write_authority(authority: dict[str, Any]) -> None:
 
 
 def _write_legacy_token_fuse(
-    digest: str, *, node_id: str, session_id: str
+    digest: str,
+    *,
+    node_id: str,
+    session_id: str,
+    consumed_at: float | None = None,
 ) -> None:
     """Keep rollback to the former split-ledger build fail-closed.
 
@@ -405,7 +409,9 @@ def _write_legacy_token_fuse(
     write fails; neither build can ever reuse it.
     """
     consumed_at = _require_finite_number(
-        time.time(), "bootstrap token timestamp", minimum=0
+        time.time() if consumed_at is None else consumed_at,
+        "bootstrap token timestamp",
+        minimum=0,
     )
     _refresh_legacy_paths()
     legacy = (
@@ -1260,6 +1266,17 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
             )
         raise HTTPException(status_code=409, detail="bootstrap token already consumed")
 
+    bootstrap_at = _require_finite_number(time.time(), "bootstrap clock", minimum=0)
+    try:
+        deadline_hours = float(os.getenv("NODE_ABSOLUTE_DEADLINE_HOURS", "12"))
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise NodeStateError("Node state has an invalid absolute deadline") from exc
+    configured_deadline = _require_finite_number(
+        bootstrap_at + deadline_hours * 3600,
+        "absolute deadline",
+        minimum=0,
+    )
+
     assigned_session = _resolve_assigned_session(request.provider_server_id)
     node_id = _issue_node_id(authority)
     session_id = (
@@ -1267,16 +1284,18 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
         if assigned_session is not None
         else str(uuid.uuid4())
     )
-    configured_deadline = time.time() + float(
-        os.getenv("NODE_ABSOLUTE_DEADLINE_HOURS", "12")
-    ) * 3600
     if assigned_session is not None and assigned_session.get("absolute_deadline_at") is not None:
         try:
             absolute_deadline = float(assigned_session["absolute_deadline_at"])
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             absolute_deadline = configured_deadline
     else:
         absolute_deadline = configured_deadline
+    absolute_deadline = _require_finite_number(
+        absolute_deadline,
+        "absolute deadline",
+        minimum=0,
+    )
 
     if assigned_session is not None:
         try:
@@ -1321,7 +1340,7 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
         "relay_client_ever_connected": False,
         "events": [],
         "next_event_seq": 1,
-        "created_at": time.time(),
+        "created_at": bootstrap_at,
         "access_token_sha256": node_access_digest,
     }
     authority["nodes"][node_id] = node
@@ -1331,7 +1350,7 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
     # ownership without the Control Plane persisting or reissuing a raw token.
     token_records[digest] = {
         "consumed": True,
-        "consumed_at": time.time(),
+        "consumed_at": bootstrap_at,
         "node_id": node_id,
         "session_id": session_id,
         "bootstrap_request_id": request.bootstrap_request_id,
@@ -1339,7 +1358,12 @@ def _bootstrap_locked(request: BootstrapRequest, digest: str) -> dict[str, Any]:
         "boot_id": request.boot_id,
         "node_access_token_sha256": node_access_digest,
     }
-    _write_legacy_token_fuse(digest, node_id=node_id, session_id=session_id)
+    _write_legacy_token_fuse(
+        digest,
+        node_id=node_id,
+        session_id=session_id,
+        consumed_at=bootstrap_at,
+    )
     _write_authority(authority)
 
     return _bootstrap_response(node, assigned_session, request.node_access_token)
