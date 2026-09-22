@@ -11,6 +11,8 @@ Issue #86 のうち、registration / login が行う PBKDF2-HMAC-SHA256 の**同
 
 slot は `flock` で保持するため worker process が異常終了しても kernel が lock を解放します。slot file 名は固定の `slot-N.lock` で、email、password、user ID、session token、request body などは保存しません。directory と slot file は symlink / non-regular-file を拒否し、実効 UID の所有物かつ group / other から書込み・探索できない owner-only permission であることを要求します。安全に admission boundary を構成できない場合は fail closed します。
 
+検証済み admission directory は no-follow の directory fd として pin し、slot はその fd から相対 open します。`flock` 取得後には directory と slot の device/inode identity を pathname 側と再確認します。検証から lock 取得までの間に directory または slot が置換された場合は、別の lock set へ逸脱せず `AUTH_COMPUTE_UNAVAILABLE` 側へ fail closed します。
+
 ## API の過負荷契約
 
 全 slot が使用中なら PBKDF2 を開始せず HTTP 503 と次の stable detail を返します。
