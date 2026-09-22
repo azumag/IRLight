@@ -125,6 +125,10 @@ class ControlPlaneUnavailable(RuntimeError):
     """A transport failure that is safe to retry before bootstrap completes."""
 
 
+class DeadlineClockError(RuntimeError):
+    """A malformed deadline or wall-clock sample that must fail closed."""
+
+
 def _env(name: str, required: bool = True) -> str:
     value = os.getenv(name, "")
     if required and not value:
@@ -149,6 +153,42 @@ def _secret_from_file_or_env(name: str) -> str:
         if value:
             return value
     return _env(name)
+
+
+def _validated_deadline_time(value: object, *, error_message: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DeadlineClockError(error_message)
+    try:
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise DeadlineClockError(error_message) from None
+    if not math.isfinite(parsed) or parsed < 0:
+        raise DeadlineClockError(error_message)
+    return parsed
+
+
+def _bootstrap_absolute_deadline(response: dict[str, object]) -> float | None:
+    if "absolute_deadline" not in response:
+        return None
+    return _validated_deadline_time(
+        response["absolute_deadline"],
+        error_message="bootstrap response has invalid absolute deadline",
+    )
+
+
+def _deadline_remaining(absolute_deadline: object) -> float:
+    deadline = _validated_deadline_time(
+        absolute_deadline,
+        error_message="absolute deadline is invalid",
+    )
+    now = _validated_deadline_time(
+        time.time(),
+        error_message="deadline wall clock is invalid",
+    )
+    remaining = deadline - now
+    if not math.isfinite(remaining):
+        raise DeadlineClockError("deadline arithmetic is invalid")
+    return remaining
 
 
 def http_json(
@@ -268,7 +308,7 @@ class NodeAgent:
         )
         self.node_id = str(response.get("node_id", "")) or None
         self.session_id = str(response.get("session_id", "")) or None
-        self.absolute_deadline = _as_float(response.get("absolute_deadline"))
+        self.absolute_deadline = _bootstrap_absolute_deadline(response)
         returned_access_token = str(response.get("node_access_token", "")) or None
         if returned_access_token and not secrets.compare_digest(
             returned_access_token, self.node_access_token or ""
@@ -477,13 +517,13 @@ class NodeAgent:
     def heartbeat(self) -> dict[str, object]:
         if self.node_id is None:
             raise RuntimeError("heartbeat before bootstrap")
+        remaining = None
+        if self.absolute_deadline is not None:
+            remaining = max(0.0, _deadline_remaining(self.absolute_deadline))
         health = self.supervisor.health()
         ingest = self._ingest_observation()
         egress = self._egress_observation()
         relay_client = self._relay_client_observation()
-        remaining = None
-        if self.absolute_deadline is not None:
-            remaining = max(0.0, self.absolute_deadline - time.time())
         active_publisher = bool(health.get("active_publisher", False))
         if ingest is not None:
             active_publisher = bool(ingest.get("online", False))
@@ -559,7 +599,17 @@ class NodeAgent:
             if self.absolute_deadline is None:
                 self._shutdown_event.wait(0.1)
                 continue
-            remaining = self.absolute_deadline - time.time()
+            try:
+                remaining = _deadline_remaining(self.absolute_deadline)
+            except DeadlineClockError as exc:
+                print(
+                    f"[agent] deadline clock invalid; stopping media: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._stop_requested = True
+                self._shutdown_event.set()
+                break
             if remaining <= 0:
                 print(
                     "[agent] absolute deadline reached; stopping media",
@@ -589,16 +639,29 @@ class NodeAgent:
             print(f"[agent] bootstrap start provider={self.provider_server_id}", flush=True)
             response = self.bootstrap_with_retry()
             session_id = self.session_id or "unknown"
-            if self.absolute_deadline is not None and self.absolute_deadline <= time.time():
-                print(
-                    "[agent] refusing media start after absolute deadline",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                self._stop_requested = True
-                self._shutdown_event.set()
-                exit_code = 1
-                return exit_code
+            if self.absolute_deadline is not None:
+                try:
+                    deadline_remaining = _deadline_remaining(self.absolute_deadline)
+                except DeadlineClockError as exc:
+                    print(
+                        f"[agent] refusing media start with invalid deadline clock: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._stop_requested = True
+                    self._shutdown_event.set()
+                    exit_code = 1
+                    return exit_code
+                if deadline_remaining <= 0:
+                    print(
+                        "[agent] refusing media start after absolute deadline",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._stop_requested = True
+                    self._shutdown_event.set()
+                    exit_code = 1
+                    return exit_code
             secret_path = self.write_secret(response)
             self.seed_control_state(response)
             if secret_path is None:
@@ -674,6 +737,16 @@ class NodeAgent:
                                     self._stop_requested = True
                                     self._shutdown_event.set()
                                     break
+                            except DeadlineClockError as exc:
+                                print(
+                                    f"[agent] deadline clock failed: {exc}",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                                self._stop_requested = True
+                                self._shutdown_event.set()
+                                exit_code = 1
+                                break
                             except ControlPlaneHTTPError as exc:
                                 print(
                                     f"[agent] heartbeat denied: {exc}",
@@ -719,13 +792,6 @@ class NodeAgent:
                 exit_code = 1
             self.remove_secret(secret_path)
         return exit_code
-
-
-def _as_float(value: object) -> float | None:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
 
 
 def build_supervisor() -> MediaSupervisor:
