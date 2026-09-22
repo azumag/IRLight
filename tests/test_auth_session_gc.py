@@ -54,6 +54,26 @@ class AuthSessionGcTest(unittest.TestCase):
         self.assertEqual(expired_count, 3)
         self.assertEqual(selected, [self._token_hash(1), self._token_hash(2)])
 
+    def test_selection_returns_only_oldest_window_from_large_expired_set(self) -> None:
+        state = {
+            "sessions": {
+                self._token_hash(value): self._record(
+                    expires_at=float(10_000 - value)
+                )
+                for value in range(1, 201)
+            }
+        }
+
+        selected, expired_count = _expired_token_hashes(
+            state, now=20_000.0, max_deletions=3
+        )
+
+        self.assertEqual(expired_count, 200)
+        self.assertEqual(
+            selected,
+            [self._token_hash(200), self._token_hash(199), self._token_hash(198)],
+        )
+
     def test_prune_deletes_only_expired_records_and_reports_remaining(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
             path = Path(tmp) / "auth_sessions.json"
