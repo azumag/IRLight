@@ -457,6 +457,8 @@ def supervise_attempt_child(
             except (EOFError, OSError):
                 pass
             process.join(0.0)
+            if pending_result is not None:
+                return pending_result
             return _local_failure(
                 connected_once=connected_once,
                 rendered_buffers=rendered_buffers,
