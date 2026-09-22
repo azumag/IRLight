@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from egress_status import read_egress_status
-from ingest_policy import IngestPolicyInspector
+from ingest_policy import IngestObservationClockError, IngestPolicyInspector
 from ingest_quality import IngestQualitySampler
 from relay_client import RelayClientObserver
 from runtime_secret_file import RuntimeSecretFileError, read_runtime_secret
@@ -420,21 +420,21 @@ class NodeAgent:
             return None
         try:
             observation = self.ingest_inspector.observe_and_enforce()
+        except IngestObservationClockError:
+            raise
         except RuntimeError as exc:
-            if str(exc) == "ingest observation clock is invalid":
-                raise
             print(f"[agent] ingest inspection failed: {exc}", file=sys.stderr, flush=True)
             fallback_observed_at_raw = time.time()
             if isinstance(fallback_observed_at_raw, bool) or not isinstance(
                 fallback_observed_at_raw, (int, float)
             ):
-                raise RuntimeError("ingest observation clock is invalid") from exc
+                raise IngestObservationClockError("ingest observation clock is invalid") from exc
             try:
                 fallback_observed_at = float(fallback_observed_at_raw)
             except (OverflowError, TypeError, ValueError):
-                raise RuntimeError("ingest observation clock is invalid") from exc
+                raise IngestObservationClockError("ingest observation clock is invalid") from exc
             if not math.isfinite(fallback_observed_at) or fallback_observed_at < 0:
-                raise RuntimeError("ingest observation clock is invalid") from exc
+                raise IngestObservationClockError("ingest observation clock is invalid") from exc
             return {
                 "status": "UNKNOWN",
                 "path": os.getenv("NODE_INGEST_PATH", "live/input"),
