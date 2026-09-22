@@ -226,7 +226,7 @@ class IngestObservationRequest(StrictRequest):
     quality: QualityObservation | None = None
     enforced: bool = False
     enforcement_error: str | None = Field(default=None, max_length=200)
-    observed_at: float
+    observed_at: float = Field(ge=0)
 
 
 class EgressObservationRequest(StrictRequest):
@@ -237,10 +237,10 @@ class EgressObservationRequest(StrictRequest):
     attempt: int = Field(default=0, ge=0)
     reason_code: str | None = Field(default=None, max_length=100)
     rendered_buffers: int = Field(default=0, ge=0)
-    next_retry_at: float | None = None
+    next_retry_at: float | None = Field(default=None, ge=0)
     destination_scheme: str | None = Field(default=None, max_length=20)
     destination_host: str | None = Field(default=None, max_length=253)
-    observed_at: float
+    observed_at: float = Field(ge=0)
 
 
 class RelayClientObservationRequest(StrictRequest):
@@ -248,7 +248,7 @@ class RelayClientObservationRequest(StrictRequest):
     connected: bool = False
     reader_count: int = Field(default=0, ge=0)
     reason_code: str | None = Field(default=None, max_length=100)
-    observed_at: float
+    observed_at: float = Field(ge=0)
 
 
 class HeartbeatRequest(StrictRequest):
@@ -991,7 +991,11 @@ def _ingest_event_types(
 
 
 def _append_ingest_events(
-    node: dict[str, Any], previous: object, current: dict[str, Any]
+    node: dict[str, Any],
+    previous: object,
+    current: dict[str, Any],
+    *,
+    occurred_at: float | None = None,
 ) -> list[str]:
     event_types = _ingest_event_types(
         previous,
@@ -1000,6 +1004,11 @@ def _append_ingest_events(
     )
     if not event_types:
         return []
+    event_occurred_at = _require_finite_number(
+        time.time() if occurred_at is None else occurred_at,
+        "ingest event clock",
+        minimum=0,
+    )
     events = list(node.get("events", []))
     next_sequence = int(node.get("next_event_seq", len(events) + 1))
     for event_type in event_types:
@@ -1007,7 +1016,7 @@ def _append_ingest_events(
             {
                 "sequence": next_sequence,
                 "type": event_type,
-                "occurred_at": time.time(),
+                "occurred_at": event_occurred_at,
                 "payload": {
                     "status": current.get("status"),
                     "source_type": current.get("source_type"),
@@ -1084,7 +1093,11 @@ def _egress_payload(node_id: str, current: dict[str, Any]) -> dict[str, Any]:
 
 
 def _append_egress_events(
-    node: dict[str, Any], previous: object, current: dict[str, Any]
+    node: dict[str, Any],
+    previous: object,
+    current: dict[str, Any],
+    *,
+    occurred_at: float | None = None,
 ) -> list[str]:
     event_types = _egress_event_types(
         previous,
@@ -1093,6 +1106,11 @@ def _append_egress_events(
     )
     if not event_types:
         return []
+    event_occurred_at = _require_finite_number(
+        time.time() if occurred_at is None else occurred_at,
+        "egress event clock",
+        minimum=0,
+    )
     events = list(node.get("events", []))
     next_sequence = int(node.get("next_event_seq", len(events) + 1))
     payload = _egress_payload(str(node.get("node_id", "")), current)
@@ -1101,7 +1119,7 @@ def _append_egress_events(
             {
                 "sequence": next_sequence,
                 "type": event_type,
-                "occurred_at": time.time(),
+                "occurred_at": event_occurred_at,
                 "payload": dict(payload),
             }
         )
@@ -1119,6 +1137,7 @@ def _apply_egress_to_session(
     node_id: str,
     event_types: list[str],
     current: dict[str, Any],
+    occurred_at: float | None = None,
 ) -> None:
     store = default_store()
     session = store.get(session_id)
@@ -1137,6 +1156,7 @@ def _apply_egress_to_session(
             reason_code=str(reason)[:100] if reason else None,
             payload=dict(payload),
             origin="node-agent",
+            occurred_at=occurred_at,
         )
     store.update(
         session_id,
@@ -1148,7 +1168,11 @@ def _apply_egress_to_session(
 
 
 def _append_relay_client_events(
-    node: dict[str, Any], previous: object, current: dict[str, Any]
+    node: dict[str, Any],
+    previous: object,
+    current: dict[str, Any],
+    *,
+    occurred_at: float | None = None,
 ) -> list[str]:
     previous = previous if isinstance(previous, dict) else {}
     previous_connected = bool(previous.get("connected", False))
@@ -1165,6 +1189,11 @@ def _append_relay_client_events(
     if not event_types:
         return []
 
+    event_occurred_at = _require_finite_number(
+        time.time() if occurred_at is None else occurred_at,
+        "relay client event clock",
+        minimum=0,
+    )
     events = list(node.get("events", []))
     next_sequence = int(node.get("next_event_seq", len(events) + 1))
     payload = _relay_client_payload(str(node.get("node_id", "")), current)
@@ -1173,7 +1202,7 @@ def _append_relay_client_events(
             {
                 "sequence": next_sequence,
                 "type": event_type,
-                "occurred_at": time.time(),
+                "occurred_at": event_occurred_at,
                 "payload": dict(payload),
             }
         )
@@ -1449,7 +1478,12 @@ def _heartbeat_locked(
     if request.ingest is not None:
         previous = node.get("ingest")
         current = request.ingest.model_dump()
-        event_types = _append_ingest_events(node, previous, current)
+        event_types = _append_ingest_events(
+            node,
+            previous,
+            current,
+            occurred_at=observed_at,
+        )
         node["ingest"] = current
         if node.get("session_assigned"):
             try:
@@ -1458,6 +1492,7 @@ def _heartbeat_locked(
                     node_id=node_id,
                     event_types=event_types,
                     observation=current,
+                    occurred_at=observed_at,
                 )
                 node.pop("session_event_error", None)
             except (KeyError, RuntimeError) as exc:
@@ -1466,7 +1501,10 @@ def _heartbeat_locked(
         previous_egress = node.get("egress")
         current_egress = request.egress.model_dump()
         egress_event_types = _append_egress_events(
-            node, previous_egress, current_egress
+            node,
+            previous_egress,
+            current_egress,
+            occurred_at=observed_at,
         )
         node["egress"] = current_egress
         node["egress_connected"] = bool(current_egress.get("connected", False))
@@ -1477,6 +1515,7 @@ def _heartbeat_locked(
                     node_id=node_id,
                     event_types=egress_event_types,
                     current=current_egress,
+                    occurred_at=observed_at,
                 )
                 node.pop("egress_session_event_error", None)
             except (KeyError, RuntimeError) as exc:
@@ -1485,7 +1524,10 @@ def _heartbeat_locked(
         previous_relay = node.get("relay_client")
         current_relay = request.relay_client.model_dump()
         relay_event_types = _append_relay_client_events(
-            node, previous_relay, current_relay
+            node,
+            previous_relay,
+            current_relay,
+            occurred_at=observed_at,
         )
         node["relay_client"] = current_relay
         if node.get("session_assigned") and relay_event_types:
