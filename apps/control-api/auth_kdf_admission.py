@@ -241,9 +241,11 @@ def auth_kdf_slot(
             )
         yield
     finally:
-        if acquired_fd is not None:
-            try:
-                fcntl.flock(acquired_fd, fcntl.LOCK_UN)
-            finally:
-                os.close(acquired_fd)
-        os.close(lock_dir_fd)
+        try:
+            if acquired_fd is not None:
+                try:
+                    fcntl.flock(acquired_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(acquired_fd)
+        finally:
+            os.close(lock_dir_fd)
