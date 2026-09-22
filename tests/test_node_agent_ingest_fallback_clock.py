@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "node-agent"))
 
 from agent import NodeAgent  # noqa: E402
+from ingest_policy import IngestObservationClockError  # noqa: E402
 from supervisor import FakeSupervisor  # noqa: E402
 
 
@@ -21,7 +22,7 @@ class FailingIngestInspector:
 
 class InvalidClockIngestInspector:
     def observe_and_enforce(self) -> dict[str, object]:
-        raise RuntimeError("ingest observation clock is invalid")
+        raise IngestObservationClockError("ingest observation clock is invalid")
 
 
 class NodeAgentIngestFallbackClockTest(unittest.TestCase):
@@ -55,7 +56,7 @@ class NodeAgentIngestFallbackClockTest(unittest.TestCase):
         self.agent.ingest_inspector = InvalidClockIngestInspector()  # type: ignore[assignment]
         with patch("agent.time.time", return_value=123.0) as wall_clock:
             with self.assertRaisesRegex(
-                RuntimeError, "ingest observation clock is invalid"
+                IngestObservationClockError, "ingest observation clock is invalid"
             ):
                 self.agent._ingest_observation()
         wall_clock.assert_not_called()
@@ -83,7 +84,7 @@ class NodeAgentIngestFallbackClockTest(unittest.TestCase):
                 "agent.time.time", return_value=invalid
             ):
                 with self.assertRaisesRegex(
-                    RuntimeError, "ingest observation clock is invalid"
+                    IngestObservationClockError, "ingest observation clock is invalid"
                 ):
                     self.agent._ingest_observation()
 
@@ -96,7 +97,7 @@ class NodeAgentIngestFallbackClockTest(unittest.TestCase):
             "agent.http_json"
         ) as http_json:
             with self.assertRaisesRegex(
-                RuntimeError, "ingest observation clock is invalid"
+                IngestObservationClockError, "ingest observation clock is invalid"
             ):
                 self.agent.heartbeat()
 
