@@ -17,6 +17,13 @@ from attempt_supervisor import (
     parse_child_attempt_result,
     reap_child,
 )
+from destination_guard import (
+    DestinationGuardError,
+    read_verified_peer_ip,
+    validate_destination_runtime,
+)
+from rtmp_sink import destination_url_for_sink
+from secret_inputs import read_destination_url, read_input_uri
 
 
 LOG = logging.getLogger("irlight.egress.isolated-attempt")
@@ -68,16 +75,29 @@ def legacy_isolation_enabled(flag: object, sink_factory: str) -> bool:
     return flag == "1" and sink_factory != "rtmp2sink"
 
 
-def _nonnegative_timeout(value: object, *, name: str) -> float:
+def _finite_number(value: object, *, name: str) -> float:
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be a finite non-negative number")
+        raise ValueError(f"{name} must be a finite number")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite non-negative number") from exc
-    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
+
+
+def _nonnegative_timeout(value: object, *, name: str) -> float:
+    parsed = _finite_number(value, name=name)
+    if parsed < 0:
         raise ValueError(f"{name} must be a finite non-negative number")
     return parsed
+
+
+def _legacy_nonnegative_timer(value: object, *, name: str) -> float:
+    """Preserve EgressAttempt's historical negative-to-zero timer semantics."""
+
+    return max(0.0, _finite_number(value, name=name))
 
 
 def _env_timeout(name: str, default: float) -> float:
@@ -149,21 +169,44 @@ def _watch_for_teardown(
     """Emit a pre-teardown result snapshot if the GLib loop stops but run blocks."""
 
     saw_running = False
+    initial_reason = str(getattr(attempt.result, "reason_code", ""))
     while not done.wait(0.01):
         try:
             running = bool(attempt.loop.is_running())
+            poll_installed = getattr(attempt, "_poll_source_id", None) is not None
+            reason_changed = (
+                str(getattr(attempt.result, "reason_code", "")) != initial_reason
+            )
         except Exception:
             return
         if running:
             saw_running = True
             continue
-        if saw_running:
+        if saw_running or (poll_installed and reason_changed):
             _safe_send(
                 connection,
                 {"type": "teardown", "result": _result_payload(attempt.result)},
                 send_lock,
             )
             return
+
+
+def _send_local_failure(connection: Any, send_lock: threading.Lock) -> None:
+    _safe_send(
+        connection,
+        {
+            "type": "result",
+            "result": {
+                "reason_code": "LOCAL_PIPELINE_FAILED",
+                "connected_once": False,
+                "rendered_buffers": 0,
+                "terminal": True,
+                "error_domain": None,
+                "error_code": None,
+            },
+        },
+        send_lock,
+    )
 
 
 def _child_attempt_main(
@@ -182,14 +225,9 @@ def _child_attempt_main(
     done = threading.Event()
     monitor: threading.Thread | None = None
     try:
+        # Import the GStreamer-heavy module only in the spawned interpreter.
+        # This avoids forking after the parent has initialized Gst/GLib.
         import egress
-        from destination_guard import (
-            DestinationGuardError,
-            read_verified_peer_ip,
-            validate_destination_runtime,
-        )
-        from rtmp_sink import destination_url_for_sink
-        from secret_inputs import read_destination_url, read_input_uri
 
         egress.Gst.init(None)
         input_uri = read_input_uri()
@@ -246,27 +284,27 @@ def _child_attempt_main(
             {"type": "result", "result": _result_payload(result)},
             send_lock,
         )
-    except Exception as exc:
-        # Keep only the destination-guard classification. Everything else is a
-        # local, terminal child failure; raw exception text is deliberately not
-        # sent to the parent or logged.
-        reason_code = getattr(exc, "reason_code", "LOCAL_PIPELINE_FAILED")
-        terminal = bool(getattr(exc, "terminal", True))
+    except DestinationGuardError as exc:
         _safe_send(
             connection,
             {
                 "type": "result",
                 "result": {
-                    "reason_code": str(reason_code),
+                    "reason_code": exc.reason_code,
                     "connected_once": False,
                     "rendered_buffers": 0,
-                    "terminal": terminal,
+                    "terminal": exc.terminal,
                     "error_domain": None,
                     "error_code": None,
                 },
             },
             send_lock,
         )
+    except Exception:
+        # Raw exception text can contain a credentialed sink URI. Collapse every
+        # other child failure to one fixed local reason instead of serializing or
+        # logging exception details.
+        _send_local_failure(connection, send_lock)
     finally:
         done.set()
         if monitor is not None:
@@ -305,11 +343,8 @@ def supervise_attempt_child(
 ) -> ChildAttemptResult:
     """Own one child until a validated result is received or the PID is fenced."""
 
-    connect_timeout = max(
-        0.0,
-        _nonnegative_timeout(
-            connect_timeout_seconds, name="connect_timeout_seconds"
-        ),
+    connect_timeout = _legacy_nonnegative_timer(
+        connect_timeout_seconds, name="connect_timeout_seconds"
     )
     teardown_timeout = _nonnegative_timeout(
         teardown_timeout_seconds, name="teardown_timeout_seconds"
@@ -375,19 +410,20 @@ def supervise_attempt_child(
                         on_connected(rendered_buffers)
                 elif on_progress is not None:
                     on_progress(rendered_buffers)
-                continue
+            else:
+                assert message.result is not None
+                pending_result = message.result
+                connected_once = connected_once or pending_result.connected_once
+                rendered_buffers = max(rendered_buffers, pending_result.rendered_buffers)
+                if message.kind == "teardown":
+                    teardown_deadline = monotonic() + teardown_timeout
+                else:
+                    fence(natural_timeout=_NATURAL_REAP_SECONDS)
+                    return pending_result
 
-            assert message.result is not None
-            pending_result = message.result
-            connected_once = connected_once or pending_result.connected_once
-            rendered_buffers = max(rendered_buffers, pending_result.rendered_buffers)
-            if message.kind == "teardown":
-                teardown_deadline = monotonic() + teardown_timeout
-                continue
-
-            fence(natural_timeout=_NATURAL_REAP_SECONDS)
-            return pending_result
-
+        # Always evaluate deadlines after one IPC message. A misbehaving child
+        # must not keep user-stop or teardown fencing alive forever by flooding
+        # the parent with otherwise valid progress messages.
         now = monotonic()
         if stop_deadline is not None and now >= stop_deadline:
             fence(natural_timeout=0.0)
@@ -450,8 +486,12 @@ class IsolatedEgressAttempt:
                 "EGRESS_URL_FILE", "/run/irlight/egress-secrets/egress_url"
             ),
             sink_factory=str(sink_factory or "rtmpsink"),
-            connect_timeout_seconds=max(0.0, float(connect_timeout_seconds)),
-            status_heartbeat_seconds=max(0.0, float(status_heartbeat_seconds)),
+            connect_timeout_seconds=_legacy_nonnegative_timer(
+                connect_timeout_seconds, name="connect_timeout_seconds"
+            ),
+            status_heartbeat_seconds=_legacy_nonnegative_timer(
+                status_heartbeat_seconds, name="status_heartbeat_seconds"
+            ),
         )
         self.teardown_timeout_seconds = _env_timeout(
             TEARDOWN_TIMEOUT_ENV, _DEFAULT_TEARDOWN_TIMEOUT_SECONDS
