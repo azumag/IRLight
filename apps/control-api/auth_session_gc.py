@@ -49,13 +49,13 @@ class PruneResult:
 def _validated_now(value: float | None) -> float:
     candidate = time.time() if value is None else value
     if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
-        raise ValueError("now must be a finite number")
+        raise ValueError("now must be a finite non-negative number")
     try:
         number = float(candidate)
     except (OverflowError, ValueError):
-        raise ValueError("now must be a finite number") from None
-    if not math.isfinite(number):
-        raise ValueError("now must be a finite number")
+        raise ValueError("now must be a finite non-negative number") from None
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("now must be a finite non-negative number")
     return number
 
 

@@ -174,11 +174,13 @@ class AuthSessionGcTest(unittest.TestCase):
 
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
 
-    def test_max_delete_and_now_must_be_bounded_and_finite(self) -> None:
+    def test_max_delete_and_now_must_be_bounded_finite_and_non_negative(self) -> None:
         with self.assertRaises(ValueError):
             prune_expired_sessions(max_deletions=0)
         with self.assertRaises(ValueError):
             prune_expired_sessions(max_deletions=MAX_DELETIONS_PER_RUN + 1)
+        with self.assertRaises(ValueError):
+            prune_expired_sessions(now=-1.0)
         with self.assertRaises(ValueError):
             prune_expired_sessions(now=float("inf"))
         with self.assertRaises(ValueError):
@@ -187,11 +189,28 @@ class AuthSessionGcTest(unittest.TestCase):
             prune_expired_sessions(now=10**10_000)
 
     def test_default_clock_is_validated_before_authority_access(self) -> None:
-        with patch("auth_session_gc.time.time", return_value=float("inf")):
-            with patch("auth_session_gc._state_lock") as state_lock:
-                with self.assertRaises(ValueError):
-                    prune_expired_sessions()
-                state_lock.assert_not_called()
+        for invalid_now in (-1.0, float("inf")):
+            with self.subTest(invalid_now=invalid_now):
+                with patch("auth_session_gc.time.time", return_value=invalid_now):
+                    with patch("auth_session_gc._state_lock") as state_lock:
+                        with self.assertRaises(ValueError):
+                            prune_expired_sessions()
+                        state_lock.assert_not_called()
+
+    def test_unix_epoch_zero_remains_a_valid_gc_clock(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="irlight-auth-gc-state-") as tmp:
+            path = Path(tmp) / "auth_sessions.json"
+            original = json.dumps(
+                {"sessions": {self._token_hash(1): self._record(expires_at=10.0)}}
+            )
+            path.write_text(original, encoding="utf-8")
+
+            result = prune_expired_sessions(now=0.0, path=path)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(result.scanned, 1)
+            self.assertEqual(result.deleted, 0)
+            self.assertEqual(result.expired_remaining, 0)
 
 
 if __name__ == "__main__":

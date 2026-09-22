@@ -18,6 +18,8 @@ Authentication-session records require a non-empty user ID and a CSRF token in t
 
 Authentication uses one fail-closed effective-clock validator for request expiry checks and authority writers. `NaN`, positive or negative infinity, negative timestamps, and other values that cannot be represented as a finite float raise `AuthStateError`. Registration validates this clock before password derivation or authority access, and session creation validates it before token generation or authority mutation, so a broken system clock cannot publish records that the corresponding reader rejects. The request-authentication path likewise validates its clock before it opens the session authority, preventing a `NaN` or pre-epoch clock from making an already expired session appear active. Unix epoch `0.0` remains valid.
 
+The bounded authentication-session GC applies the same wall-clock boundary before acquiring the authentication-state lock or reading authority. Its explicit `now` hook and default `time.time()` path both reject booleans, non-numeric values, overflow, non-finite values, and pre-epoch values while continuing to accept Unix epoch `0.0`. A broken pre-epoch clock therefore cannot silently classify every retained session as unexpired and publish misleading cleanup results; the reaper surfaces the existing fixed `AUTH_SESSION_GC_FAILED` failure instead.
+
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
 
 ## API failure contract

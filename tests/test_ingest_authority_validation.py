@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,14 +42,14 @@ def _write_state(state_dir: str, record: dict[str, object]) -> Path:
 
 
 class IngestAuthorityValidationTest(unittest.TestCase):
-    def test_non_finite_persisted_timestamps_fail_closed(self) -> None:
+    def test_invalid_persisted_timestamps_fail_closed(self) -> None:
         for field in (
             "created_at",
             "expires_at",
             "revoked_at",
             "last_authenticated_at",
         ):
-            for value in (math.nan, math.inf, -math.inf):
+            for value in (-1.0, math.nan, math.inf, -math.inf):
                 with self.subTest(field=field, value=value):
                     with tempfile.TemporaryDirectory() as state_dir:
                         record = _record()
@@ -179,11 +180,12 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                 Path(state_dir, ".ingest_credentials.json.initialized").exists()
             )
 
-    def test_issue_rejects_non_finite_or_oversized_time_inputs_before_persisting(self) -> None:
+    def test_issue_rejects_invalid_time_inputs_before_persisting(self) -> None:
         for field, kwargs in (
             ("ttl_seconds", {"ttl_seconds": math.nan}),
             ("ttl_seconds", {"ttl_seconds": math.inf}),
             ("ttl_seconds", {"ttl_seconds": 10**10000}),
+            ("now", {"now": -1.0}),
             ("now", {"now": math.nan}),
             ("now", {"now": math.inf}),
             ("now", {"now": 10**10000}),
@@ -199,6 +201,68 @@ class IngestAuthorityValidationTest(unittest.TestCase):
                             **kwargs,
                         )
                     self.assertFalse(Path(state_dir, "ingest_credentials.json").exists())
+
+    def test_issue_rejects_pre_epoch_default_clock_before_secret_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            with patch("ingest_store.time.time", return_value=-1.0):
+                with patch("ingest_store.secrets.token_urlsafe") as token_urlsafe:
+                    with self.assertRaisesRegex(ValueError, "non-negative"):
+                        store.issue(
+                            session_id="session-1",
+                            user_id="user-1",
+                            protocols=["rtmp"],
+                        )
+                    token_urlsafe.assert_not_called()
+            self.assertFalse(Path(state_dir, "ingest_credentials.json").exists())
+
+    def test_issue_rejects_overflowed_expiry_before_secret_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            with patch("ingest_store.secrets.token_urlsafe") as token_urlsafe:
+                with self.assertRaises(ValueError):
+                    store.issue(
+                        session_id="session-1",
+                        user_id="user-1",
+                        protocols=["rtmp"],
+                        now=sys.float_info.max,
+                        ttl_seconds=sys.float_info.max,
+                    )
+                token_urlsafe.assert_not_called()
+            self.assertFalse(Path(state_dir, "ingest_credentials.json").exists())
+
+    def test_revoke_rejects_pre_epoch_clock_without_rewriting_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            public, _secret = store.issue(
+                session_id="session-1",
+                user_id="user-1",
+                protocols=["rtmp"],
+                now=100.0,
+            )
+            path = Path(state_dir, "ingest_credentials.json")
+            before = path.read_bytes()
+
+            with patch("ingest_store.time.time", return_value=-1.0):
+                with self.assertRaisesRegex(ValueError, "non-negative"):
+                    store.revoke(str(public["id"]))
+
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_unix_epoch_zero_remains_valid_for_issuance(self) -> None:
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = IngestCredentialStore(state_dir)
+            public, _secret = store.issue(
+                session_id="session-1",
+                user_id="user-1",
+                protocols=["rtmp"],
+                ttl_seconds=1.0,
+                now=0.0,
+            )
+
+            self.assertEqual(public["created_at"], 0.0)
+            self.assertEqual(public["expires_at"], 1.0)
+            self.assertIsNotNone(IngestCredentialStore(state_dir).get(str(public["id"])))
 
 
 if __name__ == "__main__":
