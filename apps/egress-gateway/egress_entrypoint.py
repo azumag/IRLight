@@ -6,6 +6,14 @@ import sys
 from pathlib import Path
 
 import egress
+from isolated_attempt import (
+    CANARY_ENV,
+    KILL_TIMEOUT_ENV,
+    TERMINATE_TIMEOUT_ENV,
+    TEARDOWN_TIMEOUT_ENV,
+    IsolatedEgressAttempt,
+    legacy_isolation_enabled,
+)
 from rtmp_sink import destination_url_for_sink, parse_rtmp_sink_factory
 from runtime_timer_config import RuntimeTimerConfigError, finite_env_float
 from secret_inputs import read_destination_url as _read_secret_destination_url
@@ -19,6 +27,11 @@ _FINITE_RUNTIME_TIMERS = (
     ("EGRESS_STATUS_HEARTBEAT_SECONDS", 5.0),
     ("EGRESS_CONNECT_STABILITY_SECONDS", 3.0),
     ("EGRESS_OUTPUT_STALL_TIMEOUT_SECONDS", 5.0),
+)
+_ISOLATION_TIMERS = (
+    (TEARDOWN_TIMEOUT_ENV, 8.0),
+    (TERMINATE_TIMEOUT_ENV, 2.0),
+    (KILL_TIMEOUT_ENV, 2.0),
 )
 _STACK_SIGNAL_DIAGNOSTICS_ENV = "EGRESS_STACK_SIGNAL_DIAGNOSTICS"
 
@@ -46,6 +59,31 @@ def _validate_runtime_timers() -> None:
         finite_env_float(name, default)
 
 
+def _configure_attempt_isolation() -> None:
+    """Opt the legacy sink into the canary without changing the default path."""
+
+    try:
+        sink_factory = parse_rtmp_sink_factory(os.getenv("EGRESS_RTMP_SINK_FACTORY"))
+    except ValueError:
+        # Keep the existing sink validation/status path in egress.main().
+        return
+    if not legacy_isolation_enabled(os.getenv(CANARY_ENV), sink_factory):
+        return
+
+    for name, default in _ISOLATION_TIMERS:
+        value = finite_env_float(name, default)
+        if value < 0:
+            raise RuntimeTimerConfigError(
+                f"{name} must be a finite non-negative number"
+            )
+
+    # EgressGateway resolves EgressAttempt at runtime. The spawned child imports
+    # egress in a fresh interpreter, so it still receives the original
+    # GStreamer-backed class rather than recursively creating another wrapper.
+    egress.EgressAttempt = IsolatedEgressAttempt
+    LOG.info("legacy egress attempt process-isolation canary enabled")
+
+
 def _install_stack_diagnostics() -> None:
     # Preserve production signal semantics unless a diagnostic harness opts in.
     if os.getenv(_STACK_SIGNAL_DIAGNOSTICS_ENV) != "1":
@@ -71,6 +109,7 @@ def _install_stack_diagnostics() -> None:
 def main() -> int:
     try:
         _validate_runtime_timers()
+        _configure_attempt_isolation()
     except RuntimeTimerConfigError:
         # The parser deliberately omits raw values. Keep startup diagnostics
         # generic as well so environment contents never reach logs.
