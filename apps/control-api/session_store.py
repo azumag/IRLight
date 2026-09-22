@@ -62,6 +62,22 @@ FORMAT_REJECTION_REASONS = {
     "RESOLUTION_UNSUPPORTED",
     "AUDIO_CHANNELS_UNSUPPORTED",
 }
+SESSION_REQUIRED_TIMESTAMPS = frozenset({"created_at", "updated_at"})
+SESSION_OPTIONAL_TIMESTAMPS = frozenset(
+    {
+        "relay_client_updated_at",
+        "node_registered_at",
+        "node_last_heartbeat_at",
+        "provisioning_started_at",
+        "ready_at",
+        "first_ingest_at",
+        "last_ingest_at",
+        "hold_deadline_at",
+        "recovery_candidate_since",
+        "absolute_deadline_at",
+    }
+)
+SESSION_TIMESTAMP_FIELDS = SESSION_REQUIRED_TIMESTAMPS | SESSION_OPTIONAL_TIMESTAMPS
 
 TRANSITIONS: dict[str, set[str]] = {
     "STOPPED": {"PROVISIONING"},
@@ -110,6 +126,47 @@ def _reject_non_finite_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number {value} is not allowed")
 
 
+def _validated_timestamp(value: object, *, error: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SessionStateError(error)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise SessionStateError(error) from None
+    if not math.isfinite(number) or number < 0.0:
+        raise SessionStateError(error)
+    return number
+
+
+def _validated_now(*, context: str = "Session writer clock") -> float:
+    return _validated_timestamp(time.time(), error=f"{context} is invalid")
+
+
+def _validated_derived_timestamp(
+    base: float,
+    offset: object,
+    *,
+    context: str,
+) -> float:
+    try:
+        candidate = base + offset  # type: ignore[operator]
+    except (OverflowError, TypeError, ValueError):
+        raise SessionStateError(f"{context} is invalid") from None
+    return _validated_timestamp(candidate, error=f"{context} is invalid")
+
+
+def _validate_timestamp_changes(changes: dict[str, Any], *, context: str) -> None:
+    for field in SESSION_TIMESTAMP_FIELDS:
+        if field not in changes:
+            continue
+        value = changes[field]
+        if value is None:
+            if field in SESSION_REQUIRED_TIMESTAMPS:
+                raise SessionStateError(f"{context} has invalid {field}")
+            continue
+        _validated_timestamp(value, error=f"{context} has invalid {field}")
+
+
 def _require_nonempty_string(
     record: dict[str, Any], field: str, *, context: str
 ) -> str:
@@ -125,15 +182,7 @@ def _require_finite_number(
     value = record.get(field)
     if value is None and optional:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SessionStateError(f"{context} has invalid {field}")
-    try:
-        number = float(value)
-    except (OverflowError, ValueError):
-        raise SessionStateError(f"{context} has invalid {field}") from None
-    if not math.isfinite(number):
-        raise SessionStateError(f"{context} has invalid {field}")
-    return number
+    return _validated_timestamp(value, error=f"{context} has invalid {field}")
 
 
 def _require_bool(
@@ -169,7 +218,18 @@ def new_session(
     egress_mode: str = "DIRECT_PUSH",
     absolute_deadline_hours: float | None = None,
 ) -> dict[str, Any]:
-    now = time.time()
+    now = _validated_now(context="Session creation clock")
+    absolute_deadline_at = None
+    if absolute_deadline_hours:
+        try:
+            deadline_offset = absolute_deadline_hours * 3600
+        except (OverflowError, TypeError, ValueError):
+            raise SessionStateError("Session absolute deadline is invalid") from None
+        absolute_deadline_at = _validated_derived_timestamp(
+            now,
+            deadline_offset,
+            context="Session absolute deadline",
+        )
     return {
         "session_id": new_session_id(),
         "user_id": user_id,
@@ -203,9 +263,7 @@ def new_session(
         "hold_deadline_at": None,
         "recovery_candidate_since": None,
         "recovery_candidate_source_id": None,
-        "absolute_deadline_at": (
-            now + absolute_deadline_hours * 3600 if absolute_deadline_hours else None
-        ),
+        "absolute_deadline_at": absolute_deadline_at,
         "entitlement_id": None,
         "entitlement_reserved": False,
         "cleanup_pending": False,
@@ -301,19 +359,6 @@ class SessionStore:
 
     @staticmethod
     def _validate_sessions(sessions: dict[Any, Any]) -> None:
-        required_timestamps = ("created_at", "updated_at")
-        optional_timestamps = (
-            "relay_client_updated_at",
-            "node_registered_at",
-            "node_last_heartbeat_at",
-            "provisioning_started_at",
-            "ready_at",
-            "first_ingest_at",
-            "last_ingest_at",
-            "hold_deadline_at",
-            "recovery_candidate_since",
-            "absolute_deadline_at",
-        )
         optional_booleans = (
             "entitlement_reserved",
             "provisioning_in_progress",
@@ -347,9 +392,9 @@ class SessionStore:
                 record, "version", context="Session state record"
             )
             _require_bool(record, "cleanup_pending", context="Session state record")
-            for field in required_timestamps:
+            for field in SESSION_REQUIRED_TIMESTAMPS:
                 _require_finite_number(record, field, context="Session state record")
-            for field in optional_timestamps:
+            for field in SESSION_OPTIONAL_TIMESTAMPS:
                 if field in record:
                     _require_finite_number(
                         record,
@@ -559,6 +604,10 @@ class SessionStore:
         origin: str,
         occurred_at: float,
     ) -> dict[str, Any]:
+        occurred_at = _validated_timestamp(
+            occurred_at,
+            error="Session event has invalid occurred_at",
+        )
         sequence = self._next_event_sequence(session)
         event = {
             "sequence": sequence,
@@ -609,9 +658,10 @@ class SessionStore:
                 existing.get("entitlement_reserved")
                 or existing.get("status") in CAPACITY_STATES
             ):
+                updated_at = _validated_now(context="Session reservation clock")
                 existing["entitlement_id"] = entitlement_id
                 existing["entitlement_reserved"] = True
-                existing["updated_at"] = time.time()
+                existing["updated_at"] = updated_at
                 self._persist()
                 return dict(existing)
 
@@ -626,6 +676,7 @@ class SessionStore:
                     f"concurrent session limit exceeded ({occupied}/{max_concurrent_sessions})"
                 )
 
+            is_new = existing is None
             if existing is None:
                 existing = new_session(
                     user_id=user_id,
@@ -633,10 +684,12 @@ class SessionStore:
                     absolute_deadline_hours=12.0,
                 )
                 existing["session_id"] = session_id
-                self._sessions[session_id] = existing
+            updated_at = _validated_now(context="Session reservation clock")
             existing["entitlement_id"] = entitlement_id
             existing["entitlement_reserved"] = True
-            existing["updated_at"] = time.time()
+            existing["updated_at"] = updated_at
+            if is_new:
+                self._sessions[session_id] = existing
             self._persist()
             return dict(existing)
 
@@ -705,6 +758,7 @@ class SessionStore:
                     f"concurrent session limit exceeded ({occupied}/{max_concurrent_sessions})"
                 )
 
+            is_new = existing is None
             if existing is None:
                 existing = new_session(
                     user_id=user_id,
@@ -713,7 +767,7 @@ class SessionStore:
                     absolute_deadline_hours=12.0,
                 )
                 existing["session_id"] = session_id
-                self._sessions[session_id] = existing
+            updated_at = _validated_now(context="Session prepare clock")
             existing.update(
                 {
                     "environment": environment,
@@ -723,9 +777,11 @@ class SessionStore:
                     "idempotency_key": idempotency_key,
                     "entitlement_id": entitlement_id,
                     "entitlement_reserved": True,
-                    "updated_at": time.time(),
+                    "updated_at": updated_at,
                 }
             )
+            if is_new:
+                self._sessions[session_id] = existing
             self._persist()
             return dict(existing), False
 
@@ -799,12 +855,14 @@ class SessionStore:
             ]
 
     def update(self, session_id: str, **changes: Any) -> dict[str, Any]:
+        _validate_timestamp_changes(changes, context="Session update")
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
+            updated_at = _validated_now(context="Session update clock")
             session.update(changes)
-            session["updated_at"] = time.time()
+            session["updated_at"] = updated_at
             self._persist()
             return dict(session)
 
@@ -816,6 +874,10 @@ class SessionStore:
         started_at: float,
     ) -> dict[str, Any]:
         """Atomically acquire the single provisioning lease for a Session."""
+        started_at = _validated_timestamp(
+            started_at,
+            error="Session provisioning has invalid started_at",
+        )
         with self._state_lock(exclusive=True):
             self._reject_active_cleanup_lease_locked(session_id)
             session = self._sessions.get(session_id)
@@ -829,6 +891,7 @@ class SessionStore:
                 raise ProvisioningInProgress(
                     f"session {session_id} is already being provisioned"
                 )
+            updated_at = _validated_now(context="Session provisioning clock")
             session.update(
                 {
                     "status": "PROVISIONING",
@@ -837,7 +900,7 @@ class SessionStore:
                     "provisioning_cancel_requested": False,
                     "provisioning_started_at": started_at,
                     "cleanup_pending": False,
-                    "updated_at": time.time(),
+                    "updated_at": updated_at,
                 }
             )
             self._persist()
@@ -849,11 +912,18 @@ class SessionStore:
         lease = self._orphan_cleanup_leases.get(session_id)
         if lease is None:
             return None
-        now = time.time() if current is None else current
-        try:
-            expires_at = float(lease.get("expires_at", 0))
-        except (TypeError, ValueError):
-            expires_at = 0
+        now = (
+            _validated_now(context="Session cleanup lease clock")
+            if current is None
+            else _validated_timestamp(
+                current,
+                error="Session cleanup lease clock is invalid",
+            )
+        )
+        expires_at = _validated_timestamp(
+            lease.get("expires_at"),
+            error="cleanup lease record has invalid expires_at",
+        )
         if expires_at <= now:
             return None
         return lease
@@ -888,15 +958,24 @@ class SessionStore:
                 return None
             if self._active_cleanup_lease_locked(session_id) is not None:
                 return None
+            now = _validated_now(context="Orphan cleanup lease clock")
+            try:
+                lease_offset = max(1.0, lease_seconds)
+            except (TypeError, ValueError):
+                raise SessionStateError("Orphan cleanup lease expiry is invalid") from None
+            expires_at = _validated_derived_timestamp(
+                now,
+                lease_offset,
+                context="Orphan cleanup lease expiry",
+            )
             lease_id = str(uuid.uuid4())
-            now = time.time()
             self._orphan_cleanup_leases[session_id] = {
                 "lease_id": lease_id,
                 "scope": "orphan",
                 "resource_id": resource_id,
                 "resource_kind": resource_kind,
                 "created_at": now,
-                "expires_at": now + max(1.0, lease_seconds),
+                "expires_at": expires_at,
             }
             self._persist()
             return lease_id
@@ -935,14 +1014,23 @@ class SessionStore:
                 return None
             if self._active_cleanup_lease_locked(session_id) is not None:
                 return None
+            now = _validated_now(context="Session cleanup lease clock")
+            try:
+                lease_offset = max(1.0, lease_seconds)
+            except (TypeError, ValueError):
+                raise SessionStateError("Session cleanup lease expiry is invalid") from None
+            expires_at = _validated_derived_timestamp(
+                now,
+                lease_offset,
+                context="Session cleanup lease expiry",
+            )
             lease_id = str(uuid.uuid4())
-            now = time.time()
             self._orphan_cleanup_leases[session_id] = {
                 "lease_id": lease_id,
                 "scope": "session",
                 "expected_states": sorted(allowed),
                 "created_at": now,
-                "expires_at": now + max(1.0, lease_seconds),
+                "expires_at": expires_at,
             }
             self._persist()
             return lease_id
@@ -982,6 +1070,7 @@ class SessionStore:
         **changes: Any,
     ) -> dict[str, Any]:
         """Persist provider IDs and advance only while the lease is owned."""
+        _validate_timestamp_changes(changes, context="Session provisioning checkpoint")
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -991,6 +1080,7 @@ class SessionStore:
                     f"provisioning lease for {session_id} is no longer owned"
                 )
 
+            updated_at = _validated_now(context="Session provisioning checkpoint clock")
             session.update(changes)
             current = str(session.get("status"))
             cancelled = bool(session.get("provisioning_cancel_requested")) or current in {
@@ -1009,7 +1099,7 @@ class SessionStore:
                 session["provisioning_operation_id"] = None
                 session["provisioning_in_progress"] = False
                 session["provisioning_cancel_requested"] = False
-            session["updated_at"] = time.time()
+            session["updated_at"] = updated_at
             self._persist()
             return dict(session)
 
@@ -1024,12 +1114,13 @@ class SessionStore:
                 return dict(session)
             if current not in ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}:
                 raise InvalidTransition(f"cannot stop Session in {current}")
+            updated_at = _validated_now(context="Session stop clock")
             session.update(
                 {
                     "status": "STOPPING",
                     "provisioning_cancel_requested": True,
                     "cleanup_pending": True,
-                    "updated_at": time.time(),
+                    "updated_at": updated_at,
                 }
             )
             self._clear_recovery_candidate(session)
@@ -1052,12 +1143,13 @@ class SessionStore:
                 or not self._matches_fields(session, expected_fields)
             ):
                 return None
+            updated_at = _validated_now(context="Session stop clock")
             session.update(
                 {
                     "status": "STOPPING",
                     "provisioning_cancel_requested": True,
                     "cleanup_pending": True,
-                    "updated_at": time.time(),
+                    "updated_at": updated_at,
                 }
             )
             self._clear_recovery_candidate(session)
@@ -1074,7 +1166,14 @@ class SessionStore:
         origin: str = "control-api",
         occurred_at: float | None = None,
     ) -> dict[str, Any]:
-        current = time.time() if occurred_at is None else occurred_at
+        current = (
+            _validated_now(context="Session event clock")
+            if occurred_at is None
+            else _validated_timestamp(
+                occurred_at,
+                error="Session event has invalid occurred_at",
+            )
+        )
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -1100,7 +1199,14 @@ class SessionStore:
         provider_server_id: str,
         registered_at: float | None = None,
     ) -> dict[str, Any]:
-        current = time.time() if registered_at is None else registered_at
+        current = (
+            _validated_now(context="Session node registration clock")
+            if registered_at is None
+            else _validated_timestamp(
+                registered_at,
+                error="Session node registration timestamp is invalid",
+            )
+        )
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -1127,6 +1233,10 @@ class SessionStore:
         node_ready: bool = False,
     ) -> bool:
         """Persist the heartbeat generation used by reaper CAS decisions."""
+        observed_at = _validated_timestamp(
+            observed_at,
+            error="Session heartbeat timestamp is invalid",
+        )
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if (
@@ -1138,14 +1248,14 @@ class SessionStore:
                 return False
             previous = session.get("node_last_heartbeat_at")
             try:
-                if previous is not None and float(previous) > float(observed_at):
+                if previous is not None and float(previous) > observed_at:
                     return False
             except (TypeError, ValueError):
                 return False
-            session["node_last_heartbeat_at"] = float(observed_at)
+            session["node_last_heartbeat_at"] = observed_at
             if node_ready and session.get("status") == "BOOTSTRAPPING":
                 session["status"] = "READY_WAIT_INGEST"
-                session["ready_at"] = float(observed_at)
+                session["ready_at"] = observed_at
             # Do not touch updated_at: HOLDING timeout recovery uses it only
             # as a legacy interval baseline.
             self._persist()
@@ -1161,6 +1271,7 @@ class SessionStore:
         **changes: Any,
     ) -> dict[str, Any] | None:
         """Apply an update (and optional audit event) against one snapshot."""
+        _validate_timestamp_changes(changes, context="Session conditional update")
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if (
@@ -1169,10 +1280,16 @@ class SessionStore:
                 or not self._matches_fields(session, expected_fields)
             ):
                 return None
-            current = time.time()
+            current = _validated_now(context="Session conditional update clock")
+            event_occurred_at: float | None = None
+            if event is not None:
+                event_occurred_at = _validated_timestamp(
+                    event.get("occurred_at", current),
+                    error="Session event has invalid occurred_at",
+                )
             session.update(changes)
             if event is not None:
-                occurred_at = float(event.get("occurred_at", current))
+                assert event_occurred_at is not None
                 self._append_event_locked(
                     session,
                     event_type=str(event.get("event_type", "session.updated")),
@@ -1183,9 +1300,9 @@ class SessionStore:
                     ),
                     payload=dict(event.get("payload", {})),
                     origin=str(event.get("origin", "control-api")),
-                    occurred_at=occurred_at,
+                    occurred_at=event_occurred_at,
                 )
-                current = occurred_at
+                current = event_occurred_at
             session["updated_at"] = current
             self._persist()
             return dict(session)
@@ -1200,7 +1317,14 @@ class SessionStore:
         occurred_at: float | None = None,
     ) -> dict[str, Any]:
         """Atomically append Node ingest events and update Session lifecycle."""
-        current = time.time() if occurred_at is None else occurred_at
+        current = (
+            _validated_now(context="Session ingest observation clock")
+            if occurred_at is None
+            else _validated_timestamp(
+                occurred_at,
+                error="Session ingest observation timestamp is invalid",
+            )
+        )
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -1352,7 +1476,16 @@ class SessionStore:
         observation: dict[str, Any],
     ) -> dict[str, Any]:
         """Audit relay client changes and persist the safe aggregate state."""
-        current = time.time()
+        current = _validated_now(context="Session relay observation clock")
+        observed_at_raw = observation.get("observed_at")
+        observed_at = (
+            None
+            if observed_at_raw is None
+            else _validated_timestamp(
+                observed_at_raw,
+                error="Session relay observation timestamp is invalid",
+            )
+        )
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -1368,7 +1501,7 @@ class SessionStore:
                 "connected": bool(observation.get("connected", False)),
                 "reader_count": max(0, int(observation.get("reader_count", 0) or 0)),
                 "reason_code": observation.get("reason_code"),
-                "observed_at": observation.get("observed_at"),
+                "observed_at": observed_at,
             }
             for event_type in event_types:
                 self._append_event_locked(
@@ -1389,7 +1522,7 @@ class SessionStore:
                     "relay_client_connected": payload["connected"],
                     "relay_client_reader_count": payload["reader_count"],
                     "relay_client_last_reason": payload["reason_code"],
-                    "relay_client_updated_at": payload["observed_at"],
+                    "relay_client_updated_at": observed_at,
                     "node_id": node_id,
                     "updated_at": current,
                 }
@@ -1407,6 +1540,7 @@ class SessionStore:
     ) -> dict[str, Any]:
         if new_state not in SESSION_STATES:
             raise InvalidTransition(f"unknown state: {new_state}")
+        _validate_timestamp_changes(changes, context="Session transition")
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if session is None:
@@ -1419,12 +1553,13 @@ class SessionStore:
                 allowed = TRANSITIONS.get(current, set())
                 if new_state not in allowed:
                     raise InvalidTransition(f"{current} -> {new_state} not allowed")
+            updated_at = _validated_now(context="Session transition clock")
             session.update(changes)
             session["status"] = new_state
             self._clear_recovery_candidate(session)
             if new_state in {"FINISHED", "FAILED"}:
                 session["entitlement_reserved"] = False
-            session["updated_at"] = time.time()
+            session["updated_at"] = updated_at
             self._persist()
             return dict(session)
 
@@ -1440,6 +1575,7 @@ class SessionStore:
         """Transition only if all fields from a reaper snapshot still match."""
         if new_state not in SESSION_STATES:
             raise InvalidTransition(f"unknown state: {new_state}")
+        _validate_timestamp_changes(changes, context="Session conditional transition")
         with self._state_lock(exclusive=True):
             session = self._sessions.get(session_id)
             if (
@@ -1448,12 +1584,13 @@ class SessionStore:
                 or not self._matches_fields(session, expected_fields)
             ):
                 return None
+            updated_at = _validated_now(context="Session transition clock")
             session.update(changes)
             session["status"] = new_state
             self._clear_recovery_candidate(session)
             if new_state in {"FINISHED", "FAILED"}:
                 session["entitlement_reserved"] = False
-            session["updated_at"] = time.time()
+            session["updated_at"] = updated_at
             self._persist()
             return dict(session)
 
