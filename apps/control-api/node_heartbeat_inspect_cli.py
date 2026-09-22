@@ -28,6 +28,20 @@ def _reject_json_constant(_value: str) -> None:
     raise ValueError("non-finite JSON constants are not allowed")
 
 
+def _inspection_now() -> float:
+    """Return a finite non-negative wall clock or fail closed."""
+    try:
+        candidate = time.time()
+        if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+            raise TypeError("invalid clock type")
+        now = float(candidate)
+    except (OSError, OverflowError, TypeError, ValueError) as exc:
+        raise NodeHeartbeatInspectError("inspection clock is unavailable") from exc
+    if not math.isfinite(now) or now < 0:
+        raise NodeHeartbeatInspectError("inspection clock is unavailable")
+    return now
+
+
 def _open_regular_readonly(path: Path) -> int:
     try:
         before = path.lstat()
@@ -173,10 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        now = _inspection_now()
         authority = _read_node_authority(Path(args.node_state_dir))
         payload = summarize_node_heartbeats(
             authority,
-            now=time.time(),
+            now=now,
             grace_seconds=args.heartbeat_grace_seconds,
         )
     except NodeHeartbeatInspectError:
