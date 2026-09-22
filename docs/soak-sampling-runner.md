@@ -25,7 +25,7 @@ python3 scripts/run-soak-sampling.py \
 
 The baseline is recorded with `elapsed_seconds=0`. Subsequent samples use actual monotonic elapsed time rather than pretending a delayed observation happened at its nominal schedule. If a collector call or host scheduling delay crosses one or more nominal intervals, those missed intervals are skipped rather than replayed as a catch-up burst. The runner targets the requested duration; if an observation is delayed beyond it, that delayed observation becomes the final coverage sample and records its actual elapsed time. This keeps elapsed timestamps strictly increasing and suitable for the final report.
 
-Each child collector invocation has a bounded execution time (180 seconds by default). It can be adjusted explicitly with `--collector-timeout-seconds` when a slower local Docker host requires it. This timeout is an instrumentation bound, not a product acceptance threshold.
+Each child collector invocation has a bounded execution time (180 seconds by default). It can be adjusted explicitly with `--collector-timeout-seconds` when a slower local Docker host requires it. This timeout is an instrumentation bound, not a product acceptance threshold. Collector stdout and stderr are also consumed incrementally with a 64 KiB bound per stream; crossing either bound terminates the child and fails the run closed instead of buffering arbitrary output in runner memory.
 
 ## Resource-only diagnostics
 
@@ -44,7 +44,7 @@ Do not use `--allow-unmeasured-media` as evidence that timestamp errors, reconne
 
 ## Interruption and failure
 
-- A child collector timeout or invalid/multi-line/non-finite/schema-incomplete JSON fails the run closed.
+- A child collector timeout, stdout/stderr bound violation, or invalid/multi-line/non-finite/schema-incomplete JSON fails the run closed.
 - A backward or non-finite monotonic clock fails the run closed rather than manufacturing elapsed time.
 - `Ctrl-C` returns exit code 130 and keeps already-fsynced sample lines.
 - Other sampling failures return exit code 2.
