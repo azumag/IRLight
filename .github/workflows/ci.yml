@@ -72,9 +72,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The docs-only classifier compares the immutable PR base/head SHAs.
+          # Full history avoids guessing when the merge-base is outside a
+          # shallow checkout. Classification failure still runs the heavy suite.
+          fetch-depth: 0
+      - name: Classify changed paths for Docker-heavy CI
+        id: ci_paths
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          run_heavy=true
+          changed_paths="$RUNNER_TEMP/irlight-changed-paths.txt"
+          if git diff \
+            --no-renames \
+            --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            >"$changed_paths"; then
+            classification="$({ python3 scripts/classify-ci-paths.py <"$changed_paths"; } 2>/dev/null || true)"
+            if [[ "$classification" == "false" ]]; then
+              run_heavy=false
+            fi
+          fi
+
+          echo "run_heavy=$run_heavy" >>"$GITHUB_OUTPUT"
+      - name: Record docs-only Docker smoke bypass
+        if: steps.ci_paths.outputs.run_heavy == 'false'
+        run: echo 'Documentation-only change; Docker-heavy CI is not required.'
       - name: Warm shared local images
+        if: steps.ci_paths.outputs.run_heavy == 'true'
         run: docker compose -f docker-compose.poc.yml build continuity control-ui node-agent
       - name: Bound Docker build cache before smoke suite
+        if: steps.ci_paths.outputs.run_heavy == 'true'
         run: |
           set -euo pipefail
           echo "::group::Docker storage before cache prune"
@@ -95,6 +125,7 @@ jobs:
           docker system df
           echo "::endgroup::"
       - name: Exercise Docker integration smoke suite
+        if: steps.ci_paths.outputs.run_heavy == 'true'
         id: docker_smoke_suite
         run: |
           smoke_status=0
@@ -112,7 +143,7 @@ jobs:
 
           exit "$smoke_status"
       - name: Retain Docker smoke failure evidence
-        if: ${{ failure() && steps.docker_smoke_suite.outcome == 'failure' }}
+        if: ${{ steps.ci_paths.outputs.run_heavy == 'true' && failure() && steps.docker_smoke_suite.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-smoke-failure-evidence-${{ github.run_id }}-${{ github.run_attempt }}
@@ -120,6 +151,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
       - name: Exercise measured soak evidence chain
+        if: steps.ci_paths.outputs.run_heavy == 'true'
         id: measured_soak
         # The collector totals file descriptors from host /proc for container
         # processes. GitHub-hosted container processes are commonly root-owned,
@@ -129,7 +161,7 @@ jobs:
             MEASURED_SOAK_DIAGNOSTIC_DIR="$RUNNER_TEMP/irlight-measured-soak-diagnostics" \
             bash ./scripts/smoke-measured-soak-evidence.sh
       - name: Retain measured soak failure evidence
-        if: ${{ failure() && steps.measured_soak.outcome == 'failure' }}
+        if: ${{ steps.ci_paths.outputs.run_heavy == 'true' && failure() && steps.measured_soak.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: measured-soak-failure-evidence-${{ github.run_id }}-${{ github.run_attempt }}
