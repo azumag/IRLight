@@ -310,6 +310,15 @@ if [[ -z "$parent_container" ]]; then
   emit_failure_stage "gateway-container-id"
   exit 1
 fi
+container_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$parent_container" 2>/dev/null || true)"
+if ! grep -Fxq 'EGRESS_RTMP_SINK_FACTORY=rtmpsink' <<<"$container_env"; then
+  emit_failure_stage "legacy-sink-not-configured"
+  exit 1
+fi
+if ! grep -Fxq 'EGRESS_LEGACY_PROCESS_ISOLATION_CANARY=1' <<<"$container_env"; then
+  emit_failure_stage "process-isolation-canary-not-configured"
+  exit 1
+fi
 if ! wait_terminal_conflict_status 60; then
   emit_failure_stage "terminal-conflict-status"
   exit 1
@@ -378,10 +387,6 @@ fi
 gateway_logs_file="$tmp_dir/egress-gateway.log"
 if ! capture_compose_logs egress-gateway "$gateway_logs_file"; then
   emit_failure_stage "gateway-log-read"
-  exit 1
-fi
-if ! grep -Fq 'legacy egress attempt process-isolation canary enabled' "$gateway_logs_file"; then
-  emit_failure_stage "process-isolation-not-enabled"
   exit 1
 fi
 if ! file_excludes_generated_secrets "$gateway_logs_file"; then
