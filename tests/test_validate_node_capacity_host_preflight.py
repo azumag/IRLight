@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -128,11 +130,36 @@ class NodeCapacityHostPreflightEvidenceValidatorTests(unittest.TestCase):
             with self.assertRaises(VALIDATOR.HostPreflightEvidenceError):
                 VALIDATOR.load_snapshot(oversized)
 
-    def test_cli_summary_does_not_echo_host_details(self) -> None:
+    def test_cli_success_summary_does_not_echo_host_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "host-preflight.json"
             path.write_text(json.dumps(self._snapshot()), encoding="utf-8")
-            self.assertEqual(VALIDATOR.main([str(path)]), 0)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = VALIDATOR.main([str(path), "--json"])
+
+            self.assertEqual(result, 0)
+            output = stdout.getvalue()
+            self.assertIn('"valid": true', output)
+            self.assertNotIn("x86_64", output)
+            self.assertNotIn("6.8.0-test", output)
+            self.assertNotIn("28.0.1", output)
+
+    def test_cli_duplicate_key_error_does_not_echo_untrusted_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "host-preflight.json"
+            secret_key = "AUDIT_DUMMY_SECRET_KEY"
+            path.write_text(
+                '{"' + secret_key + '":1,"' + secret_key + '":2}\n',
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = VALIDATOR.main([str(path)])
+
+            self.assertEqual(result, 2)
+            self.assertNotIn(secret_key, stderr.getvalue())
+            self.assertIn("duplicate JSON key", stderr.getvalue())
 
 
 if __name__ == "__main__":
