@@ -24,7 +24,7 @@ class CiFailureArtifactContractTest(unittest.TestCase):
             self.source,
         )
         self.assertIn(
-            "if: ${{ failure() && steps.docker_smoke_suite.outcome == 'failure' }}",
+            "if: ${{ steps.ci_paths.outputs.run_heavy == 'true' && failure() && steps.docker_smoke_suite.outcome == 'failure' }}",
             self.source,
         )
         self.assertIn(
@@ -47,7 +47,7 @@ class CiFailureArtifactContractTest(unittest.TestCase):
     def test_measured_soak_artifact_only_runs_when_measured_soak_failed(self) -> None:
         self.assertIn("id: measured_soak", self.source)
         self.assertIn(
-            "if: ${{ failure() && steps.measured_soak.outcome == 'failure' }}",
+            "if: ${{ steps.ci_paths.outputs.run_heavy == 'true' && failure() && steps.measured_soak.outcome == 'failure' }}",
             self.source,
         )
         self.assertIn(
