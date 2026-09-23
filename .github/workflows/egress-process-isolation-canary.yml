@@ -7,6 +7,7 @@ on:
       - "docker-compose.poc.yml"
       - "scripts/smoke-egress-isolated-reconnect.sh"
       - "scripts/smoke-egress-isolated-stop-terminal.sh"
+      - "scripts/smoke-egress-isolated-auth-terminal.sh"
       - ".github/workflows/egress-process-isolation-canary.yml"
   workflow_dispatch:
 
@@ -37,3 +38,13 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=10s 600s \
             bash scripts/smoke-egress-isolated-stop-terminal.sh
+
+  isolated-legacy-auth-terminal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify auth rejection remains terminal without retry
+        run: |
+          timeout --signal=TERM --kill-after=10s 600s \
+            bash scripts/smoke-egress-isolated-auth-terminal.sh
