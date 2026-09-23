@@ -24,12 +24,20 @@ Issue #586 の Stage 3 として、legacy `rtmpsink` の process-isolation canar
 
 user-stop smoke でも接続中 child の command line / environment に generated destination URL / stream key が存在しないことを確認し、秘密値そのものはログへ出さない。
 
+## auth-terminal 契約
+
+`scripts/smoke-egress-isolated-auth-terminal.sh` は local MediaMTX に generated username/password の publish auth を設定し、Gateway には意図的に異なる generated password を渡す。外部 credential は使わない。
+
+legacy `rtmpsink` / librtmp が server の auth rejection text を保持した場合は `AUTH_FAILED / AUTH_FAILED`、pre-connect RTMP rejection を `Gst.ResourceError.WRITE` に畳んだ場合は既存 policy に従って `FAILED / PUBLISH_REJECTED` を受理する。どちらの場合も terminal であることが契約であり、Gateway は retry せず exit code 2 で終了し、`next_retry_at` を持たない final status を維持しなければならない。
+
+smoke は configured retry delay より長い観測窓を置き、Gateway が再起動・再試行しないことと Continuity が生存することを確認する。生成した username/password/stream name が egress-gateway logs に現れないことも fail-closed で検査する。
+
 ## CI
 
-`.github/workflows/egress-process-isolation-canary.yml` は egress-gateway、PoC Compose、または process-isolation smoke に関係する pull request でのみ実行する。reconnect と user-stop を独立 job として実行し、それぞれ 10 分で hard timeout、workflow job 自体も 12 分で上限を持つ。
+`.github/workflows/egress-process-isolation-canary.yml` は egress-gateway、PoC Compose、または process-isolation smoke に関係する pull request でのみ実行する。reconnect、user-stop、auth-terminal を独立 job として実行し、それぞれ 10 分で hard timeout、workflow job 自体も 12 分で上限を持つ。
 
 この workflow は shared Docker suite の置き換えではない。通常の repository CI、Dependency audit、shared Docker suite、measured-soak chain は従来どおり別 gate として扱う。
 
 ## 残る Stage 3
 
-Docker E2E で未固定なのは terminal `AUTH_FAILED` / `PUBLISH_CONFLICT` の process-isolation canary semantics である。`rtmp2sink` path は既存 shared smoke で非回帰を維持し、production default への切替は terminal canary evidence も揃った後の別判断とする。
+Docker E2E で未固定なのは publisher collision に対する terminal `PUBLISH_CONFLICT`（または librtmp が rejection detail を失う場合の `PUBLISH_REJECTED`）の process-isolation canary semantics である。`rtmp2sink` path は既存 shared smoke で非回帰を維持し、production default への切替は conflict canary evidence も揃った後の別判断とする。
