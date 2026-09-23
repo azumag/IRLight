@@ -27,11 +27,27 @@ MAX_MEMINFO_BYTES = 64 * 1024
 SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
 
 
-def _safe_value(value: str, label: str) -> str:
+def _safe_value(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise HostPreflightError(f"{label} is missing or contains unsafe characters")
     normalized = value.strip()
     if not SAFE_VALUE_RE.fullmatch(normalized):
         raise HostPreflightError(f"{label} is missing or contains unsafe characters")
     return normalized
+
+
+def _docker_host_from_environment() -> str | None:
+    return os.environ.get("DOCKER_HOST")
+
+
+def _require_local_docker_endpoint(value: object) -> None:
+    if not isinstance(value, str):
+        raise HostPreflightError("Docker endpoint is unavailable")
+    endpoint = value.strip()
+    if not endpoint.startswith("unix:///") or len(endpoint) > 512:
+        raise HostPreflightError("Node-capacity preflight refuses a non-local Docker endpoint")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in endpoint):
+        raise HostPreflightError("Docker endpoint contains unsafe characters")
 
 
 def parse_meminfo(text: str) -> int:
@@ -91,6 +107,7 @@ def collect_snapshot(
     kernel_release: Callable[[], str] = platform.release,
     logical_cpu_count: Callable[[], int | None] = os.cpu_count,
     meminfo_reader: Callable[[], str] = read_meminfo,
+    docker_host_from_environment: Callable[[], str | None] = _docker_host_from_environment,
     runner: Callable[[list[str]], str] = run_checked,
 ) -> dict[str, object]:
     system = system_name()
@@ -104,6 +121,16 @@ def collect_snapshot(
     memory_total_bytes = parse_meminfo(meminfo_reader())
     machine = _safe_value(machine_name(), "machine architecture")
     kernel = _safe_value(kernel_release(), "kernel release")
+
+    environment_endpoint = docker_host_from_environment()
+    if environment_endpoint:
+        _require_local_docker_endpoint(environment_endpoint)
+    else:
+        context_endpoint = runner(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
+        )
+        _require_local_docker_endpoint(context_endpoint)
+
     docker_server = _safe_value(
         runner(["docker", "version", "--format", "{{.Server.Version}}"]).strip(),
         "Docker server version",
