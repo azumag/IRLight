@@ -122,16 +122,33 @@ except Exception:
     raise SystemExit(1)
 reason = value.get("reason_code")
 status = value.get("status")
+attempt = value.get("attempt")
+valid_attempt = isinstance(attempt, int) and not isinstance(attempt, bool) and attempt >= 1
 valid = (
     value.get("connected") is False
     and value.get("next_retry_at") is None
-    and value.get("attempt") == 2
+    and valid_attempt
     and (
         (reason == "AUTH_FAILED" and status == "AUTH_FAILED")
         or (reason == "PUBLISH_REJECTED" and status == "FAILED")
     )
 )
 raise SystemExit(0 if valid else 1)
+' 2>/dev/null
+}
+
+read_terminal_attempt() {
+  read_egress_status | python3 -c '
+import json
+import sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+attempt = value.get("attempt")
+if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+    raise SystemExit(1)
+print(attempt)
 ' 2>/dev/null
 }
 
@@ -163,6 +180,10 @@ fi
 # retrying either result would be a regression.
 if ! wait_terminal_auth_status 60; then
   emit_failure_stage "terminal-auth-status"
+  exit 1
+fi
+if ! terminal_attempt_before="$(read_terminal_attempt)"; then
+  emit_failure_stage "terminal-auth-attempt"
   exit 1
 fi
 
@@ -200,6 +221,14 @@ fi
 sleep 5
 if ! terminal_auth_status; then
   emit_failure_stage "terminal-auth-status-stability"
+  exit 1
+fi
+if ! terminal_attempt_after="$(read_terminal_attempt)"; then
+  emit_failure_stage "terminal-auth-attempt-stability"
+  exit 1
+fi
+if [[ "$terminal_attempt_after" != "$terminal_attempt_before" ]]; then
+  emit_failure_stage "terminal-auth-retried"
   exit 1
 fi
 if "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx egress-gateway; then
