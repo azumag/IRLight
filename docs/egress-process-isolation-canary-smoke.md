@@ -38,7 +38,7 @@ smoke は configured retry delay より長い観測窓を置き、Gateway が再
 
 MediaMTX の target log で second publisher が同一 path の publisher collision として拒否されたことを直接確認する。legacy librtmp が rejection detail を保持した場合は `AUTH_FAILED / PUBLISH_CONFLICT`、detail を `Gst.ResourceError.WRITE` に畳んだ場合は `FAILED / PUBLISH_REJECTED` を受理する。いずれも terminal result であり、親 Gateway は exit code 2 で終了し `next_retry_at` を持たず、先行 publisher と Continuity は生存しなければならない。
 
-smoke は configured retry delay より長く final state を再観測し、attempt 番号が変わらず Gateway が再起動しないことを要求する。さらに Gateway の固定起動 marker で process-isolation canary が実際に有効だったことを確認し、generated stream key が final status / Gateway log に現れないことを fail-closed で検査する。target の raw conflict log は artifact へ保存せず、failure diagnostics でも generated value を redaction してから出力する。
+smoke は configured retry delay より長く final state を再観測し、attempt 番号が変わらず Gateway が再起動しないことを要求する。Gateway container の immutable config から legacy `rtmpsink` と explicit process-isolation canary flag の両方を確認し、unit contract の `legacy_isolation_enabled()` と組み合わせて canary 選択境界を固定する。generated stream key が final status / Gateway log に現れないことも fail-closed で検査する。target の raw conflict log は artifact へ保存せず、failure diagnostics でも generated value を redaction してから出力する。
 
 ## CI
 
