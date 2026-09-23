@@ -52,14 +52,16 @@ Every pin contains a canonical repository-relative path and a lowercase SHA-256 
 
 ## Rendering
 
-Start from a coverage manifest that already uses schema v2 and passes `validate-node-capacity-coverage-manifest.py`. Supply exactly one host-preflight binding for every scenario in that coverage manifest:
+Start from a coverage manifest that already uses schema v2 and passes `validate-node-capacity-coverage-manifest.py`. Supply exactly one host-preflight binding for every scenario in that coverage manifest. For the canonical Issue #13 matrix, for example:
 
 ```bash
 python scripts/render-node-capacity-host-provenance.py \
   evidence/node-capacity/coverage.json \
   --preflight normal-input=evidence/node-capacity/host-preflight.json \
-  --preflight brief-drop=evidence/node-capacity/host-preflight.json \
-  --preflight reconnect=evidence/node-capacity/host-preflight.json \
+  --preflight all-holding=evidence/node-capacity/host-preflight.json \
+  --preflight reconnect-storm=evidence/node-capacity/host-preflight.json \
+  --preflight asset-prefetch=evidence/node-capacity/host-preflight.json \
+  --preflight api-dashboard=evidence/node-capacity/host-preflight.json \
   > evidence/node-capacity/host-provenance.json
 ```
 
