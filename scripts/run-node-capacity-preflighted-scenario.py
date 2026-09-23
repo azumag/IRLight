@@ -4,12 +4,14 @@
 This is a thin safety wrapper around ``run-node-capacity-scenario.py``. It keeps
 the existing scenario/evidence schemas unchanged while making it easy for an
 operator to fail before any load harness is started when the local host does not
-meet the read-only prerequisite check.
+meet the read-only prerequisite check. An optional wrapper-only evidence path
+can persist the validated preflight snapshot before the load harness starts.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -45,6 +47,61 @@ def _validate_snapshot(snapshot: object) -> None:
         raise PreflightedScenarioError("local host preflight did not report ready")
 
 
+def _split_wrapper_args(argv: Sequence[str] | None) -> tuple[Path | None, list[str]]:
+    """Remove the wrapper-only evidence option without interpreting runner args."""
+
+    source = list(argv) if argv is not None else list(sys.argv[1:])
+    remaining: list[str] = []
+    preflight_json: Path | None = None
+    index = 0
+    while index < len(source):
+        argument = source[index]
+        if argument == "--preflight-json":
+            if preflight_json is not None:
+                raise PreflightedScenarioError("--preflight-json may be specified only once")
+            if index + 1 >= len(source):
+                raise PreflightedScenarioError("--preflight-json requires a path")
+            value = source[index + 1]
+            if not value:
+                raise PreflightedScenarioError("--preflight-json requires a path")
+            preflight_json = Path(value)
+            index += 2
+            continue
+        if argument.startswith("--preflight-json="):
+            if preflight_json is not None:
+                raise PreflightedScenarioError("--preflight-json may be specified only once")
+            value = argument.partition("=")[2]
+            if not value:
+                raise PreflightedScenarioError("--preflight-json requires a path")
+            preflight_json = Path(value)
+            index += 1
+            continue
+        remaining.append(argument)
+        index += 1
+    return preflight_json, remaining
+
+
+def _write_snapshot(path: Path, snapshot: dict[str, object]) -> None:
+    writer = _load_script(
+        "assemble-node-capacity-report.py",
+        "irlight_node_capacity_atomic_writer_for_preflight_snapshot",
+    )
+    rendered = (
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    try:
+        writer._write_exclusive_atomic(path, rendered)
+    except (writer.CapacityAssemblyError, OSError, UnicodeEncodeError) as exc:
+        raise PreflightedScenarioError("local host preflight evidence could not be published") from exc
+
+
 def run_preflighted(
     argv: Sequence[str] | None = None,
     *,
@@ -53,6 +110,7 @@ def run_preflighted(
 ) -> int:
     """Run the existing scenario CLI only after a successful local preflight."""
 
+    preflight_json, runner_argv = _split_wrapper_args(argv)
     preflight = preflight_module or _load_script(
         "check-node-capacity-host-preflight.py",
         "irlight_node_capacity_host_preflight_for_runner",
@@ -66,11 +124,18 @@ def run_preflighted(
         raise PreflightedScenarioError("local host prerequisite check failed") from exc
     _validate_snapshot(snapshot)
 
+    if preflight_json is not None:
+        # Validation above guarantees this is the schema-v1 dictionary expected
+        # by the evidence writer while keeping the scenario/report schemas
+        # untouched.
+        assert isinstance(snapshot, dict)
+        _write_snapshot(preflight_json, snapshot)
+
     runner = runner_module or _load_script(
         "run-node-capacity-scenario.py",
         "irlight_node_capacity_scenario_runner_after_preflight",
     )
-    return int(runner.main(list(argv) if argv is not None else None))
+    return int(runner.main(runner_argv))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
