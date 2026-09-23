@@ -19,6 +19,8 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
 
         def runner(argv: list[str]) -> str:
             commands.append(tuple(argv))
+            if argv[:3] == ["docker", "context", "inspect"]:
+                return "unix:///var/run/docker.sock\n"
             if argv[:2] == ["docker", "version"]:
                 return "27.5.1\n"
             if argv[:3] == ["docker", "compose", "version"]:
@@ -31,6 +33,7 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
             kernel_release=lambda: "6.8.0-57-generic",
             logical_cpu_count=lambda: 8,
             meminfo_reader=lambda: "MemTotal:       16384 kB\nMemFree: 1024 kB\n",
+            docker_host_from_environment=lambda: None,
             runner=runner,
         )
 
@@ -56,6 +59,7 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
         self.assertEqual(
             commands,
             [
+                ("docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"),
                 ("docker", "version", "--format", "{{.Server.Version}}"),
                 ("docker", "compose", "version", "--short"),
             ],
@@ -70,6 +74,7 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.HostPreflightError, "requires Linux"):
             MODULE.collect_snapshot(
                 system_name=lambda: "Darwin",
+                docker_host_from_environment=lambda: None,
                 runner=unexpected_runner,
             )
 
@@ -78,6 +83,7 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
             MODULE.collect_snapshot(
                 system_name=lambda: "Linux",
                 logical_cpu_count=lambda: 0,
+                docker_host_from_environment=lambda: None,
                 runner=lambda argv: (_ for _ in ()).throw(AssertionError(argv)),
             )
 
@@ -92,8 +98,66 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(MODULE.HostPreflightError):
                 MODULE.parse_meminfo(value)
 
+    def test_remote_docker_context_is_rejected_before_version_probe(self) -> None:
+        commands: list[tuple[str, ...]] = []
+
+        def runner(argv: list[str]) -> str:
+            commands.append(tuple(argv))
+            if argv[:3] == ["docker", "context", "inspect"]:
+                return "ssh://builder@example.invalid"
+            raise AssertionError(f"version probe must not run: {argv}")
+
+        with self.assertRaisesRegex(MODULE.HostPreflightError, "non-local Docker endpoint"):
+            MODULE.collect_snapshot(
+                system_name=lambda: "Linux",
+                machine_name=lambda: "x86_64",
+                kernel_release=lambda: "6.8.0",
+                logical_cpu_count=lambda: 4,
+                meminfo_reader=lambda: "MemTotal: 4096 kB\n",
+                docker_host_from_environment=lambda: None,
+                runner=runner,
+            )
+        self.assertEqual(len(commands), 1)
+
+    def test_remote_docker_host_environment_is_rejected_without_context_probe(self) -> None:
+        with self.assertRaisesRegex(MODULE.HostPreflightError, "non-local Docker endpoint"):
+            MODULE.collect_snapshot(
+                system_name=lambda: "Linux",
+                machine_name=lambda: "x86_64",
+                kernel_release=lambda: "6.8.0",
+                logical_cpu_count=lambda: 4,
+                meminfo_reader=lambda: "MemTotal: 4096 kB\n",
+                docker_host_from_environment=lambda: "tcp://10.0.0.2:2376",
+                runner=lambda argv: (_ for _ in ()).throw(AssertionError(argv)),
+            )
+
+    def test_local_docker_host_environment_skips_context_inspection(self) -> None:
+        commands: list[tuple[str, ...]] = []
+
+        def runner(argv: list[str]) -> str:
+            commands.append(tuple(argv))
+            if argv[:2] == ["docker", "version"]:
+                return "27.5.1"
+            if argv[:3] == ["docker", "compose", "version"]:
+                return "2.33.1"
+            raise AssertionError(argv)
+
+        MODULE.collect_snapshot(
+            system_name=lambda: "Linux",
+            machine_name=lambda: "x86_64",
+            kernel_release=lambda: "6.8.0",
+            logical_cpu_count=lambda: 4,
+            meminfo_reader=lambda: "MemTotal: 4096 kB\n",
+            docker_host_from_environment=lambda: "unix:///run/user/1000/docker.sock",
+            runner=runner,
+        )
+        self.assertEqual(commands[0][:2], ("docker", "version"))
+        self.assertFalse(any(command[:2] == ("docker", "context") for command in commands))
+
     def test_unsafe_runtime_version_is_not_emitted(self) -> None:
         def runner(argv: list[str]) -> str:
+            if argv[:3] == ["docker", "context", "inspect"]:
+                return "unix:///var/run/docker.sock"
             if argv[:2] == ["docker", "version"]:
                 return "27.5.1\nINJECTED"
             return "2.33.1"
@@ -105,11 +169,14 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
                 kernel_release=lambda: "6.8.0",
                 logical_cpu_count=lambda: 4,
                 meminfo_reader=lambda: "MemTotal: 4096 kB\n",
+                docker_host_from_environment=lambda: None,
                 runner=runner,
             )
 
     def test_epoch_independent_snapshot_has_no_wall_clock_field(self) -> None:
         def runner(argv: list[str]) -> str:
+            if argv[:3] == ["docker", "context", "inspect"]:
+                return "unix:///var/run/docker.sock"
             return "27.5.1" if argv[:2] == ["docker", "version"] else "2.33.1"
 
         snapshot = MODULE.collect_snapshot(
@@ -118,6 +185,7 @@ class NodeCapacityHostPreflightTest(unittest.TestCase):
             kernel_release=lambda: "6.8.0",
             logical_cpu_count=lambda: 2,
             meminfo_reader=lambda: "MemTotal: 2048 kB\n",
+            docker_host_from_environment=lambda: None,
             runner=runner,
         )
         self.assertNotIn("observed_at", snapshot)
