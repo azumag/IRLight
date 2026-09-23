@@ -1,6 +1,6 @@
 # Egress attempt process-isolation contract
 
-Issue #586 prepares a process boundary for the legacy `rtmpsink` teardown hang tracked by #545.
+Issue #586 introduced a process boundary for the legacy `rtmpsink` teardown hang tracked by #545.
 
 ## Why a process boundary is required
 
@@ -62,6 +62,14 @@ User stop sets a child-shared stop event first, then applies the same bounded te
 
 Terminal `AUTH_FAILED` / `PUBLISH_CONFLICT` results remain terminal because their sanitized result is preserved across teardown fencing.
 
+## Controlled Compose opt-in
+
+The production Compose definition passes `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY` through to `egress-gateway`, but defaults it to `0`. This makes an explicitly chosen rollout/canary possible without changing the production behavior merely by updating the image or Compose file.
+
+An operator must deliberately set `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY=1` to enable process isolation for legacy `rtmpsink`. Leaving the variable unset preserves the in-process legacy path. This switch does not select `rtmp2sink`, change Docker restart policy, or alter the retry/backoff limits.
+
+The focused Docker evidence added across #589-#592 covers old-child fencing and reconnect, explicit user stop, terminal authentication failure, terminal publish conflict, secret non-disclosure, and the unchanged `rtmp2sink` path using local test infrastructure. That evidence makes controlled opt-in possible; it is not itself a decision to change the default for every production node.
+
 ## Still not enabled by default
 
 The canary does not:
@@ -73,4 +81,4 @@ The canary does not:
 - change retry/backoff policy or extend the existing 45-second reconnect contract;
 - use an external RTMP/RTMPS destination for validation.
 
-The next required evidence is a focused Docker canary smoke that forces the legacy teardown-hang condition, proves the old child PID is reaped before retry, verifies `RECONNECTING` within 45 seconds and subsequent `CONNECTED` recovery, and covers stop-terminal/auth-terminal plus the unchanged `rtmp2sink` path before any production-default decision.
+Changing the default remains a separate rollout decision under #545 / #131. It should be based on deployment evidence and real-platform compatibility rather than inferred from local/CI canary success alone.
