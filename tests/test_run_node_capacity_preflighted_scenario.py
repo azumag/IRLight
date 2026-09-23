@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from contextlib import redirect_stderr
@@ -60,6 +62,108 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(events, ["preflight", ("runner", argv)])
+
+    def test_optional_preflight_evidence_is_written_before_runner_and_option_is_stripped(self) -> None:
+        snapshot = self._ready_snapshot()
+        events: list[object] = []
+        preflight = types.SimpleNamespace(
+            HostPreflightError=FakeHostPreflightError,
+            collect_snapshot=lambda: snapshot,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = pathlib.Path(tmp) / "host-preflight.json"
+
+            def runner_main(received: list[str] | None) -> int:
+                events.append(("evidence_exists", evidence.exists()))
+                events.append(("runner", received))
+                return 0
+
+            runner = types.SimpleNamespace(main=runner_main)
+            result = MODULE.run_preflighted(
+                [
+                    "--plan",
+                    "plan.json",
+                    "--preflight-json",
+                    str(evidence),
+                    "--scenario",
+                    "normal-input",
+                ],
+                preflight_module=preflight,
+                runner_module=runner,
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                events,
+                [
+                    ("evidence_exists", True),
+                    ("runner", ["--plan", "plan.json", "--scenario", "normal-input"]),
+                ],
+            )
+            self.assertEqual(json.loads(evidence.read_text(encoding="utf-8")), snapshot)
+            self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
+
+    def test_existing_preflight_evidence_fails_closed_before_runner(self) -> None:
+        runner_called = False
+        preflight = types.SimpleNamespace(
+            HostPreflightError=FakeHostPreflightError,
+            collect_snapshot=self._ready_snapshot,
+        )
+
+        def runner_main(received: list[str] | None) -> int:
+            nonlocal runner_called
+            runner_called = True
+            return 0
+
+        runner = types.SimpleNamespace(main=runner_main)
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = pathlib.Path(tmp) / "host-preflight.json"
+            evidence.write_text("do-not-overwrite\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                MODULE.PreflightedScenarioError,
+                "local host preflight evidence could not be published",
+            ) as context:
+                MODULE.run_preflighted(
+                    ["--preflight-json", str(evidence), "--plan", "plan.json"],
+                    preflight_module=preflight,
+                    runner_module=runner,
+                )
+
+            self.assertFalse(runner_called)
+            self.assertEqual(evidence.read_text(encoding="utf-8"), "do-not-overwrite\n")
+            self.assertNotIn(str(evidence), str(context.exception))
+
+    def test_invalid_wrapper_evidence_option_fails_before_preflight_or_runner(self) -> None:
+        preflight_called = False
+        runner_called = False
+
+        def collect_snapshot() -> dict[str, object]:
+            nonlocal preflight_called
+            preflight_called = True
+            return self._ready_snapshot()
+
+        def runner_main(received: list[str] | None) -> int:
+            nonlocal runner_called
+            runner_called = True
+            return 0
+
+        preflight = types.SimpleNamespace(
+            HostPreflightError=FakeHostPreflightError,
+            collect_snapshot=collect_snapshot,
+        )
+        runner = types.SimpleNamespace(main=runner_main)
+
+        for argv in (["--preflight-json"], ["--preflight-json="], ["--preflight-json", "a", "--preflight-json", "b"]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(MODULE.PreflightedScenarioError):
+                    MODULE.run_preflighted(
+                        argv,
+                        preflight_module=preflight,
+                        runner_module=runner,
+                    )
+        self.assertFalse(preflight_called)
+        self.assertFalse(runner_called)
 
     def test_failed_preflight_never_starts_runner(self) -> None:
         runner_called = False
