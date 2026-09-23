@@ -32,12 +32,22 @@ legacy `rtmpsink` / librtmp が server の auth rejection text を保持した�
 
 smoke は configured retry delay より長い観測窓を置き、Gateway が再起動・再試行しないことと Continuity が生存することを確認する。生成した username/password/stream name が egress-gateway logs に現れないことも fail-closed で検査する。
 
+## publish-conflict 契約
+
+`scripts/smoke-egress-isolated-publish-conflict.sh` は local MediaMTX の同一 path を先行 publisher で保持し、その後 process-isolation canary を有効にした legacy `rtmpsink` Gateway を同じ path へ接続する。先行 publisher は `rtmp2sink` を使う独立 service とし、Gateway の child lifecycle と混同しない。
+
+MediaMTX の target log で second publisher が同一 path の publisher collision として拒否されたことを直接確認する。legacy librtmp が rejection detail を保持した場合は `AUTH_FAILED / PUBLISH_CONFLICT`、detail を `Gst.ResourceError.WRITE` に畳んだ場合は `FAILED / PUBLISH_REJECTED` を受理する。いずれも terminal result であり、親 Gateway は exit code 2 で終了し `next_retry_at` を持たず、先行 publisher と Continuity は生存しなければならない。
+
+smoke は configured retry delay より長く final state を再観測し、attempt 番号が変わらず Gateway が再起動しないことを要求する。Gateway container の immutable config から legacy `rtmpsink` と explicit process-isolation canary flag の両方を確認し、unit contract の `legacy_isolation_enabled()` と組み合わせて canary 選択境界を固定する。generated stream key が final status / Gateway log に現れないことも fail-closed で検査する。target の raw conflict log は artifact へ保存せず、failure diagnostics でも generated value を redaction してから出力する。
+
 ## CI
 
-`.github/workflows/egress-process-isolation-canary.yml` は egress-gateway、PoC Compose、または process-isolation smoke に関係する pull request でのみ実行する。reconnect、user-stop、auth-terminal を独立 job として実行し、それぞれ 10 分で hard timeout、workflow job 自体も 12 分で上限を持つ。
+`.github/workflows/egress-process-isolation-canary.yml` は egress-gateway、PoC Compose、または process-isolation smoke に関係する pull request でのみ実行する。reconnect、user-stop、auth-terminal、publish-conflict を独立 job として実行し、それぞれ 10 分で hard timeout、workflow job 自体も 12 分で上限を持つ。
 
 この workflow は shared Docker suite の置き換えではない。通常の repository CI、Dependency audit、shared Docker suite、measured-soak chain は従来どおり別 gate として扱う。
 
-## 残る Stage 3
+## Stage 3 完了後の境界
 
-Docker E2E で未固定なのは publisher collision に対する terminal `PUBLISH_CONFLICT`（または librtmp が rejection detail を失う場合の `PUBLISH_REJECTED`）の process-isolation canary semantics である。`rtmp2sink` path は既存 shared smoke で非回帰を維持し、production default への切替は conflict canary evidence も揃った後の別判断とする。
+reconnect/fencing、user-stop、auth rejection、publisher collision の Docker evidence が揃えば、Issue #586 の process-isolation canary Stage 3 は完了とみなせる。`rtmp2sink` path は既存 shared smoke で非回帰を維持する。
+
+ただし、これらの証拠だけで production default を自動的に切り替えない。legacy process-isolation canary を production で既定有効にするか、#131 の `rtmp2sink` へ移行するかは、運用コスト・失敗モード・観測性を比較した別判断として扱う。
