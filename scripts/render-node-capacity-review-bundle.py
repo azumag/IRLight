@@ -9,7 +9,10 @@ exact proposal and its complete validated evidence closure.
 Schema-v1 coverage produces the existing schema-v1 review bundle (proposal,
 coverage manifest, load plan, measured reports). Schema-v2 provenance-bound
 coverage produces a schema-v2 bundle that additionally pins every raw trial
-stream and run manifest referenced by the coverage manifest.
+stream and run manifest referenced by the coverage manifest. When an explicit
+validated host-provenance sidecar is supplied for schema-v2 coverage, the bundle
+is upgraded additively to schema v3 and also pins that sidecar plus the exact
+scenario-to-host-preflight path/digest mapping it validates.
 
 It never edits scheduler inventory or Node configuration, executes load, contacts
 a provider, or chooses capacity policy.
@@ -34,6 +37,9 @@ PROPOSAL_VALIDATOR = Path(__file__).with_name(
 )
 COVERAGE_VALIDATOR = Path(__file__).with_name(
     "validate-node-capacity-coverage-manifest.py"
+)
+HOST_PROVENANCE_VALIDATOR = Path(__file__).with_name(
+    "validate-node-capacity-host-provenance.py"
 )
 # Canonical report validation currently caps one measured report at 2 MiB. Keep
 # the pinning guardrail above that while still bounding a post-validation
@@ -236,11 +242,82 @@ def _collect_pins(
     }
 
 
+def _collect_host_provenance_binding(
+    host_provenance_path: Path,
+    *,
+    coverage_name: str,
+    coverage_validator: ModuleType,
+    repo_root: Path,
+) -> dict[str, Any]:
+    """Validate and pin one host-provenance sidecar plus its public preflight mapping."""
+
+    validator = _load_module(
+        HOST_PROVENANCE_VALIDATOR,
+        "irlight_node_capacity_review_bundle_host_provenance_validator",
+    )
+    path_text = host_provenance_path.as_posix()
+    try:
+        resolved = coverage_validator._validate_repo_file(  # noqa: SLF001
+            repo_root,
+            path_text,
+            "host provenance path",
+        )
+        digest_before = _stable_sha256(resolved)
+        payload = validator.load_manifest(resolved)
+        summary = validator.validate_manifest(payload, repo_root=repo_root)
+        digest_after = _stable_sha256(resolved)
+    except CapacityReviewBundleRenderError:
+        raise
+    except (
+        validator.HostProvenanceError,
+        coverage_validator.CapacityCoverageManifestError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        raise CapacityReviewBundleRenderError("host provenance evidence is invalid") from exc
+
+    if digest_before != digest_after:
+        raise CapacityReviewBundleRenderError("host provenance changed while being pinned")
+    if summary.get("coverage_manifest") != coverage_name:
+        raise CapacityReviewBundleRenderError(
+            "host provenance does not match proposal coverage"
+        )
+
+    try:
+        by_scenario = {
+            entry["scenario_id"]: entry
+            for entry in payload["scenarios"]
+        }
+        mappings = [
+            {
+                "scenario_id": scenario_id,
+                "host_preflight": {
+                    "path": by_scenario[scenario_id]["host_preflight"]["path"],
+                    "sha256": by_scenario[scenario_id]["host_preflight"]["sha256"],
+                },
+            }
+            for scenario_id in summary["scenario_ids"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise CapacityReviewBundleRenderError("host provenance evidence is invalid") from exc
+
+    return {
+        "path": path_text,
+        "sha256": digest_after,
+        "scenarios": mappings,
+    }
+
+
 def render_bundle(
     proposal_path: Path,
     *,
     expected_node_profile: object,
     expected_software_revision: object,
+    host_provenance_path: Path | None = None,
     repo_root: Path = ROOT,
 ) -> dict[str, Any]:
     proposal_validator = _load_module(
@@ -271,10 +348,26 @@ def render_bundle(
             coverage_validator=coverage_validator,
             repo_root=repo_root,
         )
+        if host_provenance_path is not None:
+            if pins_before["schema_version"] != 2:
+                raise CapacityReviewBundleRenderError(
+                    "host provenance requires provenance-bound coverage schema v2"
+                )
+            host_before = _collect_host_provenance_binding(
+                host_provenance_path,
+                coverage_name=pins_before["coverage_manifest"],
+                coverage_validator=coverage_validator,
+                repo_root=repo_root,
+            )
+            pins_before = {
+                **pins_before,
+                "schema_version": 3,
+                "host_provenance": host_before,
+            }
 
         # Revalidate after hashing the complete evidence closure. This catches a
-        # report/plan/manifest/proposal/raw-provenance replacement that occurred
-        # between the first canonical validation and digest collection.
+        # report/plan/manifest/proposal/raw-provenance/host-provenance replacement
+        # that occurred between canonical validation and digest collection.
         validated_after = proposal_validator.validate_proposal_file(
             resolved_proposal,
             expected_node_profile=expected_node_profile,
@@ -288,6 +381,22 @@ def render_bundle(
             coverage_validator=coverage_validator,
             repo_root=repo_root,
         )
+        if host_provenance_path is not None:
+            if pins_after["schema_version"] != 2:
+                raise CapacityReviewBundleRenderError(
+                    "host provenance requires provenance-bound coverage schema v2"
+                )
+            host_after = _collect_host_provenance_binding(
+                host_provenance_path,
+                coverage_name=pins_after["coverage_manifest"],
+                coverage_validator=coverage_validator,
+                repo_root=repo_root,
+            )
+            pins_after = {
+                **pins_after,
+                "schema_version": 3,
+                "host_provenance": host_after,
+            }
     except CapacityReviewBundleRenderError:
         raise
     except (
@@ -327,6 +436,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="repository-relative persisted Node-capacity max_sessions proposal",
     )
     parser.add_argument(
+        "--host-provenance",
+        type=Path,
+        help="optional repository-relative validated host-provenance sidecar; emits schema v3",
+    )
+    parser.add_argument(
         "--node-profile",
         required=True,
         help="exact Node profile of the proposed deployment",
@@ -346,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
             args.proposal,
             expected_node_profile=args.node_profile,
             expected_software_revision=args.software_revision,
+            host_provenance_path=args.host_provenance,
         )
     except CapacityReviewBundleRenderError as exc:
         print(f"node capacity review bundle render failed: {exc}", file=sys.stderr)

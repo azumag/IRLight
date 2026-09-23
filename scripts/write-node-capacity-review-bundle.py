@@ -74,6 +74,12 @@ def _pinned_paths(bundle: dict[str, Any]) -> set[str]:
                 paths.add(str(report["trials_path"]))
             if "run_manifest_path" in report:
                 paths.add(str(report["run_manifest_path"]))
+
+        host_provenance = bundle.get("host_provenance")
+        if host_provenance is not None:
+            paths.add(str(host_provenance["path"]))
+            for scenario in host_provenance["scenarios"]:
+                paths.add(str(scenario["host_preflight"]["path"]))
     except (KeyError, TypeError) as exc:
         raise CapacityReviewBundleWriteError("rendered review bundle is invalid") from exc
     return paths
@@ -182,6 +188,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="repository-relative review bundle JSON to replace atomically",
     )
     parser.add_argument(
+        "--host-provenance",
+        type=Path,
+        help="optional repository-relative validated host-provenance sidecar; emits schema v3",
+    )
+    parser.add_argument(
         "--node-profile",
         required=True,
         help="exact Node profile of the proposed deployment",
@@ -201,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             args.proposal,
             expected_node_profile=args.node_profile,
             expected_software_revision=args.software_revision,
+            host_provenance_path=args.host_provenance,
         )
         write_bundle_atomically(bundle, args.output)
     except (
