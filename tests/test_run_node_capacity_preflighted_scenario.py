@@ -134,6 +134,37 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
             self.assertEqual(evidence.read_text(encoding="utf-8"), "do-not-overwrite\n")
             self.assertNotIn(str(evidence), str(context.exception))
 
+    def test_unserializable_preflight_evidence_fails_closed_before_runner(self) -> None:
+        runner_called = False
+        snapshot = self._ready_snapshot()
+        snapshot["platform"] = {"invalid": float("nan")}
+        preflight = types.SimpleNamespace(
+            HostPreflightError=FakeHostPreflightError,
+            collect_snapshot=lambda: snapshot,
+        )
+
+        def runner_main(received: list[str] | None) -> int:
+            nonlocal runner_called
+            runner_called = True
+            return 0
+
+        runner = types.SimpleNamespace(main=runner_main)
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = pathlib.Path(tmp) / "host-preflight.json"
+            with self.assertRaisesRegex(
+                MODULE.PreflightedScenarioError,
+                "local host preflight evidence could not be published",
+            ) as context:
+                MODULE.run_preflighted(
+                    ["--preflight-json", str(evidence), "--plan", "plan.json"],
+                    preflight_module=preflight,
+                    runner_module=runner,
+                )
+
+            self.assertFalse(runner_called)
+            self.assertFalse(evidence.exists())
+            self.assertNotIn("nan", str(context.exception).lower())
+
     def test_invalid_wrapper_evidence_option_fails_before_preflight_or_runner(self) -> None:
         preflight_called = False
         runner_called = False
