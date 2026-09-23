@@ -86,19 +86,25 @@ def _write_snapshot(path: Path, snapshot: dict[str, object]) -> None:
         "assemble-node-capacity-report.py",
         "irlight_node_capacity_atomic_writer_for_preflight_snapshot",
     )
-    rendered = (
-        json.dumps(
-            snapshot,
-            ensure_ascii=False,
-            sort_keys=True,
-            allow_nan=False,
-            separators=(",", ":"),
-        )
-        + "\n"
-    )
     try:
+        rendered = (
+            json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
         writer._write_exclusive_atomic(path, rendered)
-    except (writer.CapacityAssemblyError, OSError, UnicodeEncodeError) as exc:
+    except (
+        writer.CapacityAssemblyError,
+        OSError,
+        TypeError,
+        UnicodeEncodeError,
+        ValueError,
+    ) as exc:
         raise PreflightedScenarioError("local host preflight evidence could not be published") from exc
 
 
