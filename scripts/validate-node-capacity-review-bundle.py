@@ -5,8 +5,10 @@ The bundle is not authority for production configuration. This read-only check
 re-renders it from the referenced persisted max_sessions proposal and current
 coverage closure, verifies the explicit deployment identity, and requires exact
 canonical equality. Any byte change to the pinned proposal, coverage manifest,
-load plan, measured reports, or (for schema v2) raw trials/run manifests after
+load plan, measured reports, or (for schema v2+) raw trials/run manifests after
 review therefore invalidates the bundle even when the JSON meaning is unchanged.
+Schema v3 additionally revalidates and pins the host-provenance sidecar and the
+exact host-preflight evidence associated with every measured scenario.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ PROPOSAL_VALIDATOR = Path(__file__).with_name(
     "validate-node-capacity-max-sessions-proposal.py"
 )
 BUNDLE_RENDERER = Path(__file__).with_name("render-node-capacity-review-bundle.py")
-BUNDLE_FIELDS = {
+BASE_BUNDLE_FIELDS = {
     "schema_version",
     "proposal_path",
     "proposal_sha256",
@@ -37,6 +39,7 @@ BUNDLE_FIELDS = {
     "candidate_max_sessions",
     "measured_recommended_max_sessions",
 }
+HOST_PROVENANCE_FIELDS = {"path", "sha256", "scenarios"}
 
 
 class CapacityReviewBundleValidationError(ValueError):
@@ -96,18 +99,43 @@ def validate_bundle_file(
             "review bundle could not be read safely"
         ) from exc
 
-    if set(payload) != BUNDLE_FIELDS:
-        raise CapacityReviewBundleValidationError("review bundle has an unexpected top-level shape")
-    schema_version = payload["schema_version"]
+    schema_version = payload.get("schema_version") if isinstance(payload, dict) else None
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version not in {1, 2}
+        or schema_version not in {1, 2, 3}
     ):
         raise CapacityReviewBundleValidationError("review bundle schema_version is unsupported")
+
+    expected_fields = (
+        BASE_BUNDLE_FIELDS | {"host_provenance"}
+        if schema_version == 3
+        else BASE_BUNDLE_FIELDS
+    )
+    if set(payload) != expected_fields:
+        raise CapacityReviewBundleValidationError("review bundle has an unexpected top-level shape")
+
     proposal_name = payload["proposal_path"]
     if not isinstance(proposal_name, str) or not proposal_name:
         raise CapacityReviewBundleValidationError("review bundle proposal reference is invalid")
+
+    host_provenance_path: Path | None = None
+    if schema_version == 3:
+        host_provenance = payload.get("host_provenance")
+        if not isinstance(host_provenance, dict) or set(host_provenance) != HOST_PROVENANCE_FIELDS:
+            raise CapacityReviewBundleValidationError(
+                "review bundle host provenance has an unexpected shape"
+            )
+        path_text = host_provenance.get("path")
+        if not isinstance(path_text, str) or not path_text:
+            raise CapacityReviewBundleValidationError(
+                "review bundle host provenance reference is invalid"
+            )
+        if not isinstance(host_provenance.get("scenarios"), list):
+            raise CapacityReviewBundleValidationError(
+                "review bundle host provenance scenario mapping is invalid"
+            )
+        host_provenance_path = Path(path_text)
 
     renderer = _load_module(
         BUNDLE_RENDERER,
@@ -118,6 +146,7 @@ def validate_bundle_file(
             repo_root / proposal_name,
             expected_node_profile=expected_node_profile,
             expected_software_revision=expected_software_revision,
+            host_provenance_path=host_provenance_path,
             repo_root=repo_root,
         )
     except (renderer.CapacityReviewBundleRenderError, OSError, UnicodeError) as exc:
