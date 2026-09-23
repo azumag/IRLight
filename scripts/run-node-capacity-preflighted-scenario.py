@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -20,6 +21,9 @@ from typing import Sequence
 
 class PreflightedScenarioError(RuntimeError):
     """Raised when the prerequisite gate cannot be evaluated safely."""
+
+
+SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
 
 
 def _load_script(filename: str, module_name: str) -> ModuleType:
@@ -37,11 +41,7 @@ def _load_script(filename: str, module_name: str) -> ModuleType:
 
 
 def _bounded_text(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
-    if value != value.strip() or not value or len(value) > 128:
-        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+    if not isinstance(value, str) or not SAFE_VALUE_RE.fullmatch(value):
         raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
     return value
 
@@ -64,7 +64,8 @@ def _validate_snapshot(snapshot: object) -> None:
         "docker",
     }:
         raise PreflightedScenarioError("local host preflight returned an invalid snapshot shape")
-    if isinstance(snapshot.get("schema_version"), bool) or snapshot.get("schema_version") != 1:
+    schema_version = snapshot.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
         raise PreflightedScenarioError("local host preflight returned an unsupported schema")
     if snapshot.get("kind") != "irlight-node-capacity-host-preflight":
         raise PreflightedScenarioError("local host preflight returned an unexpected kind")
