@@ -6,6 +6,7 @@ on:
       - "apps/egress-gateway/**"
       - "docker-compose.poc.yml"
       - "scripts/smoke-egress-isolated-reconnect.sh"
+      - "scripts/smoke-egress-isolated-stop-terminal.sh"
       - ".github/workflows/egress-process-isolation-canary.yml"
   workflow_dispatch:
 
@@ -26,3 +27,13 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=10s 600s \
             bash scripts/smoke-egress-isolated-reconnect.sh
+
+  isolated-legacy-user-stop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify bounded isolated child stop and terminal state
+        run: |
+          timeout --signal=TERM --kill-after=10s 600s \
+            bash scripts/smoke-egress-isolated-stop-terminal.sh
