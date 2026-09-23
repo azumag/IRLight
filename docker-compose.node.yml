@@ -75,6 +75,9 @@ services:
       EGRESS_ALLOW_PRIVATE_TARGETS: ${EGRESS_ALLOW_PRIVATE_TARGETS:-0}
       # rtmp2sink migration remains opt-in until real-platform verification.
       EGRESS_RTMP_SINK_FACTORY: ${EGRESS_RTMP_SINK_FACTORY:-rtmpsink}
+      # Legacy attempt process isolation has completed local/CI canary proof,
+      # but remains disabled unless an operator explicitly enables a rollout.
+      EGRESS_LEGACY_PROCESS_ISOLATION_CANARY: ${EGRESS_LEGACY_PROCESS_ISOLATION_CANARY:-0}
       EGRESS_STATUS_FILE: /state/egress.json
       EGRESS_CONNECT_TIMEOUT_SECONDS: ${EGRESS_CONNECT_TIMEOUT_SECONDS:-15}
       EGRESS_RETRY_INITIAL_SECONDS: ${EGRESS_RETRY_INITIAL_SECONDS:-1}
