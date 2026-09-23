@@ -25,7 +25,7 @@ python3 scripts/run-node-capacity-preflighted-scenario.py \
 
 `--preflight-json` の出力先は既存ファイルを上書きしません。親 directory が存在しない、既存 path がある、snapshot の publish に失敗した、といった場合は load harness を起動せず exit status `2` で停止します。evidence file は mode `0600` で publish されます。
 
-保存される schema-v1 snapshot は hostname、Docker endpoint、環境変数、credential、provider 情報を含みません。現在の項目は platform system / machine / kernel、logical CPU、total memory、Docker server version、Docker Compose version です。
+保存される schema-v1 snapshot は hostname、Docker endpoint、環境変数、credential、provider 情報を含みません。現在の項目は platform system / machine / kernel、logical CPU、total memory、Docker server version、Docker Compose version です。wrapper はこの schema を load 開始前に深く検証し、未知の top-level / nested field、非 Linux platform、空・control-character を含む識別値、bool/文字列/0以下の resource count を拒否します。これにより collector の将来の変更や破損が、意図せず追加 host metadata を evidence に混入させたり、型の壊れた snapshot を「preflight 済み」として残したりしません。schema を拡張する場合は明示的な version/validator 更新が必要です。
 
 ## Safety boundary
 
