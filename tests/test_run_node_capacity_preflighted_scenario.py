@@ -31,9 +31,19 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "irlight-node-capacity-host-preflight",
             "ready": True,
-            "platform": {},
-            "resources": {},
-            "docker": {},
+            "platform": {
+                "system": "Linux",
+                "machine": "x86_64",
+                "kernel_release": "6.8.0-test",
+            },
+            "resources": {
+                "logical_cpu_count": 8,
+                "memory_total_bytes": 16 * 1024 * 1024 * 1024,
+            },
+            "docker": {
+                "server_version": "28.0.1",
+                "compose_version": "2.33.1",
+            },
         }
 
     def test_successful_preflight_runs_existing_runner_with_unchanged_arguments(self) -> None:
@@ -134,37 +144,6 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
             self.assertEqual(evidence.read_text(encoding="utf-8"), "do-not-overwrite\n")
             self.assertNotIn(str(evidence), str(context.exception))
 
-    def test_unserializable_preflight_evidence_fails_closed_before_runner(self) -> None:
-        runner_called = False
-        snapshot = self._ready_snapshot()
-        snapshot["platform"] = {"invalid": float("nan")}
-        preflight = types.SimpleNamespace(
-            HostPreflightError=FakeHostPreflightError,
-            collect_snapshot=lambda: snapshot,
-        )
-
-        def runner_main(received: list[str] | None) -> int:
-            nonlocal runner_called
-            runner_called = True
-            return 0
-
-        runner = types.SimpleNamespace(main=runner_main)
-        with tempfile.TemporaryDirectory() as tmp:
-            evidence = pathlib.Path(tmp) / "host-preflight.json"
-            with self.assertRaisesRegex(
-                MODULE.PreflightedScenarioError,
-                "local host preflight evidence could not be published",
-            ) as context:
-                MODULE.run_preflighted(
-                    ["--preflight-json", str(evidence), "--plan", "plan.json"],
-                    preflight_module=preflight,
-                    runner_module=runner,
-                )
-
-            self.assertFalse(runner_called)
-            self.assertFalse(evidence.exists())
-            self.assertNotIn("nan", str(context.exception).lower())
-
     def test_invalid_wrapper_evidence_option_fails_before_preflight_or_runner(self) -> None:
         preflight_called = False
         runner_called = False
@@ -185,7 +164,11 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
         )
         runner = types.SimpleNamespace(main=runner_main)
 
-        for argv in (["--preflight-json"], ["--preflight-json="], ["--preflight-json", "a", "--preflight-json", "b"]):
+        for argv in (
+            ["--preflight-json"],
+            ["--preflight-json="],
+            ["--preflight-json", "a", "--preflight-json", "b"],
+        ):
             with self.subTest(argv=argv):
                 with self.assertRaises(MODULE.PreflightedScenarioError):
                     MODULE.run_preflighted(
@@ -227,13 +210,87 @@ class NodeCapacityPreflightedScenarioTests(unittest.TestCase):
         self.assertNotIn("sensitive-host", str(context.exception))
 
     def test_malformed_or_non_ready_snapshot_fails_before_runner(self) -> None:
+        unexpected_field = self._ready_snapshot()
+        unexpected_field["hostname"] = "must-not-be-recorded"
+
+        invalid_platform = self._ready_snapshot()
+        invalid_platform["platform"] = {
+            "system": "Linux",
+            "machine": "x86_64",
+            "kernel_release": "6.8.0-test",
+            "hostname": "must-not-be-recorded",
+        }
+
+        invalid_resources = self._ready_snapshot()
+        invalid_resources["resources"] = {
+            "logical_cpu_count": True,
+            "memory_total_bytes": 16 * 1024 * 1024 * 1024,
+        }
+
+        invalid_docker = self._ready_snapshot()
+        invalid_docker["docker"] = {
+            "server_version": "28.0.1",
+            "compose_version": "2.33.1",
+            "endpoint": "unix:///var/run/docker.sock",
+        }
+
         invalid_snapshots = (
             None,
             {},
             {"schema_version": 2, "kind": "irlight-node-capacity-host-preflight", "ready": True},
+            {"schema_version": True, "kind": "irlight-node-capacity-host-preflight", "ready": True},
             {"schema_version": 1, "kind": "unexpected", "ready": True},
             {"schema_version": 1, "kind": "irlight-node-capacity-host-preflight", "ready": False},
+            unexpected_field,
+            invalid_platform,
+            invalid_resources,
+            invalid_docker,
         )
+        for snapshot in invalid_snapshots:
+            with self.subTest(snapshot=snapshot):
+                runner_called = False
+
+                def runner_main(received: list[str] | None) -> int:
+                    nonlocal runner_called
+                    runner_called = True
+                    return 0
+
+                preflight = types.SimpleNamespace(
+                    HostPreflightError=FakeHostPreflightError,
+                    collect_snapshot=lambda snapshot=snapshot: snapshot,
+                )
+                runner = types.SimpleNamespace(main=runner_main)
+                with tempfile.TemporaryDirectory() as tmp:
+                    evidence = pathlib.Path(tmp) / "host-preflight.json"
+                    with self.assertRaises(MODULE.PreflightedScenarioError):
+                        MODULE.run_preflighted(
+                            ["--preflight-json", str(evidence)],
+                            preflight_module=preflight,
+                            runner_module=runner,
+                        )
+                    self.assertFalse(evidence.exists())
+                self.assertFalse(runner_called)
+
+    def test_invalid_nested_scalar_values_fail_before_runner(self) -> None:
+        invalid_snapshots: list[dict[str, object]] = []
+
+        for resources in (
+            {"logical_cpu_count": 0, "memory_total_bytes": 1024},
+            {"logical_cpu_count": 8, "memory_total_bytes": -1},
+            {"logical_cpu_count": "8", "memory_total_bytes": 1024},
+        ):
+            snapshot = self._ready_snapshot()
+            snapshot["resources"] = resources
+            invalid_snapshots.append(snapshot)
+
+        for docker in (
+            {"server_version": "", "compose_version": "2.33.1"},
+            {"server_version": "28.0.1\nsecret", "compose_version": "2.33.1"},
+        ):
+            snapshot = self._ready_snapshot()
+            snapshot["docker"] = docker
+            invalid_snapshots.append(snapshot)
+
         for snapshot in invalid_snapshots:
             with self.subTest(snapshot=snapshot):
                 runner_called = False
