@@ -71,6 +71,18 @@ class RtmpSinkComposeTest(unittest.TestCase):
             compose,
         )
 
+    def test_production_compose_exposes_process_isolation_default_off(self) -> None:
+        compose = (ROOT / "docker-compose.node.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "EGRESS_LEGACY_PROCESS_ISOLATION_CANARY: "
+            "${EGRESS_LEGACY_PROCESS_ISOLATION_CANARY:-0}",
+            compose,
+        )
+        self.assertNotIn(
+            'EGRESS_LEGACY_PROCESS_ISOLATION_CANARY: "1"',
+            compose,
+        )
+
 
 class RtmpSinkProgressTest(unittest.TestCase):
     def test_legacy_progress_preserves_rendered_semantics(self) -> None:
