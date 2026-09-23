@@ -36,15 +36,70 @@ def _load_script(filename: str, module_name: str) -> ModuleType:
     return module
 
 
+def _bounded_text(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
+    if value != value.strip() or not value or len(value) > 128:
+        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
+    return value
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise PreflightedScenarioError(f"local host preflight returned an invalid {label}")
+    return value
+
+
 def _validate_snapshot(snapshot: object) -> None:
     if not isinstance(snapshot, dict):
         raise PreflightedScenarioError("local host preflight returned an invalid snapshot")
-    if snapshot.get("schema_version") != 1:
+    if set(snapshot) != {
+        "schema_version",
+        "kind",
+        "ready",
+        "platform",
+        "resources",
+        "docker",
+    }:
+        raise PreflightedScenarioError("local host preflight returned an invalid snapshot shape")
+    if isinstance(snapshot.get("schema_version"), bool) or snapshot.get("schema_version") != 1:
         raise PreflightedScenarioError("local host preflight returned an unsupported schema")
     if snapshot.get("kind") != "irlight-node-capacity-host-preflight":
         raise PreflightedScenarioError("local host preflight returned an unexpected kind")
     if snapshot.get("ready") is not True:
         raise PreflightedScenarioError("local host preflight did not report ready")
+
+    platform = snapshot.get("platform")
+    if not isinstance(platform, dict) or set(platform) != {
+        "system",
+        "machine",
+        "kernel_release",
+    }:
+        raise PreflightedScenarioError("local host preflight returned an invalid platform snapshot")
+    if platform.get("system") != "Linux":
+        raise PreflightedScenarioError("local host preflight returned an unexpected platform")
+    _bounded_text(platform.get("machine"), "machine architecture")
+    _bounded_text(platform.get("kernel_release"), "kernel release")
+
+    resources = snapshot.get("resources")
+    if not isinstance(resources, dict) or set(resources) != {
+        "logical_cpu_count",
+        "memory_total_bytes",
+    }:
+        raise PreflightedScenarioError("local host preflight returned an invalid resource snapshot")
+    _positive_int(resources.get("logical_cpu_count"), "logical CPU count")
+    _positive_int(resources.get("memory_total_bytes"), "total memory")
+
+    docker = snapshot.get("docker")
+    if not isinstance(docker, dict) or set(docker) != {
+        "server_version",
+        "compose_version",
+    }:
+        raise PreflightedScenarioError("local host preflight returned an invalid Docker snapshot")
+    _bounded_text(docker.get("server_version"), "Docker server version")
+    _bounded_text(docker.get("compose_version"), "Docker Compose version")
 
 
 def _split_wrapper_args(argv: Sequence[str] | None) -> tuple[Path | None, list[str]]:
