@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 MAX_PREFLIGHT_BYTES = 64 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
 EXPECTED_FIELDS = {
     "schema_version",
@@ -39,23 +42,74 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _identity(snapshot: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        snapshot.st_dev,
+        snapshot.st_ino,
+        snapshot.st_size,
+        snapshot.st_mtime_ns,
+        snapshot.st_ctime_ns,
+    )
+
+
+def _read_evidence_bytes(path: Path) -> bytes:
+    """Read one bounded stable regular file without following a final symlink."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise HostPreflightEvidenceError("preflight evidence could not be inspected") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise HostPreflightEvidenceError("preflight evidence must be a regular file")
+    if before.st_size > MAX_PREFLIGHT_BYTES:
+        raise HostPreflightEvidenceError("preflight evidence exceeds maximum size")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise HostPreflightEvidenceError("preflight evidence could not be opened") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise HostPreflightEvidenceError("preflight evidence must be a regular file")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise HostPreflightEvidenceError("preflight evidence changed while opening")
+        if opened.st_size > MAX_PREFLIGHT_BYTES:
+            raise HostPreflightEvidenceError("preflight evidence exceeds maximum size")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_PREFLIGHT_BYTES:
+                raise HostPreflightEvidenceError("preflight evidence exceeds maximum size")
+            chunks.append(chunk)
+
+        after_read = os.fstat(fd)
+        try:
+            after_path = os.lstat(path)
+        except OSError as exc:
+            raise HostPreflightEvidenceError("preflight evidence changed while reading") from exc
+        if not stat.S_ISREG(after_path.st_mode):
+            raise HostPreflightEvidenceError("preflight evidence changed while reading")
+        if _identity(opened) != _identity(after_read) or _identity(opened) != _identity(after_path):
+            raise HostPreflightEvidenceError("preflight evidence changed while reading")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def load_snapshot(path: Path) -> dict[str, Any]:
     try:
-        if not path.is_file() or path.is_symlink():
-            raise HostPreflightEvidenceError("preflight evidence must be a regular non-symlink file")
-        size_before = path.stat().st_size
-        if size_before > MAX_PREFLIGHT_BYTES:
-            raise HostPreflightEvidenceError("preflight evidence exceeds maximum size")
-        raw_bytes = path.read_bytes()
-        if len(raw_bytes) > MAX_PREFLIGHT_BYTES:
-            raise HostPreflightEvidenceError("preflight evidence exceeds maximum size")
-        if path.stat().st_size != size_before:
-            raise HostPreflightEvidenceError("preflight evidence changed while reading")
-        raw = raw_bytes.decode("utf-8")
+        raw = _read_evidence_bytes(path).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HostPreflightEvidenceError("preflight evidence must be valid UTF-8") from exc
-    except OSError as exc:
-        raise HostPreflightEvidenceError("preflight evidence could not be read") from exc
 
     try:
         value = json.loads(raw, parse_constant=_reject_constant, object_pairs_hook=_strict_object)
