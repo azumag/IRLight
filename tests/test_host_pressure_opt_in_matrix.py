@@ -119,6 +119,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "cgroup-pid-pressure-monitoring.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_SWAP_MODE",
+                "cgroup_swap_status",
+                "IRLIGHT_CGROUP_SWAP_CURRENT_PATH",
+                "IRLIGHT_CGROUP_SWAP_MAX_PATH",
+                "cgroup-swap-pressure-monitoring.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",
