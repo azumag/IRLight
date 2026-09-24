@@ -133,6 +133,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "cgroup-runtime-pressure-aggregate.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_MEMORY_EVENTS_MODE",
+                "cgroup_memory_events_status",
+                "IRLIGHT_CGROUP_MEMORY_EVENTS_PATH",
+                "IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH",
+                "cgroup-runtime-pressure-aggregate.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",
