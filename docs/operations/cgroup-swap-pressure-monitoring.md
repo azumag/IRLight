@@ -26,11 +26,26 @@ path は `IRLIGHT_CGROUP_SWAP_CURRENT_PATH` / `IRLIGHT_CGROUP_SWAP_MAX_PATH` で
 
 `memory.swap.max=max` は swap が十分に利用可能であることを意味しない。parent cgroup の制約、host の swap availability、通常 memory の `memory.max` / `memory.high`、PSI は別 signal で確認する。
 
+## Host aggregate opt-in
+
+同じ明示対象を host pressure aggregate に含める場合は、2つの control file を指定したうえで opt-in する。
+
+```bash
+IRLIGHT_HOST_CGROUP_SWAP_MODE=enabled \
+IRLIGHT_CGROUP_SWAP_CURRENT_PATH=/sys/fs/cgroup/<target>/memory.swap.current \
+IRLIGHT_CGROUP_SWAP_MAX_PATH=/sys/fs/cgroup/<target>/memory.swap.max \
+  bash scripts/check-host-pressure.sh
+```
+
+`IRLIGHT_HOST_CGROUP_SWAP_MODE` の既定値は `disabled`。有効化した場合だけ `cgroup_swap_status=<status>` を host summary に追加する。host aggregate は監視対象 cgroup を自動選択せず、2 path の片方でも未指定なら root/current cgroup へ fallback せず `cgroup_swap_status=UNKNOWN` とする。standalone checker の 80%/90%、`max`、`0/0`、`OVER_LIMIT` semantics をそのまま再利用し、aggregate 独自の threshold は追加しない。
+
+host 全体の swap usage (`IRLIGHT_HOST_SWAP_PRESSURE_MODE`) とは別 signal であり、両方を有効化しても一方を他方の代替とは扱わない。
+
 ## Safety boundary
 
-この check は cgroup control file を読み取るだけで、`memory.swap.max` の変更、`swapon` / `swapoff`、reclaim、OOM kill、process/container restart は行わない。
+この check と host aggregate adapter は cgroup control file を読み取るだけで、`memory.swap.max` の変更、`swapon` / `swapoff`、reclaim、OOM kill、process/container restart は行わない。
 
-また `check-cgroup-runtime-pressure.sh` へ既定では組み込まない。kernel / container runtime / deployment policy によって swap accounting/control file の利用可否が異なるため、対象 workload で `memory.swap.current` / `memory.swap.max` を監視対象として明示できる環境だけで opt-in する。control file が存在しない環境を aggregate 全体の `UNKNOWN` に変えることを避けるためである。
+また `check-cgroup-runtime-pressure.sh` / `check-host-pressure.sh` へ既定では組み込まない。kernel / container runtime / deployment policy によって swap accounting/control file の利用可否が異なるため、対象 workload で `memory.swap.current` / `memory.swap.max` を監視対象として明示できる環境だけで opt-in する。control file が存在しない環境を aggregate 全体の `UNKNOWN` に変えることを避けるためである。
 
 ## Output / exit code
 
@@ -51,7 +66,10 @@ IRLIGHT_CGROUP_SWAP_PRESSURE status=WARNING usage_percent=80 current_bytes=83886
 
 ```bash
 python -m unittest discover -s tests -p 'test_cgroup_swap_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_swap_aggregate.py' -v
 bash -n scripts/check-cgroup-swap-pressure.sh
+bash -n scripts/check-host-cgroup-swap-pressure.sh
+bash -n scripts/check-host-pressure.sh
 ```
 
 監視結果を破壊的な自動復旧へ直結させず、まず alert / runbook の診断 signal として利用する。
