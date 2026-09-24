@@ -44,6 +44,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - expected filesystem mountpoint presence の read-only 診断: [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md)
 - cgroup v2 PID pressure の targeted / host aggregate opt-in 診断: [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md)
 - cgroup v2 memory pressure の read-only 診断: [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md)
+- cgroup v2 memory.events delta の explicit-target host 診断: [host-cgroup-memory-events-monitoring.md](host-cgroup-memory-events-monitoring.md)
 - cgroup runtime pressure aggregate の opt-in 診断: [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md)
 - cgroup PSI / process FD の targeted read-only 診断: [targeted-runtime-pressure-diagnostics.md](targeted-runtime-pressure-diagnostics.md)
 - host swap pressure の targeted read-only 診断: [host-swap-pressure-monitoring.md](host-swap-pressure-monitoring.md)
