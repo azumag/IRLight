@@ -84,6 +84,7 @@ exit code は次の意味を持つ。
 | cgroup v2 memory.max pressure | `IRLIGHT_HOST_CGROUP_MEMORY_MODE` | `cgroup_memory_status` | `IRLIGHT_CGROUP_MEMORY_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
 | cgroup v2 memory.high pressure | `IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE` | `cgroup_memory_high_status` | `IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_HIGH_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。hard cap と混同せず throttle/reclaim boundary として評価する | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
 | cgroup v2 PID pressure | `IRLIGHT_HOST_CGROUP_PIDS_MODE` | `cgroup_pids_status` | `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` | `IRLIGHT_CGROUP_PIDS_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) |
+| cgroup v2 swap pressure | `IRLIGHT_HOST_CGROUP_SWAP_MODE` | `cgroup_swap_status` | `IRLIGHT_CGROUP_SWAP_CURRENT_PATH` | `IRLIGHT_CGROUP_SWAP_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。root/current cgroup へ fallback しない | [cgroup-swap-pressure-monitoring.md](cgroup-swap-pressure-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
 
@@ -103,6 +104,17 @@ IRLIGHT_CGROUP_MEMORY_HIGH_PATH=/sys/fs/cgroup/<target>/memory.high \
 ```
 
 `memory.high` は throttle/reclaim boundary であり hard cap ではない。既存 standalone checker の 80%/90%、`max`、`NO_HEADROOM`、`OVER_HIGH` semantics をそのまま利用し、aggregate 独自 threshold や自動 reclaim は追加しない。詳細は [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) を参照する。
+
+cgroup swap pressure を host aggregate に含める場合も、対象 workload の `memory.swap.current` / `memory.swap.max` を両方明示する。片方でも欠ければ root/current cgroup へ fallback せず `cgroup_swap_status=UNKNOWN` にする。
+
+```bash
+IRLIGHT_HOST_CGROUP_SWAP_MODE=enabled \
+IRLIGHT_CGROUP_SWAP_CURRENT_PATH=/sys/fs/cgroup/<target>/memory.swap.current \
+IRLIGHT_CGROUP_SWAP_MAX_PATH=/sys/fs/cgroup/<target>/memory.swap.max \
+  bash scripts/check-host-pressure.sh
+```
+
+既存 standalone checker の 80%/90%、`max`、swap-disabled (`0/0`)、`OVER_LIMIT` semantics を再利用し、aggregate 独自 threshold や swap/reclaim 操作は追加しない。詳細は [cgroup-swap-pressure-monitoring.md](cgroup-swap-pressure-monitoring.md) を参照する。
 
 ## Targeted cgroup v2 PID check
 
@@ -177,6 +189,8 @@ python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.
 python -m unittest discover -s tests -p 'test_host_cgroup_memory_high_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_pid_aggregate.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_swap_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_swap_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
@@ -194,6 +208,8 @@ bash -n \
   scripts/check-host-cgroup-memory-high-pressure.sh \
   scripts/check-cgroup-pid-pressure.sh \
   scripts/check-host-cgroup-pid-pressure.sh \
+  scripts/check-cgroup-swap-pressure.sh \
+  scripts/check-host-cgroup-swap-pressure.sh \
   scripts/check-network-link-health.sh \
   scripts/check-host-filesystem-readonly.sh \
   scripts/check-host-filesystem-mountpoint.sh \
