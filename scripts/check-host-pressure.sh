@@ -47,6 +47,9 @@ cgroup_memory_high_path="${IRLIGHT_CGROUP_MEMORY_HIGH_PATH:-}"
 cgroup_pids_mode="${IRLIGHT_HOST_CGROUP_PIDS_MODE:-disabled}"
 cgroup_pids_current_path="${IRLIGHT_CGROUP_PIDS_CURRENT_PATH:-}"
 cgroup_pids_max_path="${IRLIGHT_CGROUP_PIDS_MAX_PATH:-}"
+cgroup_swap_mode="${IRLIGHT_HOST_CGROUP_SWAP_MODE:-disabled}"
+cgroup_swap_current_path="${IRLIGHT_CGROUP_SWAP_CURRENT_PATH:-}"
+cgroup_swap_max_path="${IRLIGHT_CGROUP_SWAP_MAX_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -171,6 +174,15 @@ case "$cgroup_pids_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_pids_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_swap_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_swap_mode\n'
     exit 3
     ;;
 esac
@@ -343,6 +355,13 @@ fi
 # fails closed if either path is omitted instead of silently checking root cgroup.
 if [[ "$cgroup_pids_mode" == "enabled" ]]; then
   add_component "cgroup_pids" "$script_dir/check-host-cgroup-pid-pressure.sh" "$cgroup_pids_current_path" "$cgroup_pids_max_path"
+fi
+
+# cgroup swap limits are also workload-specific and hierarchical. Keep them
+# distinct from host-wide swap usage and require both workload control files so
+# the aggregate never silently falls back to the root cgroup.
+if [[ "$cgroup_swap_mode" == "enabled" ]]; then
+  add_component "cgroup_swap" "$script_dir/check-host-cgroup-swap-pressure.sh" "$cgroup_swap_current_path" "$cgroup_swap_max_path"
 fi
 
 component_statuses=()
