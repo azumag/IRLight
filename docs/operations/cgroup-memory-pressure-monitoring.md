@@ -36,6 +36,21 @@ Linux cgroup v2 の `memory.high` は hard cap ではなく memory usage throttl
 
 これら2つの boundary check は欠落、複数行、非数値、signed 64-bit 範囲外を `UNKNOWN` に fail-closed する。control file は変更せず、reclaim、OOM kill、process/container restart、cache drop、`memory.high` / `memory.max` の書換えを行わない。
 
+### Host aggregate への明示 opt-in
+
+`memory.high` を host-wide summary と同じ出力で監視したい場合は、監視対象 workload の2つの control file を operator が明示した場合だけ opt-in する。
+
+```bash
+IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE=enabled \
+IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH=/sys/fs/cgroup/<target>/memory.current \
+IRLIGHT_CGROUP_MEMORY_HIGH_PATH=/sys/fs/cgroup/<target>/memory.high \
+  bash scripts/check-host-pressure.sh
+```
+
+既定の `IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE` は `disabled` で、既存 host aggregate の stdout / exit code 契約を変えない。mode を `enabled` にして path の片方または両方が欠けている場合は `cgroup_memory_high_status=UNKNOWN` とし、standalone checker の既定 root cgroup path へ fallback しない。`IRLIGHT_HOST_CGROUP_MEMORY_MODE` の `memory.max` hard-limit signal とは独立した companion component として扱い、同じ bounded component timeout と `CRITICAL > UNKNOWN > WARNING > OK` の集約優先順位へ参加する。
+
+host aggregate は standalone checker の既存 80%/90%、`memory.high=max`、`NO_HEADROOM`、`OVER_HIGH` semantics をそのまま利用する。cgroup control file の書込み、reclaim、cache drop、process/container restart、Node drain、provider operation は行わない。
+
 ## Event-delta check (`memory.events`)
 
 `memory.events` の counter は累積値なので、生の `oom_kill > 0` 等をそのまま alert 条件にすると一度の過去障害で永続的に alert し続ける。`check-cgroup-memory-events.sh` は同一 cgroup generation の過去 snapshot を baseline として明示的に渡し、その後に増えた event だけを評価する。
@@ -147,12 +162,16 @@ root/current cgroup や代表 PID を機械的に選ぶと、監視対象 worklo
 
 ```bash
 python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_memory_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_memory_high_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_events_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_runtime_pressure.py' -v
 python -m unittest discover -s tests -p 'test_process_fd_pressure_check.py' -v
 bash -n scripts/check-cgroup-memory-pressure.sh
+bash -n scripts/check-host-cgroup-memory-pressure.sh
 bash -n scripts/check-cgroup-memory-high-pressure.sh
+bash -n scripts/check-host-cgroup-memory-high-pressure.sh
 bash -n scripts/check-cgroup-memory-events.sh
 bash -n scripts/check-cgroup-runtime-pressure.sh
 bash -n scripts/check-process-fd-pressure.sh
