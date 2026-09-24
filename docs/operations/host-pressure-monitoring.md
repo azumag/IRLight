@@ -82,6 +82,7 @@ exit code は次の意味を持つ。
 | production network link | `IRLIGHT_HOST_NETWORK_LINK_MODE` | `network_link_status` | `IRLIGHT_NETWORK_INTERFACE_DIR` | — | baseline 不要。production egress interface を operator が明示し、自動選択しない | [host-network-link-monitoring.md](host-network-link-monitoring.md) |
 | TCP socket memory pressure | `IRLIGHT_HOST_TCP_MEMORY_MODE` | `tcp_memory_status` | `IRLIGHT_TCP_SOCKSTAT_PATH` / `IRLIGHT_TCP_MEM_PATH` | — | baseline 不要。kernel の `tcp_mem` pressure/max watermark を read-only で評価し、repository 独自 threshold は導入しない | [tcp-memory-pressure-monitoring.md](tcp-memory-pressure-monitoring.md) |
 | cgroup v2 memory.max pressure | `IRLIGHT_HOST_CGROUP_MEMORY_MODE` | `cgroup_memory_status` | `IRLIGHT_CGROUP_MEMORY_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
+| cgroup v2 memory.high pressure | `IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE` | `cgroup_memory_high_status` | `IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_HIGH_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。hard cap と混同せず throttle/reclaim boundary として評価する | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
 | cgroup v2 PID pressure | `IRLIGHT_HOST_CGROUP_PIDS_MODE` | `cgroup_pids_status` | `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` | `IRLIGHT_CGROUP_PIDS_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
@@ -91,6 +92,17 @@ exit code は次の意味を持つ。
 baseline が必要な component では、aggregate は baseline を作成・更新・削除しない。baseline 欠落、読取不能、counter reset、世代不整合などを安全に評価できない場合は component の `UNKNOWN` をそのまま伝播する。累積counterの baseline を更新する前に [host-boot-generation-monitoring.md](host-boot-generation-monitoring.md) で boot generation を確認し、予期しない reboot の証跡を自動更新で消さない。
 
 opt-in signal の結果だけを根拠に swap 設定変更、baseline refresh、network interface変更、service/process restart、Node drain、provider migration、instance resize、failover 等を自動実行しない。詳細な意味・個別の安全境界は表の standalone runbook を参照する。
+
+`memory.high` を host aggregate に含める場合は、hard-limit (`memory.max`) signal とは別に明示的な workload cgroup を指定する。両 path の片方でも欠ける場合は root/current cgroup へ fallback せず `cgroup_memory_high_status=UNKNOWN` にする。
+
+```bash
+IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE=enabled \
+IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH=/sys/fs/cgroup/<target>/memory.current \
+IRLIGHT_CGROUP_MEMORY_HIGH_PATH=/sys/fs/cgroup/<target>/memory.high \
+  bash scripts/check-host-pressure.sh
+```
+
+`memory.high` は throttle/reclaim boundary であり hard cap ではない。既存 standalone checker の 80%/90%、`max`、`NO_HEADROOM`、`OVER_HIGH` semantics をそのまま利用し、aggregate 独自 threshold や自動 reclaim は追加しない。詳細は [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) を参照する。
 
 ## Targeted cgroup v2 PID check
 
@@ -161,6 +173,8 @@ python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_memory_aggregate.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_memory_high_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_memory_high_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_pid_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
@@ -176,6 +190,8 @@ bash -n \
   scripts/check-task-pressure.sh \
   scripts/check-cgroup-memory-pressure.sh \
   scripts/check-host-cgroup-memory-pressure.sh \
+  scripts/check-cgroup-memory-high-pressure.sh \
+  scripts/check-host-cgroup-memory-high-pressure.sh \
   scripts/check-cgroup-pid-pressure.sh \
   scripts/check-host-cgroup-pid-pressure.sh \
   scripts/check-network-link-health.sh \

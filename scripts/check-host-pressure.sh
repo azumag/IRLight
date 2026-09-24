@@ -41,6 +41,9 @@ tcp_mem_path="${IRLIGHT_TCP_MEM_PATH:-/proc/sys/net/ipv4/tcp_mem}"
 cgroup_memory_mode="${IRLIGHT_HOST_CGROUP_MEMORY_MODE:-disabled}"
 cgroup_memory_current_path="${IRLIGHT_CGROUP_MEMORY_CURRENT_PATH:-}"
 cgroup_memory_max_path="${IRLIGHT_CGROUP_MEMORY_MAX_PATH:-}"
+cgroup_memory_high_mode="${IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE:-disabled}"
+cgroup_memory_high_current_path="${IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH:-}"
+cgroup_memory_high_path="${IRLIGHT_CGROUP_MEMORY_HIGH_PATH:-}"
 cgroup_pids_mode="${IRLIGHT_HOST_CGROUP_PIDS_MODE:-disabled}"
 cgroup_pids_current_path="${IRLIGHT_CGROUP_PIDS_CURRENT_PATH:-}"
 cgroup_pids_max_path="${IRLIGHT_CGROUP_PIDS_MAX_PATH:-}"
@@ -150,6 +153,15 @@ case "$cgroup_memory_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_memory_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_memory_high_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_memory_high_mode\n'
     exit 3
     ;;
 esac
@@ -317,6 +329,13 @@ fi
 # workload cgroup or silently falls back to the root hierarchy.
 if [[ "$cgroup_memory_mode" == "enabled" ]]; then
   add_component "cgroup_memory" "$script_dir/check-host-cgroup-memory-pressure.sh" "$cgroup_memory_current_path" "$cgroup_memory_max_path"
+fi
+
+# memory.high is a throttle/reclaim boundary rather than a hard cap. Keep it as
+# a separate companion signal and require the exact workload cgroup control files
+# so host monitoring never falls back to an unrelated/root cgroup.
+if [[ "$cgroup_memory_high_mode" == "enabled" ]]; then
+  add_component "cgroup_memory_high" "$script_dir/check-host-cgroup-memory-high-pressure.sh" "$cgroup_memory_high_current_path" "$cgroup_memory_high_path"
 fi
 
 # cgroup PID limits are target-specific and hierarchical. Keep the signal opt-in
