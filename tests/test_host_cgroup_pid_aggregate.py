@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "check-host-pressure.sh"
+CGROUP_WRAPPER = ROOT / "scripts" / "check-host-cgroup-pid-pressure.sh"
+CGROUP_CHECKER = ROOT / "scripts" / "check-cgroup-pid-pressure.sh"
+SCALAR_HELPER = ROOT / "scripts" / "lib" / "scalar-pressure-common.sh"
+
+
+class HostCgroupPidAggregateTest(unittest.TestCase):
+    def _run(
+        self,
+        *,
+        mode: str | None = None,
+        current: str = "40",
+        maximum: str = "100",
+        component_code: int = 0,
+        configure_paths: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory(prefix="irlight-host-cgroup-pid-aggregate-") as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            lib = scripts / "lib"
+            lib.mkdir(parents=True)
+            shutil.copyfile(SCRIPT, scripts / "check-host-pressure.sh")
+            shutil.copyfile(CGROUP_WRAPPER, scripts / "check-host-cgroup-pid-pressure.sh")
+            shutil.copyfile(CGROUP_CHECKER, scripts / "check-cgroup-pid-pressure.sh")
+            shutil.copyfile(SCALAR_HELPER, lib / "scalar-pressure-common.sh")
+
+            component = (
+                "#!/usr/bin/env bash\n"
+                'exit "${IRLIGHT_TEST_COMPONENT_CODE:-0}"\n'
+            )
+            for name in (
+                "check-disk-pressure.sh",
+                "check-memory-pressure.sh",
+                "check-load-pressure.sh",
+                "check-psi-pressure.sh",
+                "check-file-handle-pressure.sh",
+                "check-conntrack-pressure.sh",
+                "check-task-pressure.sh",
+            ):
+                (scripts / name).write_text(component, encoding="utf-8")
+
+            current_path = root / "pids.current"
+            maximum_path = root / "pids.max"
+            current_path.write_text(f"{current}\n", encoding="ascii")
+            maximum_path.write_text(f"{maximum}\n", encoding="ascii")
+
+            env = os.environ.copy()
+            env["IRLIGHT_TEST_COMPONENT_CODE"] = str(component_code)
+            if mode is not None:
+                env["IRLIGHT_HOST_CGROUP_PIDS_MODE"] = mode
+            else:
+                env.pop("IRLIGHT_HOST_CGROUP_PIDS_MODE", None)
+
+            if configure_paths:
+                env["IRLIGHT_CGROUP_PIDS_CURRENT_PATH"] = str(current_path)
+                env["IRLIGHT_CGROUP_PIDS_MAX_PATH"] = str(maximum_path)
+            else:
+                env.pop("IRLIGHT_CGROUP_PIDS_CURRENT_PATH", None)
+                env.pop("IRLIGHT_CGROUP_PIDS_MAX_PATH", None)
+
+            return subprocess.run(
+                [
+                    "bash",
+                    str(scripts / "check-host-pressure.sh"),
+                    "disk",
+                    "meminfo",
+                    "loadavg",
+                    "4",
+                    "psi",
+                    "file-nr",
+                    "conntrack-count",
+                    "conntrack-max",
+                    "threads-max",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_default_output_contract_is_unchanged(self) -> None:
+        result = self._run(current="99")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=OK disk_status=OK memory_status=OK load_status=OK psi_status=OK file_handle_status=OK conntrack_status=OK task_status=OK",
+        )
+        self.assertNotIn("cgroup_pids_status", result.stdout)
+
+    def test_enabled_below_warning_is_ok(self) -> None:
+        result = self._run(mode="enabled", current="79")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("status=OK", result.stdout)
+        self.assertIn("cgroup_pids_status=OK", result.stdout)
+
+    def test_enabled_at_warning_is_warning(self) -> None:
+        result = self._run(mode="enabled", current="80")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("status=WARNING", result.stdout)
+        self.assertIn("cgroup_pids_status=WARNING", result.stdout)
+
+    def test_enabled_at_critical_is_critical(self) -> None:
+        result = self._run(mode="enabled", current="90")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("cgroup_pids_status=CRITICAL", result.stdout)
+
+    def test_enabled_malformed_input_is_unknown(self) -> None:
+        result = self._run(mode="enabled", current="not-a-number")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("cgroup_pids_status=UNKNOWN", result.stdout)
+
+    def test_enabled_without_explicit_target_is_unknown(self) -> None:
+        result = self._run(mode="enabled", configure_paths=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("status=UNKNOWN", result.stdout)
+        self.assertIn("cgroup_pids_status=UNKNOWN", result.stdout)
+
+    def test_other_critical_wins_over_cgroup_unknown(self) -> None:
+        result = self._run(
+            mode="enabled",
+            configure_paths=False,
+            component_code=2,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("status=CRITICAL", result.stdout)
+        self.assertIn("cgroup_pids_status=UNKNOWN", result.stdout)
+
+    def test_invalid_mode_fails_closed_before_components(self) -> None:
+        result = self._run(mode="sometimes")
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.strip(),
+            "IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_pids_mode",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
