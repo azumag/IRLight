@@ -126,6 +126,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "cgroup-swap-pressure-monitoring.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_CPU_THROTTLING_MODE",
+                "cgroup_cpu_throttling_status",
+                "IRLIGHT_CGROUP_CPU_STAT_PATH",
+                "IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH",
+                "cgroup-runtime-pressure-aggregate.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",
