@@ -9,12 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "scripts" / "ci-docker-smoke-suite.sh"
+RECONNECT_SMOKE = ROOT / "scripts" / "smoke-egress-reconnect.sh"
 
 
 class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = SUITE.read_text(encoding="utf-8")
+        cls.reconnect_source = RECONNECT_SMOKE.read_text(encoding="utf-8")
         cls.smokes = cls._listed_smokes(cls.source)
         if not cls.smokes:
             raise AssertionError("Docker smoke suite did not list any scenarios")
@@ -38,7 +40,9 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self,
         *,
         failing_smoke: str | None = None,
-        failure_stage: str = "compose-control-up",
+        failure_stage: str | None = "compose-control-up",
+        failure_exit_code: int = 7,
+        phase_marker: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory(prefix="irlight-docker-smoke-diagnostics-") as tmp:
             root = Path(tmp)
@@ -74,16 +78,22 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
             for smoke in self.smokes:
                 path = root / smoke
                 path.parent.mkdir(parents=True, exist_ok=True)
-                exit_code = 7 if smoke == failing_smoke else 0
+                exit_code = failure_exit_code if smoke == failing_smoke else 0
                 diagnostic = ""
                 marker = "rm -f failed-scenario-state\n"
                 if exit_code:
                     marker = "touch failed-scenario-state\n"
-                    diagnostic = (
-                        "printf '%s\\n' "
-                        f"'::error title=IRLight docker smoke failure::stage={failure_stage}%0A"
-                        "credential=AUDIT_DUMMY_SECRET' >&2\n"
-                    )
+                    if phase_marker is not None:
+                        diagnostic += (
+                            "printf '%s\\n' "
+                            f"'IRLIGHT_DOCKER_SMOKE_PHASE phase={phase_marker}'\n"
+                        )
+                    if failure_stage is not None:
+                        diagnostic += (
+                            "printf '%s\\n' "
+                            f"'::error title=IRLight docker smoke failure::stage={failure_stage}%0A"
+                            "credential=AUDIT_DUMMY_SECRET' >&2\n"
+                        )
                 path.write_text(
                     "#!/usr/bin/env bash\n"
                     f"{marker}"
@@ -213,6 +223,90 @@ class DockerSmokeSuiteDiagnosticsTest(unittest.TestCase):
         self.assertNotIn("AUDIT_DUMMY_SECRET", result_lines[0])
         self.assertIn("| `node-auth-ready` |", summary)
         self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
+
+    def test_outer_timeout_uses_last_safe_phase_when_explicit_stage_is_missing(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, summary = self._run_harness(
+            failing_smoke=failing_smoke,
+            failure_stage=None,
+            failure_exit_code=124,
+            phase_marker="egress-reconnecting",
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        result_lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.startswith("IRLIGHT_DOCKER_SMOKE_RESULT")
+            and f"smoke={failing_smoke}" in line
+        ]
+        self.assertEqual(len(result_lines), 1)
+        self.assertIn("stage=timeout-egress-reconnecting", result_lines[0])
+        self.assertIn("| `timeout-egress-reconnecting` |", summary)
+        self.assertIn(
+            f"{failing_smoke}:124:timeout-egress-reconnecting",
+            completed.stderr,
+        )
+
+    def test_explicit_failure_stage_wins_over_timeout_phase(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, summary = self._run_harness(
+            failing_smoke=failing_smoke,
+            failure_stage="target-stop",
+            failure_exit_code=124,
+            phase_marker="egress-reconnecting",
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        result_lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.startswith("IRLIGHT_DOCKER_SMOKE_RESULT")
+            and f"smoke={failing_smoke}" in line
+        ]
+        self.assertEqual(len(result_lines), 1)
+        self.assertIn("stage=target-stop", result_lines[0])
+        self.assertNotIn("timeout-egress-reconnecting", result_lines[0])
+        self.assertIn("| `target-stop` |", summary)
+
+    def test_secret_like_phase_marker_is_not_copied_into_compact_outputs(self) -> None:
+        failing_smoke = self.smokes[0]
+        completed, summary = self._run_harness(
+            failing_smoke=failing_smoke,
+            failure_stage=None,
+            failure_exit_code=124,
+            phase_marker="egress-reconnecting/AUDIT_DUMMY_SECRET",
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        result_lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.startswith("IRLIGHT_DOCKER_SMOKE_RESULT")
+            and f"smoke={failing_smoke}" in line
+        ]
+        self.assertEqual(len(result_lines), 1)
+        self.assertIn("stage=-", result_lines[0])
+        self.assertNotIn("AUDIT_DUMMY_SECRET", result_lines[0])
+        self.assertNotIn("AUDIT_DUMMY_SECRET", summary)
+
+    def test_reconnect_smoke_marks_major_blocking_phases(self) -> None:
+        expected_phases = (
+            "compose-config",
+            "compose-up",
+            "target-api-initial",
+            "egress-connected-initial",
+            "target-path-initial",
+            "target-stop",
+            "egress-reconnecting",
+            "target-start",
+            "target-api-recovery",
+            "egress-connected-recovery",
+            "target-path-recovery",
+        )
+        for phase in expected_phases:
+            self.assertIn(f'emit_phase "{phase}"', self.reconnect_source)
+        self.assertIn("IRLIGHT_DOCKER_SMOKE_PHASE phase=%s", self.reconnect_source)
 
     def test_resource_probes_are_timeout_bounded(self) -> None:
         self.assertIn(

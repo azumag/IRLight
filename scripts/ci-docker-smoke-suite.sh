@@ -67,6 +67,21 @@ extract_failure_stage() {
   printf '%s' "$stage"
 }
 
+extract_timeout_phase() {
+  local log_file="$1"
+  local phase
+
+  # Phase markers are emitted from fixed-vocabulary smoke code. Match the
+  # complete line so secret-like suffixes cannot be truncated into a seemingly
+  # valid token and copied into durable CI output.
+  phase="$(
+    sed -nE \
+      's/^IRLIGHT_DOCKER_SMOKE_PHASE phase=([A-Za-z0-9._-]+)$/\1/p' \
+      "$log_file" | tail -n 1
+  )"
+  printf '%s' "$phase"
+}
+
 extract_egress_stack_fingerprint() {
   local smoke="$1"
   local log_file="$2"
@@ -239,6 +254,12 @@ for smoke in "${smokes[@]}"; do
     results+=("$smoke|PASS|0|$duration|-")
   else
     stage="$(extract_failure_stage "$scenario_log")"
+    if [[ "$stage" == "-" && ( "$status" -eq 124 || "$status" -eq 137 ) ]]; then
+      timeout_phase="$(extract_timeout_phase "$scenario_log")"
+      if [[ -n "$timeout_phase" ]]; then
+        stage="timeout-$timeout_phase"
+      fi
+    fi
     stack_fingerprint="$(extract_egress_stack_fingerprint "$smoke" "$scenario_log")"
     if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
       echo "::error title=Docker smoke timed out::$smoke exceeded ${smoke_timeout_seconds}s (status $status)"
