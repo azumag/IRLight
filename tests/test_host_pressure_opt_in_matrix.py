@@ -98,6 +98,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "tcp-memory-pressure-monitoring.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_PIDS_MODE",
+                "cgroup_pids_status",
+                "IRLIGHT_CGROUP_PIDS_CURRENT_PATH",
+                "IRLIGHT_CGROUP_PIDS_MAX_PATH",
+                "cgroup-pid-pressure-monitoring.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",

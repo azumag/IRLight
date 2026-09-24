@@ -38,6 +38,9 @@ filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-/st
 tcp_memory_mode="${IRLIGHT_HOST_TCP_MEMORY_MODE:-disabled}"
 tcp_sockstat_path="${IRLIGHT_TCP_SOCKSTAT_PATH:-/proc/net/sockstat}"
 tcp_mem_path="${IRLIGHT_TCP_MEM_PATH:-/proc/sys/net/ipv4/tcp_mem}"
+cgroup_pids_mode="${IRLIGHT_HOST_CGROUP_PIDS_MODE:-disabled}"
+cgroup_pids_current_path="${IRLIGHT_CGROUP_PIDS_CURRENT_PATH:-}"
+cgroup_pids_max_path="${IRLIGHT_CGROUP_PIDS_MAX_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -135,6 +138,15 @@ case "$tcp_memory_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_tcp_memory_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_pids_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_pids_mode\n'
     exit 3
     ;;
 esac
@@ -286,6 +298,13 @@ fi
 # namespace chosen by the deployment. Invalid or unavailable inputs fail closed.
 if [[ "$tcp_memory_mode" == "enabled" ]]; then
   add_component "tcp_memory" "$script_dir/check-host-tcp-memory-pressure.sh" "$tcp_sockstat_path" "$tcp_mem_path"
+fi
+
+# cgroup PID limits are target-specific and hierarchical. Keep the signal opt-in
+# and require the deployment to name both control files explicitly; the wrapper
+# fails closed if either path is omitted instead of silently checking root cgroup.
+if [[ "$cgroup_pids_mode" == "enabled" ]]; then
+  add_component "cgroup_pids" "$script_dir/check-host-cgroup-pid-pressure.sh" "$cgroup_pids_current_path" "$cgroup_pids_max_path"
 fi
 
 component_statuses=()
