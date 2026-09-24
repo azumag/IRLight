@@ -85,6 +85,7 @@ exit code は次の意味を持つ。
 | cgroup v2 memory.high pressure | `IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE` | `cgroup_memory_high_status` | `IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_HIGH_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。hard cap と混同せず throttle/reclaim boundary として評価する | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
 | cgroup v2 PID pressure | `IRLIGHT_HOST_CGROUP_PIDS_MODE` | `cgroup_pids_status` | `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` | `IRLIGHT_CGROUP_PIDS_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) |
 | cgroup v2 swap pressure | `IRLIGHT_HOST_CGROUP_SWAP_MODE` | `cgroup_swap_status` | `IRLIGHT_CGROUP_SWAP_CURRENT_PATH` | `IRLIGHT_CGROUP_SWAP_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。root/current cgroup へ fallback しない | [cgroup-swap-pressure-monitoring.md](cgroup-swap-pressure-monitoring.md) |
+| cgroup v2 CPU throttling delta | `IRLIGHT_HOST_CGROUP_CPU_THROTTLING_MODE` | `cgroup_cpu_throttling_status` | `IRLIGHT_CGROUP_CPU_STAT_PATH` | `IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH` | 同一 workload cgroup / generation の operator-managed baseline。aggregate は target や baseline を自動選択・更新しない | [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
 
@@ -115,6 +116,17 @@ IRLIGHT_CGROUP_SWAP_MAX_PATH=/sys/fs/cgroup/<target>/memory.swap.max \
 ```
 
 既存 standalone checker の 80%/90%、`max`、swap-disabled (`0/0`)、`OVER_LIMIT` semantics を再利用し、aggregate 独自 threshold や swap/reclaim 操作は追加しない。詳細は [cgroup-swap-pressure-monitoring.md](cgroup-swap-pressure-monitoring.md) を参照する。
+
+cgroup CPU throttling delta を host aggregate に含める場合は、対象 workload の現在の `cpu.stat` と、同一 cgroup generation で operator が保持した baseline snapshot を両方明示する。片方でも欠ければ root/current cgroup や任意 baseline を推測せず `cgroup_cpu_throttling_status=UNKNOWN` にする。
+
+```bash
+IRLIGHT_HOST_CGROUP_CPU_THROTTLING_MODE=enabled \
+IRLIGHT_CGROUP_CPU_STAT_PATH=/sys/fs/cgroup/<target>/cpu.stat \
+IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH=/run/irlight-monitor/<target>.cpu.stat.baseline \
+  bash scripts/check-host-pressure.sh
+```
+
+既存 `check-cgroup-cpu-throttling.sh` の semantics をそのまま再利用し、`nr_throttled` または `throttled_usec` の増加を `WARNING`、増加なしを `OK`、欠損・不正 record・counter reset を `UNKNOWN` とする。counter だけでは sampling interval や media impact を確定できないため checker 単独では `CRITICAL` を生成しない。aggregate は baseline の作成・更新・削除、CPU quota変更、process/container restartを行わない。詳細は [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md) を参照する。
 
 ## Targeted cgroup v2 PID check
 
@@ -191,6 +203,8 @@ python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_pid_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_swap_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_swap_aggregate.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_cpu_throttling_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_cpu_throttling_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
@@ -210,6 +224,8 @@ bash -n \
   scripts/check-host-cgroup-pid-pressure.sh \
   scripts/check-cgroup-swap-pressure.sh \
   scripts/check-host-cgroup-swap-pressure.sh \
+  scripts/check-cgroup-cpu-throttling.sh \
+  scripts/check-host-cgroup-cpu-throttling.sh \
   scripts/check-network-link-health.sh \
   scripts/check-host-filesystem-readonly.sh \
   scripts/check-host-filesystem-mountpoint.sh \
