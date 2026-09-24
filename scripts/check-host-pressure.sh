@@ -38,6 +38,9 @@ filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-/st
 tcp_memory_mode="${IRLIGHT_HOST_TCP_MEMORY_MODE:-disabled}"
 tcp_sockstat_path="${IRLIGHT_TCP_SOCKSTAT_PATH:-/proc/net/sockstat}"
 tcp_mem_path="${IRLIGHT_TCP_MEM_PATH:-/proc/sys/net/ipv4/tcp_mem}"
+cgroup_memory_mode="${IRLIGHT_HOST_CGROUP_MEMORY_MODE:-disabled}"
+cgroup_memory_current_path="${IRLIGHT_CGROUP_MEMORY_CURRENT_PATH:-}"
+cgroup_memory_max_path="${IRLIGHT_CGROUP_MEMORY_MAX_PATH:-}"
 cgroup_pids_mode="${IRLIGHT_HOST_CGROUP_PIDS_MODE:-disabled}"
 cgroup_pids_current_path="${IRLIGHT_CGROUP_PIDS_CURRENT_PATH:-}"
 cgroup_pids_max_path="${IRLIGHT_CGROUP_PIDS_MAX_PATH:-}"
@@ -138,6 +141,15 @@ case "$tcp_memory_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_tcp_memory_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_memory_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_memory_mode\n'
     exit 3
     ;;
 esac
@@ -298,6 +310,13 @@ fi
 # namespace chosen by the deployment. Invalid or unavailable inputs fail closed.
 if [[ "$tcp_memory_mode" == "enabled" ]]; then
   add_component "tcp_memory" "$script_dir/check-host-tcp-memory-pressure.sh" "$tcp_sockstat_path" "$tcp_mem_path"
+fi
+
+# cgroup memory limits are target-specific and hierarchical. Require both
+# memory.current and memory.max explicitly so host monitoring never guesses the
+# workload cgroup or silently falls back to the root hierarchy.
+if [[ "$cgroup_memory_mode" == "enabled" ]]; then
+  add_component "cgroup_memory" "$script_dir/check-host-cgroup-memory-pressure.sh" "$cgroup_memory_current_path" "$cgroup_memory_max_path"
 fi
 
 # cgroup PID limits are target-specific and hierarchical. Keep the signal opt-in

@@ -81,6 +81,7 @@ exit code は次の意味を持つ。
 | host clock synchronization | `IRLIGHT_HOST_CLOCK_SYNC_MODE` | `clock_sync_status` | `IRLIGHT_TIMEDATECTL_BIN` | — | baseline 不要。systemd / timedatectl を利用する deployment policy のみ opt-in | [host-clock-sync-monitoring.md](host-clock-sync-monitoring.md) |
 | production network link | `IRLIGHT_HOST_NETWORK_LINK_MODE` | `network_link_status` | `IRLIGHT_NETWORK_INTERFACE_DIR` | — | baseline 不要。production egress interface を operator が明示し、自動選択しない | [host-network-link-monitoring.md](host-network-link-monitoring.md) |
 | TCP socket memory pressure | `IRLIGHT_HOST_TCP_MEMORY_MODE` | `tcp_memory_status` | `IRLIGHT_TCP_SOCKSTAT_PATH` / `IRLIGHT_TCP_MEM_PATH` | — | baseline 不要。kernel の `tcp_mem` pressure/max watermark を read-only で評価し、repository 独自 threshold は導入しない | [tcp-memory-pressure-monitoring.md](tcp-memory-pressure-monitoring.md) |
+| cgroup v2 memory.max pressure | `IRLIGHT_HOST_CGROUP_MEMORY_MODE` | `cgroup_memory_status` | `IRLIGHT_CGROUP_MEMORY_CURRENT_PATH` | `IRLIGHT_CGROUP_MEMORY_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-memory-pressure-monitoring.md](cgroup-memory-pressure-monitoring.md) |
 | cgroup v2 PID pressure | `IRLIGHT_HOST_CGROUP_PIDS_MODE` | `cgroup_pids_status` | `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` | `IRLIGHT_CGROUP_PIDS_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
@@ -158,6 +159,8 @@ python -m unittest discover -s tests -p 'test_psi_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_file_handle_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_cgroup_memory_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_memory_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_pid_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
@@ -171,6 +174,8 @@ bash -n \
   scripts/check-file-handle-pressure.sh \
   scripts/check-conntrack-pressure.sh \
   scripts/check-task-pressure.sh \
+  scripts/check-cgroup-memory-pressure.sh \
+  scripts/check-host-cgroup-memory-pressure.sh \
   scripts/check-cgroup-pid-pressure.sh \
   scripts/check-host-cgroup-pid-pressure.sh \
   scripts/check-network-link-health.sh \
