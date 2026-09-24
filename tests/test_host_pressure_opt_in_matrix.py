@@ -95,7 +95,7 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "tcp_memory_status",
                 "IRLIGHT_TCP_SOCKSTAT_PATH",
                 None,
-                "tcp-memory-pressure-check.md",
+                "tcp-memory-pressure-monitoring.md",
             ),
             (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
@@ -125,6 +125,18 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 if baseline_path is not None:
                     self.assertIn(f"`{baseline_path}`", row)
                 self.assertIn(f"]({runbook})", row)
+
+    def test_matrix_runbook_links_resolve(self) -> None:
+        matrix = self._matrix()
+        runbooks = re.findall(r"\]\(([^)]+\.md)\)", matrix)
+        self.assertTrue(runbooks)
+
+        for runbook in runbooks:
+            with self.subTest(runbook=runbook):
+                self.assertTrue(
+                    (RUNBOOK.parent / runbook).is_file(),
+                    f"missing host pressure runbook: {runbook}",
+                )
 
     def test_matrix_keeps_fail_closed_and_operator_owned_baseline_contract(self) -> None:
         matrix = self._matrix()
