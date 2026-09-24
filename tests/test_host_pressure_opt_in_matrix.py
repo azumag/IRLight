@@ -91,6 +91,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "host-network-link-monitoring.md",
             ),
             (
+                "IRLIGHT_HOST_TCP_MEMORY_MODE",
+                "tcp_memory_status",
+                "IRLIGHT_TCP_SOCKSTAT_PATH",
+                None,
+                "tcp-memory-pressure-check.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",
