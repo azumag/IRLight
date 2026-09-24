@@ -65,6 +65,18 @@ emit_failure_stage() {
   printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
 }
 
+emit_phase() {
+  local phase="$1"
+  case "$phase" in
+    compose-config|compose-up|initial-connected|target-stop|reconnecting|backoff-window|gateway-stop|stopped-user-stopped|target-recovery-start|target-recovery-observe|target-recovery-stopped-status|unsafe-destination-terminal|unsafe-destination-failed|unsafe-destination-reason|secret-redaction-terminal-output|secret-redaction-logs-read|secret-redaction-logs)
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+  printf 'IRLIGHT_DOCKER_SMOKE_PHASE phase=%s\n' "$phase"
+}
+
 redact_generated_secrets() {
   python3 -c '
 from pathlib import Path
@@ -309,16 +321,19 @@ assert_status_reason() {
   status_matches_reason "$expected_status" "$expected_reason" <<<"$payload"
 }
 
+emit_phase "compose-config"
 if ! "${compose[@]}" config >/dev/null; then
   emit_failure_stage "compose-config"
   exit 1
 fi
 # Start Node Agent and Control Plane as well: Continuity consumes authenticated
 # local-media URIs from the Agent-owned tmpfs secret volume.
+emit_phase "compose-up"
 if ! "${compose[@]}" up -d --build; then
   emit_failure_stage "compose-up"
   exit 1
 fi
+emit_phase "initial-connected"
 if ! wait_egress_status CONNECTED 60; then
   emit_failure_stage "initial-connected"
   exit 1
@@ -327,10 +342,12 @@ fi
 # Phase 1: remote outage enters a long reconnect backoff. An explicit user stop
 # must interrupt that wait, write STOPPED, and never reconnect after the target
 # comes back.
+emit_phase "target-stop"
 if ! "${compose[@]}" stop egress-target >/dev/null; then
   emit_failure_stage "target-stop"
   exit 1
 fi
+emit_phase "reconnecting"
 if ! wait_egress_status RECONNECTING 45; then
   request_egress_stack_dump
   emit_reconnect_timeout_evidence
@@ -338,16 +355,19 @@ if ! wait_egress_status RECONNECTING 45; then
   exit 1
 fi
 
+emit_phase "backoff-window"
 before_stop="$(read_egress_status)"
 if ! status_has_long_reconnect_backoff <<<"$before_stop"; then
   emit_failure_stage "backoff-window"
   exit 1
 fi
 
+emit_phase "gateway-stop"
 if ! "${compose[@]}" stop -t 5 egress-gateway >/dev/null; then
   emit_failure_stage "gateway-stop"
   exit 1
 fi
+emit_phase "stopped-user-stopped"
 if ! wait_egress_status STOPPED 10; then
   emit_failure_stage "stopped-user-stopped"
   exit 1
@@ -368,16 +388,19 @@ if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   exit 1
 fi
 
+emit_phase "target-recovery-start"
 if ! "${compose[@]}" start egress-target >/dev/null; then
   emit_failure_stage "target-recovery-start"
   exit 1
 fi
+emit_phase "target-recovery-observe"
 sleep 5
 if "${compose[@]}" ps --status running --services | grep -qx egress-gateway; then
   echo "egress gateway restarted after target recovery despite user stop" >&2
   emit_failure_stage "target-recovery-no-restart"
   exit 1
 fi
+emit_phase "target-recovery-stopped-status"
 if ! assert_status_reason STOPPED USER_STOPPED; then
   emit_failure_stage "target-recovery-stopped-status"
   exit 1
@@ -393,6 +416,7 @@ EOF
 chmod 600 "$secret_file" "$redaction_values_file"
 unset unsafe_secret
 
+emit_phase "unsafe-destination-terminal"
 set +e
 terminal_output="$("${compose[@]}" run --rm --no-deps \
   -e EGRESS_ALLOW_PRIVATE_TARGETS=0 \
@@ -408,15 +432,18 @@ if [[ $terminal_rc -ne 2 ]]; then
   emit_failure_stage "unsafe-destination-terminal"
   exit 1
 fi
+emit_phase "unsafe-destination-failed"
 if ! wait_egress_status FAILED 5; then
   emit_failure_stage "unsafe-destination-failed"
   exit 1
 fi
+emit_phase "unsafe-destination-reason"
 if ! assert_status_reason FAILED DESTINATION_UNSAFE; then
   emit_failure_stage "unsafe-destination-reason"
   exit 1
 fi
 
+emit_phase "secret-redaction-terminal-output"
 if ! stdin_excludes_generated_secrets <<<"$terminal_output"; then
   echo "terminal guard output generated-secret check failed closed" >&2
   emit_failure_stage "secret-redaction-terminal-output"
@@ -424,11 +451,13 @@ if ! stdin_excludes_generated_secrets <<<"$terminal_output"; then
 fi
 
 egress_logs_file="$tmp_dir/egress-gateway.log"
+emit_phase "secret-redaction-logs-read"
 if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file" 2>&1; then
   echo "failed to read egress gateway logs for secret redaction check" >&2
   emit_failure_stage "secret-redaction-logs-read"
   exit 1
 fi
+emit_phase "secret-redaction-logs"
 if ! file_excludes_generated_secrets "$egress_logs_file"; then
   echo "egress gateway log generated-secret check failed closed" >&2
   emit_failure_stage "secret-redaction-logs"
