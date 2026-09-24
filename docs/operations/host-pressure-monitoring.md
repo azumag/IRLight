@@ -81,6 +81,7 @@ exit code は次の意味を持つ。
 | host clock synchronization | `IRLIGHT_HOST_CLOCK_SYNC_MODE` | `clock_sync_status` | `IRLIGHT_TIMEDATECTL_BIN` | — | baseline 不要。systemd / timedatectl を利用する deployment policy のみ opt-in | [host-clock-sync-monitoring.md](host-clock-sync-monitoring.md) |
 | production network link | `IRLIGHT_HOST_NETWORK_LINK_MODE` | `network_link_status` | `IRLIGHT_NETWORK_INTERFACE_DIR` | — | baseline 不要。production egress interface を operator が明示し、自動選択しない | [host-network-link-monitoring.md](host-network-link-monitoring.md) |
 | TCP socket memory pressure | `IRLIGHT_HOST_TCP_MEMORY_MODE` | `tcp_memory_status` | `IRLIGHT_TCP_SOCKSTAT_PATH` / `IRLIGHT_TCP_MEM_PATH` | — | baseline 不要。kernel の `tcp_mem` pressure/max watermark を read-only で評価し、repository 独自 threshold は導入しない | [tcp-memory-pressure-monitoring.md](tcp-memory-pressure-monitoring.md) |
+| cgroup v2 PID pressure | `IRLIGHT_HOST_CGROUP_PIDS_MODE` | `cgroup_pids_status` | `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` | `IRLIGHT_CGROUP_PIDS_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。parent/effective limitは推測しない | [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
 
@@ -102,9 +103,20 @@ bash scripts/check-cgroup-pid-pressure.sh \
 
 環境変数 `IRLIGHT_CGROUP_PIDS_CURRENT_PATH` / `IRLIGHT_CGROUP_PIDS_MAX_PATH` でも path を指定できる。既定閾値は80%でwarning、90%でcriticalで、`IRLIGHT_CGROUP_PIDS_WARNING_PERCENT` / `IRLIGHT_CGROUP_PIDS_CRITICAL_PERCENT` で変更できる。
 
+同じ明示対象を host aggregate に参加させる場合は、両 path を指定したうえで opt-in する。
+
+```bash
+IRLIGHT_HOST_CGROUP_PIDS_MODE=enabled \
+IRLIGHT_CGROUP_PIDS_CURRENT_PATH=/sys/fs/cgroup/<target>/pids.current \
+IRLIGHT_CGROUP_PIDS_MAX_PATH=/sys/fs/cgroup/<target>/pids.max \
+  bash scripts/check-host-pressure.sh
+```
+
+aggregate は target を自動選択しない。mode を有効にして片方でも path が未指定なら `cgroup_pids_status=UNKNOWN` とし、root cgroup 等へ暗黙fallbackしない。詳細は [cgroup-pid-pressure-monitoring.md](cgroup-pid-pressure-monitoring.md) を参照する。
+
 `pids.max` が有限値なら `pids.current / pids.max` を評価する。cgroup policy では task の移動や上限引き下げなどの organisational operation によって `pids.current > pids.max` が正規に発生し得るため、この状態は telemetry corruption ではなく `CRITICAL` として扱う。有限上限 `0` も正規の設定であり、新規 task を許容しないため `CRITICAL`（`usage_percent=NO_HEADROOM`）とする。`pids.max` が正規の `max` なら、その cgroup 自身には有限の local limit がないため `OK`（`usage_percent=NA`）とする。
 
-PID limit は階層的であり、child の `pids.max=max` でも parent cgroup の有限上限に制約される場合がある。この check は指定した2ファイルの local 状態だけを評価し、parent cgroup の effective limit、system-wide `threads-max`、PID namespace 枯渇を推測しない。そのため既定の host aggregate へ自動追加せず、監視対象 cgroup を明示できる service/container で opt-in する。
+PID limit は階層的であり、child の `pids.max=max` でも parent cgroup の有限上限に制約される場合がある。この check は指定した2ファイルの local 状態だけを評価し、parent cgroup の effective limit、system-wide `threads-max`、PID namespace 枯渇を推測しない。そのため既定の host aggregate へ自動追加せず、監視対象 cgroup を明示できる service/container でのみ opt-in する。
 
 欠落・複数行・非数値・signed 64-bit範囲外は `UNKNOWN` にする。check は cgroup control file へ書き込まない。
 
@@ -147,6 +159,7 @@ python -m unittest discover -s tests -p 'test_file_handle_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_conntrack_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_task_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_pid_pressure_check.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_pid_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
@@ -159,6 +172,7 @@ bash -n \
   scripts/check-conntrack-pressure.sh \
   scripts/check-task-pressure.sh \
   scripts/check-cgroup-pid-pressure.sh \
+  scripts/check-host-cgroup-pid-pressure.sh \
   scripts/check-network-link-health.sh \
   scripts/check-host-filesystem-readonly.sh \
   scripts/check-host-filesystem-mountpoint.sh \
