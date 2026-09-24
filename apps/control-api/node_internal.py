@@ -524,10 +524,16 @@ def _validate_node_events(events: object) -> None:
         return
     if not isinstance(events, list):
         raise NodeStateError("Node state has invalid events")
+    previous_sequence = 0
     for event in events:
         if not isinstance(event, dict):
             raise NodeStateError("Node state has an invalid event record")
-        _require_nonnegative_int(event.get("sequence"), "event sequence", minimum=1)
+        sequence = _require_nonnegative_int(
+            event.get("sequence"), "event sequence", minimum=1
+        )
+        if sequence <= previous_sequence:
+            raise NodeStateError("Node event sequence is not strictly increasing")
+        previous_sequence = sequence
         _require_nonempty_string(event.get("type"), "event type")
         _require_finite_number(event.get("occurred_at"), "event timestamp", minimum=0)
         if not isinstance(event.get("payload"), dict):
@@ -598,9 +604,18 @@ def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             if field in node and node[field] is not None:
                 _require_finite_number(node[field], field, minimum=0)
+        events = node.get("events")
+        _validate_node_events(events)
         if "next_event_seq" in node:
-            _require_nonnegative_int(node["next_event_seq"], "event sequence", minimum=1)
-        _validate_node_events(node.get("events"))
+            next_event_seq = _require_nonnegative_int(
+                node["next_event_seq"], "event sequence", minimum=1
+            )
+            if (
+                isinstance(events, list)
+                and events
+                and next_event_seq <= events[-1]["sequence"]
+            ):
+                raise NodeStateError("Node state has an inconsistent next event sequence")
 
         _validate_observation(
             node.get("ingest"),
@@ -1010,7 +1025,11 @@ def _append_ingest_events(
         minimum=0,
     )
     events = list(node.get("events", []))
-    next_sequence = int(node.get("next_event_seq", len(events) + 1))
+    next_sequence = int(
+        node["next_event_seq"]
+        if "next_event_seq" in node
+        else (events[-1]["sequence"] + 1 if events else 1)
+    )
     for event_type in event_types:
         events.append(
             {
@@ -1112,7 +1131,11 @@ def _append_egress_events(
         minimum=0,
     )
     events = list(node.get("events", []))
-    next_sequence = int(node.get("next_event_seq", len(events) + 1))
+    next_sequence = int(
+        node["next_event_seq"]
+        if "next_event_seq" in node
+        else (events[-1]["sequence"] + 1 if events else 1)
+    )
     payload = _egress_payload(str(node.get("node_id", "")), current)
     for event_type in event_types:
         events.append(
@@ -1168,7 +1191,7 @@ def _apply_egress_to_session(
 
 
 def _append_relay_client_events(
-    node: dict[str, Any],
+    node: dict[str,Any],
     previous: object,
     current: dict[str, Any],
     *,
@@ -1195,7 +1218,11 @@ def _append_relay_client_events(
         minimum=0,
     )
     events = list(node.get("events", []))
-    next_sequence = int(node.get("next_event_seq", len(events) + 1))
+    next_sequence = int(
+        node["next_event_seq"]
+        if "next_event_seq" in node
+        else (events[-1]["sequence"] + 1 if events else 1)
+    )
     payload = _relay_client_payload(str(node.get("node_id", "")), current)
     for event_type in event_types:
         events.append(

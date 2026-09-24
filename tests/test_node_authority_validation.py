@@ -48,6 +48,15 @@ def valid_authority() -> dict[str, object]:
     }
 
 
+def event(sequence: int) -> dict[str, object]:
+    return {
+        "sequence": sequence,
+        "type": "ingest.connected",
+        "occurred_at": 1_001.0,
+        "payload": {},
+    }
+
+
 class NodeAuthorityValidationTest(unittest.TestCase):
     def test_valid_authority_is_accepted_without_mutation(self) -> None:
         state = valid_authority()
@@ -136,6 +145,75 @@ class NodeAuthorityValidationTest(unittest.TestCase):
         ]
         with self.assertRaises(node_internal.NodeStateError):
             node_internal.validate_node_authority(state)
+
+    def test_event_sequences_must_be_strictly_increasing(self) -> None:
+        for label, sequences in (
+            ("duplicate", (7, 7)),
+            ("decreasing", (8, 7)),
+        ):
+            with self.subTest(label=label):
+                state = valid_authority()
+                node = state["nodes"]["node-0001"]
+                node["events"] = [event(sequence) for sequence in sequences]
+                node["next_event_seq"] = max(sequences) + 1
+                with self.assertRaises(node_internal.NodeStateError):
+                    node_internal.validate_node_authority(state)
+
+    def test_next_event_sequence_must_be_beyond_retained_tail(self) -> None:
+        state = valid_authority()
+        node = state["nodes"]["node-0001"]
+        node["events"] = [event(41), event(47)]
+        node["next_event_seq"] = 47
+        with self.assertRaises(node_internal.NodeStateError):
+            node_internal.validate_node_authority(state)
+
+        node["next_event_seq"] = 48
+        node_internal.validate_node_authority(state)
+
+    def test_legacy_event_stream_without_counter_appends_after_retained_tail(self) -> None:
+        base = {"events": [event(41), event(47)]}
+
+        ingest_node = copy.deepcopy(base)
+        ingest_node["ingest_ever_online"] = False
+        node_internal._append_ingest_events(
+            ingest_node,
+            None,
+            {
+                "status": "ACCEPTED",
+                "online": True,
+                "source_type": "rtmp",
+                "source_id": "publisher-1",
+            },
+            occurred_at=1_002.0,
+        )
+        self.assertEqual(
+            [item["sequence"] for item in ingest_node["events"][-2:]], [48, 49]
+        )
+        self.assertEqual(ingest_node["next_event_seq"], 50)
+
+        egress_node = copy.deepcopy(base)
+        egress_node["node_id"] = "node-0001"
+        egress_node["egress_ever_connected"] = False
+        node_internal._append_egress_events(
+            egress_node,
+            None,
+            {"status": "STARTING", "connected": False},
+            occurred_at=1_002.0,
+        )
+        self.assertEqual(egress_node["events"][-1]["sequence"], 48)
+        self.assertEqual(egress_node["next_event_seq"], 49)
+
+        relay_node = copy.deepcopy(base)
+        relay_node["node_id"] = "node-0001"
+        relay_node["relay_client_ever_connected"] = False
+        node_internal._append_relay_client_events(
+            relay_node,
+            None,
+            {"status": "CONNECTED", "connected": True, "reader_count": 1},
+            occurred_at=1_002.0,
+        )
+        self.assertEqual(relay_node["events"][-1]["sequence"], 48)
+        self.assertEqual(relay_node["next_event_seq"], 49)
 
     def test_huge_token_timestamp_is_controlled_state_error(self) -> None:
         state = valid_authority()
