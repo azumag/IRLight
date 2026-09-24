@@ -56,6 +56,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - Linux host OOM kill delta の targeted read-only 診断: [oom-kill-monitoring.md](oom-kill-monitoring.md)
 - UDP SNMP error delta の targeted read-only 診断: [udp-snmp-error-monitoring.md](udp-snmp-error-monitoring.md)
 - TCP SNMP retransmit delta の targeted read-only 診断: [tcp-snmp-retransmit-monitoring.md](tcp-snmp-retransmit-monitoring.md)
+- TCP memory watermark pressure の targeted read-only 診断: [tcp-memory-pressure-monitoring.md](tcp-memory-pressure-monitoring.md)
 - TCP connection attempt failure delta の targeted read-only 診断: [tcp-connection-attempt-failure-monitoring.md](tcp-connection-attempt-failure-monitoring.md)
 - TCP established reset delta の targeted read-only 診断: [tcp-established-reset-monitoring.md](tcp-established-reset-monitoring.md)
 - TCP listen overflow / drop delta の targeted read-only 診断: [tcp-listen-overflow-monitoring.md](tcp-listen-overflow-monitoring.md)
