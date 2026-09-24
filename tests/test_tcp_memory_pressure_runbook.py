@@ -8,6 +8,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNBOOK = REPO_ROOT / "docs" / "operations" / "tcp-memory-pressure-monitoring.md"
 INDEX = REPO_ROOT / "docs" / "operations" / "README.md"
 SCRIPT = REPO_ROOT / "scripts" / "check-host-tcp-memory-pressure.py"
+WRAPPER = REPO_ROOT / "scripts" / "check-host-tcp-memory-pressure.sh"
+AGGREGATE = REPO_ROOT / "scripts" / "check-host-pressure.sh"
 
 
 class TcpMemoryPressureRunbookTest(unittest.TestCase):
@@ -27,6 +29,13 @@ class TcpMemoryPressureRunbookTest(unittest.TestCase):
         self.assertIn("symlink", text)
         self.assertIn("特定 Session", text)
 
+    def test_runbook_documents_default_off_aggregate_opt_in(self) -> None:
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("IRLIGHT_HOST_TCP_MEMORY_MODE=enabled", text)
+        self.assertIn("tcp_memory_status", text)
+        self.assertIn("既定", text)
+        self.assertIn("CRITICAL > UNKNOWN > WARNING > OK", text)
+
     def test_script_uses_kernel_watermarks_without_mutation_commands(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('default="/proc/net/sockstat"', text)
@@ -36,6 +45,17 @@ class TcpMemoryPressureRunbookTest(unittest.TestCase):
         for forbidden in ("sysctl -w", "subprocess.run", "os.system", "socket.socket"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
+
+    def test_shell_adapter_and_aggregate_remain_read_only(self) -> None:
+        wrapper = WRAPPER.read_text(encoding="utf-8")
+        aggregate = AGGREGATE.read_text(encoding="utf-8")
+        self.assertIn("check-host-tcp-memory-pressure.py", wrapper)
+        self.assertIn("IRLIGHT_HOST_TCP_MEMORY_MODE", aggregate)
+        self.assertIn('add_component "tcp_memory"', aggregate)
+        for text in (wrapper, aggregate):
+            for forbidden in ("sysctl -w", "docker restart", "ip route replace"):
+                with self.subTest(forbidden=forbidden):
+                    self.assertNotIn(forbidden, text)
 
 
 if __name__ == "__main__":
