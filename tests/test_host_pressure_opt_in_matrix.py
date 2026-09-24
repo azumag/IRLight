@@ -105,6 +105,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "cgroup-memory-pressure-monitoring.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_MEMORY_HIGH_MODE",
+                "cgroup_memory_high_status",
+                "IRLIGHT_CGROUP_MEMORY_HIGH_CURRENT_PATH",
+                "IRLIGHT_CGROUP_MEMORY_HIGH_PATH",
+                "cgroup-memory-pressure-monitoring.md",
+            ),
+            (
                 "IRLIGHT_HOST_CGROUP_PIDS_MODE",
                 "cgroup_pids_status",
                 "IRLIGHT_CGROUP_PIDS_CURRENT_PATH",
