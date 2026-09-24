@@ -50,6 +50,9 @@ cgroup_pids_max_path="${IRLIGHT_CGROUP_PIDS_MAX_PATH:-}"
 cgroup_swap_mode="${IRLIGHT_HOST_CGROUP_SWAP_MODE:-disabled}"
 cgroup_swap_current_path="${IRLIGHT_CGROUP_SWAP_CURRENT_PATH:-}"
 cgroup_swap_max_path="${IRLIGHT_CGROUP_SWAP_MAX_PATH:-}"
+cgroup_cpu_throttling_mode="${IRLIGHT_HOST_CGROUP_CPU_THROTTLING_MODE:-disabled}"
+cgroup_cpu_stat_path="${IRLIGHT_CGROUP_CPU_STAT_PATH:-}"
+cgroup_cpu_stat_baseline_path="${IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -183,6 +186,15 @@ case "$cgroup_swap_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_swap_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_cpu_throttling_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_cpu_throttling_mode\n'
     exit 3
     ;;
 esac
@@ -362,6 +374,14 @@ fi
 # the aggregate never silently falls back to the root cgroup.
 if [[ "$cgroup_swap_mode" == "enabled" ]]; then
   add_component "cgroup_swap" "$script_dir/check-host-cgroup-swap-pressure.sh" "$cgroup_swap_current_path" "$cgroup_swap_max_path"
+fi
+
+# cpu.stat throttling counters are cumulative and tied to a specific workload
+# cgroup generation. Keep the signal opt-in and require both the current cpu.stat
+# and an operator-managed same-generation baseline. The aggregate never creates
+# or rotates that baseline and never guesses a root/current cgroup target.
+if [[ "$cgroup_cpu_throttling_mode" == "enabled" ]]; then
+  add_component "cgroup_cpu_throttling" "$script_dir/check-host-cgroup-cpu-throttling.sh" "$cgroup_cpu_stat_path" "$cgroup_cpu_stat_baseline_path"
 fi
 
 component_statuses=()
