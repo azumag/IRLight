@@ -71,6 +71,18 @@ emit_failure_stage() {
   printf '::error title=IRLight docker smoke failure::stage=%s\n' "$stage" >&2
 }
 
+emit_phase() {
+  local phase="$1"
+  case "$phase" in
+    compose-config|compose-up|target-api-initial|egress-connected-initial|target-path-initial|secret-redaction-status|secret-redaction-logs|target-stop|egress-reconnecting|continuity-during-outage|target-start|target-api-recovery|egress-connected-recovery|target-path-recovery|continuity-after-recovery)
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+  printf 'IRLIGHT_DOCKER_SMOKE_PHASE phase=%s\n' "$phase"
+}
+
 redact_stream_key() {
   python3 -c '
 from pathlib import Path
@@ -338,6 +350,7 @@ wait_target_path() {
 
 # The generated project must never borrow or tear down a developer stack. If a
 # fixed host port is occupied, let `up` fail rather than preempting that owner.
+emit_phase "compose-config"
 if ! "${compose[@]}" config >/dev/null; then
   emit_failure_stage "compose-config"
   exit 1
@@ -345,23 +358,28 @@ fi
 # Continuity now receives its authenticated local-media URIs from Node Agent
 # tmpfs files. Start the complete PoC dependency chain so the test exercises
 # production-equivalent secret delivery instead of bypassing it.
+emit_phase "compose-up"
 if ! "${compose[@]}" up -d --build; then
   emit_failure_stage "compose-up"
   exit 1
 fi
+emit_phase "target-api-initial"
 if ! wait_target_api 60; then
   emit_failure_stage "target-api-initial"
   exit 1
 fi
+emit_phase "egress-connected-initial"
 if ! wait_egress_status CONNECTED 60; then
   emit_failure_stage "egress-connected-initial"
   exit 1
 fi
+emit_phase "target-path-initial"
 if ! wait_target_path 60; then
   emit_failure_stage "target-path-initial"
   exit 1
 fi
 
+emit_phase "secret-redaction-status"
 status_payload="$(read_egress_status)"
 if ! stdin_excludes_stream_key <<<"$status_payload"; then
   echo "egress status stream-key check failed closed" >&2
@@ -370,6 +388,7 @@ if ! stdin_excludes_stream_key <<<"$status_payload"; then
 fi
 
 egress_logs_file="$tmp_dir/egress-gateway.log"
+emit_phase "secret-redaction-logs"
 if ! "${compose[@]}" logs --no-color egress-gateway >"$egress_logs_file"; then
   echo "failed to read egress gateway logs for secret redaction check" >&2
   emit_failure_stage "secret-redaction-logs-read"
@@ -383,39 +402,47 @@ fi
 
 # Simulate a remote RTMP outage. The Egress Gateway must reconnect on its own;
 # Continuity must keep publishing the local output/relay stream throughout.
+emit_phase "target-stop"
 if ! "${compose[@]}" stop egress-target >/dev/null; then
   emit_failure_stage "target-stop"
   exit 1
 fi
+emit_phase "egress-reconnecting"
 if ! wait_egress_status RECONNECTING 45; then
   request_egress_stack_dump
   emit_reconnect_timeout_evidence
   emit_failure_stage "egress-reconnecting"
   exit 1
 fi
+emit_phase "continuity-during-outage"
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   echo "continuity stopped when the external destination went down" >&2
   emit_failure_stage "continuity-during-outage"
   exit 1
 fi
 
+emit_phase "target-start"
 if ! "${compose[@]}" start egress-target >/dev/null; then
   emit_failure_stage "target-start"
   exit 1
 fi
+emit_phase "target-api-recovery"
 if ! wait_target_api 45; then
   emit_failure_stage "target-api-recovery"
   exit 1
 fi
+emit_phase "egress-connected-recovery"
 if ! wait_egress_status CONNECTED 60; then
   emit_failure_stage "egress-connected-recovery"
   exit 1
 fi
+emit_phase "target-path-recovery"
 if ! wait_target_path 60; then
   emit_failure_stage "target-path-recovery"
   exit 1
 fi
 
+emit_phase "continuity-after-recovery"
 if ! "${compose[@]}" ps --status running --services | grep -qx continuity; then
   echo "continuity is not running after egress recovery" >&2
   emit_failure_stage "continuity-after-recovery"
