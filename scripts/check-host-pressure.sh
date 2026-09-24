@@ -35,6 +35,9 @@ filesystem_readonly_mode="${IRLIGHT_HOST_FILESYSTEM_READONLY_MODE:-disabled}"
 filesystem_readonly_path="${IRLIGHT_FILESYSTEM_PATH:-$disk_path}"
 filesystem_mountpoint_mode="${IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE:-disabled}"
 filesystem_mountpoint_path="${IRLIGHT_EXPECTED_MOUNTPOINT_PATH:-${STATE_DIR:-/state}}"
+tcp_memory_mode="${IRLIGHT_HOST_TCP_MEMORY_MODE:-disabled}"
+tcp_sockstat_path="${IRLIGHT_TCP_SOCKSTAT_PATH:-/proc/net/sockstat}"
+tcp_mem_path="${IRLIGHT_TCP_MEM_PATH:-/proc/sys/net/ipv4/tcp_mem}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -123,6 +126,15 @@ case "$filesystem_mountpoint_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_filesystem_mountpoint_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$tcp_memory_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_tcp_memory_mode\n'
     exit 3
     ;;
 esac
@@ -267,6 +279,13 @@ fi
 # opt-in because only the deployment knows which paths must be independent mounts.
 if [[ "$filesystem_mountpoint_mode" == "enabled" ]]; then
   add_component "filesystem_mountpoint" "$script_dir/check-host-filesystem-mountpoint.sh" "$filesystem_mountpoint_path"
+fi
+
+# TCP memory watermarks are kernel-owned rather than repository policy. Keep the
+# check opt-in because /proc network accounting scope depends on the host/network
+# namespace chosen by the deployment. Invalid or unavailable inputs fail closed.
+if [[ "$tcp_memory_mode" == "enabled" ]]; then
+  add_component "tcp_memory" "$script_dir/check-host-tcp-memory-pressure.sh" "$tcp_sockstat_path" "$tcp_mem_path"
 fi
 
 component_statuses=()
