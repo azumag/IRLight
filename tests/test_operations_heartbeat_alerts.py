@@ -182,6 +182,36 @@ class OperationsHeartbeatAlertTests(unittest.TestCase):
             }
             self.assertEqual(after, before)
 
+
+    def test_invalid_clock_fails_closed_before_authority_read(self) -> None:
+        output = io.StringIO()
+        with patch.object(
+            module,
+            "_inspection_now",
+            side_effect=module.NodeHeartbeatInspectError("clock unavailable"),
+        ):
+            with patch.object(module, "_read_node_authority") as read_authority:
+                with contextlib.redirect_stdout(output):
+                    exit_code = module.main(
+                        [
+                            "--node-state-dir",
+                            "/should-not-be-read",
+                            "--catalog",
+                            str(CATALOG_PATH),
+                            "--repo-root",
+                            str(REPO_ROOT),
+                        ]
+                    )
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 3)
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertEqual(result["matched_alerts"], {})
+        self.assertEqual(
+            result["violations"], {"HEARTBEAT_CLOCK_UNAVAILABLE": 1}
+        )
+        read_authority.assert_not_called()
+
     def test_missing_authority_fails_closed_without_partial_alert(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-heartbeat-alert-missing-") as directory:
             output = io.StringIO()
