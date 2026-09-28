@@ -140,6 +140,13 @@ class HostPressureOptInMatrixTests(unittest.TestCase):
                 "cgroup-runtime-pressure-aggregate.md",
             ),
             (
+                "IRLIGHT_HOST_CGROUP_PSI_MODE",
+                "cgroup_psi_status",
+                "IRLIGHT_CGROUP_PSI_DIR",
+                None,
+                "host-cgroup-psi-monitoring.md",
+            ),
+            (
                 "IRLIGHT_HOST_FILESYSTEM_READONLY_MODE",
                 "filesystem_readonly_status",
                 "IRLIGHT_FILESYSTEM_PATH",

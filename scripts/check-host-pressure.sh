@@ -56,6 +56,8 @@ cgroup_cpu_stat_baseline_path="${IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH:-}"
 cgroup_memory_events_mode="${IRLIGHT_HOST_CGROUP_MEMORY_EVENTS_MODE:-disabled}"
 cgroup_memory_events_path="${IRLIGHT_CGROUP_MEMORY_EVENTS_PATH:-}"
 cgroup_memory_events_baseline_path="${IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH:-}"
+cgroup_psi_mode="${IRLIGHT_HOST_CGROUP_PSI_MODE:-disabled}"
+cgroup_psi_dir="${IRLIGHT_CGROUP_PSI_DIR:-}"
 component_timeout_seconds="${IRLIGHT_HOST_COMPONENT_TIMEOUT_SECONDS:-10}"
 
 case "$swap_pressure_mode" in
@@ -207,6 +209,15 @@ case "$cgroup_memory_events_mode" in
     ;;
   *)
     printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_memory_events_mode\n'
+    exit 3
+    ;;
+esac
+
+case "$cgroup_psi_mode" in
+  enabled|disabled)
+    ;;
+  *)
+    printf 'IRLIGHT_HOST_PRESSURE status=UNKNOWN reason=invalid_cgroup_psi_mode\n'
     exit 3
     ;;
 esac
@@ -401,6 +412,13 @@ fi
 # same-generation baseline. Never infer a root/current cgroup or rotate baseline.
 if [[ "$cgroup_memory_events_mode" == "enabled" ]]; then
   add_component "cgroup_memory_events" "$script_dir/check-host-cgroup-memory-events.sh" "$cgroup_memory_events_path" "$cgroup_memory_events_baseline_path"
+fi
+
+# cgroup PSI is workload-specific and hierarchical. Keep it opt-in and require
+# the exact workload cgroup directory; the host adapter never guesses root,
+# current-process, representative-PID, or container cgroups.
+if [[ "$cgroup_psi_mode" == "enabled" ]]; then
+  add_component "cgroup_psi" "$script_dir/check-host-cgroup-psi-pressure.sh" "$cgroup_psi_dir"
 fi
 
 component_statuses=()

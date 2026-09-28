@@ -87,6 +87,7 @@ exit code は次の意味を持つ。
 | cgroup v2 swap pressure | `IRLIGHT_HOST_CGROUP_SWAP_MODE` | `cgroup_swap_status` | `IRLIGHT_CGROUP_SWAP_CURRENT_PATH` | `IRLIGHT_CGROUP_SWAP_MAX_PATH` | baseline 不要。監視対象 cgroup の2 control fileをoperatorが明示し、未指定時は `UNKNOWN`。root/current cgroup へ fallback しない | [cgroup-swap-pressure-monitoring.md](cgroup-swap-pressure-monitoring.md) |
 | cgroup v2 CPU throttling delta | `IRLIGHT_HOST_CGROUP_CPU_THROTTLING_MODE` | `cgroup_cpu_throttling_status` | `IRLIGHT_CGROUP_CPU_STAT_PATH` | `IRLIGHT_CGROUP_CPU_STAT_BASELINE_PATH` | 同一 workload cgroup / generation の operator-managed baseline。aggregate は target や baseline を自動選択・更新しない | [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md) |
 | cgroup v2 memory.events delta | `IRLIGHT_HOST_CGROUP_MEMORY_EVENTS_MODE` | `cgroup_memory_events_status` | `IRLIGHT_CGROUP_MEMORY_EVENTS_PATH` | `IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH` | 同一 workload cgroup / generation の operator-managed baseline。aggregate は target や baseline を自動選択・更新しない | [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md) |
+| cgroup v2 PSI pressure | `IRLIGHT_HOST_CGROUP_PSI_MODE` | `cgroup_psi_status` | `IRLIGHT_CGROUP_PSI_DIR` | — | baseline 不要。監視対象 workload cgroup directory を operator が明示し、root/current/PID/container cgroup は推測しない | [host-cgroup-psi-monitoring.md](host-cgroup-psi-monitoring.md) |
 | filesystem read-only mount | `IRLIGHT_HOST_FILESYSTEM_READONLY_MODE` | `filesystem_readonly_status` | `IRLIGHT_FILESYSTEM_PATH`（未指定時は aggregate の disk path） | — | baseline 不要。writeability が必要な filesystem path を operator が明示 | [filesystem-readonly-monitoring.md](filesystem-readonly-monitoring.md) |
 | filesystem mountpoint presence | `IRLIGHT_HOST_FILESYSTEM_MOUNTPOINT_MODE` | `filesystem_mountpoint_status` | `IRLIGHT_EXPECTED_MOUNTPOINT_PATH`（未指定時は `STATE_DIR`、さらに未指定なら `/state`） | — | baseline 不要。mount が必須な path を operator が明示し、mount source / generation は別途検証 | [filesystem-mountpoint-monitoring.md](filesystem-mountpoint-monitoring.md) |
 
@@ -139,6 +140,16 @@ IRLIGHT_CGROUP_MEMORY_EVENTS_BASELINE_PATH=/run/irlight-monitor/<target>.memory.
 ```
 
 既存 `check-cgroup-memory-events.sh` の semantics を再利用し、`oom` / `oom_kill` / `oom_group_kill` の増加を `CRITICAL`、`low` / `high` / `max` の増加を `WARNING`、増加なしを `OK`、欠損・不正 record・counter reset を `UNKNOWN` とする。aggregate は baseline の作成・更新・削除、memory limit/reclaim、process/container restartを行わない。詳細は [cgroup-runtime-pressure-aggregate.md](cgroup-runtime-pressure-aggregate.md) を参照する。
+
+cgroup PSI を host aggregate に含める場合は、監視対象 workload の cgroup directory を明示する。target を省略しても root/current cgroup へ fallback せず `cgroup_psi_status=UNKNOWN` にする。
+
+```bash
+IRLIGHT_HOST_CGROUP_PSI_MODE=enabled \
+IRLIGHT_CGROUP_PSI_DIR=/sys/fs/cgroup/<target> \
+  bash scripts/check-host-pressure.sh
+```
+
+既存 `check-cgroup-psi-pressure.sh` の some/full avg10 threshold と PSI parser をそのまま再利用し、aggregate 独自 threshold は追加しない。cgroup control file 書込み、reclaim、resource limit 変更、process/container restart は行わない。詳細は [host-cgroup-psi-monitoring.md](host-cgroup-psi-monitoring.md) を参照する。
 
 ## Targeted cgroup v2 PID check
 
@@ -219,6 +230,7 @@ python -m unittest discover -s tests -p 'test_cgroup_cpu_throttling_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_cpu_throttling_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_cgroup_memory_events_check.py' -v
 python -m unittest discover -s tests -p 'test_host_cgroup_memory_events_aggregate.py' -v
+python -m unittest discover -s tests -p 'test_host_cgroup_psi_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_pressure_check.py' -v
 python -m unittest discover -s tests -p 'test_host_network_link_aggregate.py' -v
 python -m unittest discover -s tests -p 'test_host_filesystem_readonly_aggregate.py' -v
@@ -242,6 +254,9 @@ bash -n \
   scripts/check-host-cgroup-cpu-throttling.sh \
   scripts/check-cgroup-memory-events.sh \
   scripts/check-host-cgroup-memory-events.sh \
+  scripts/check-cgroup-psi-pressure.sh \
+  scripts/check-host-cgroup-psi-pressure.sh \
+  scripts/lib/psi-pressure-common.sh \
   scripts/check-network-link-health.sh \
   scripts/check-host-filesystem-readonly.sh \
   scripts/check-host-filesystem-mountpoint.sh \
