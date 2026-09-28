@@ -164,7 +164,8 @@ class Reaper:
         except (TypeError, ValueError):
             registered_at = None
 
-        return last_heartbeat or registered_at, last_heartbeat
+        baseline = last_heartbeat if last_heartbeat is not None else registered_at
+        return baseline, last_heartbeat
 
     def run(self) -> dict[str, Any]:
         """One sweep; returns counts for tests and logs."""
