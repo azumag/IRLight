@@ -154,7 +154,7 @@ class OperationsHeartbeatAlertTests(unittest.TestCase):
             }
             output = io.StringIO()
 
-            with patch("operations_heartbeat_alerts.time.time", return_value=1000.0):
+            with patch("node_heartbeat_inspect_cli.time.time", return_value=1000.0):
                 with contextlib.redirect_stdout(output):
                     exit_code = module.main(
                         [
