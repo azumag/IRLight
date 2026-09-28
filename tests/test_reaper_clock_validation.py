@@ -51,7 +51,10 @@ class ReaperClockValidationTest(unittest.TestCase):
                 self.assertEqual(store.path.read_bytes(), before)
                 self.assertEqual(provider.list_calls, 0)
                 self.assertEqual(provider.list_managed_resources(), [])
-                self.assertEqual(store.get(str(session["session_id"]))["status"], "CREATED")
+                self.assertEqual(
+                    store.get(str(session["session_id"]))["status"],
+                    session["status"],
+                )
 
     def test_invalid_default_clock_fails_before_mutation(self) -> None:
         store = self._store()
