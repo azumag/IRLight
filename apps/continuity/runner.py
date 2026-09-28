@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 
@@ -16,6 +17,18 @@ from standby_integrity import resolve_integrity_checked_standby_asset
 
 LOG = logging.getLogger("irlight.continuity")
 _SYNTHETIC_SOURCE = "videotestsrc name=standby_video is-live=true pattern=black !"
+
+
+def _validated_standby_status_time(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("standby status clock is invalid")
+    try:
+        selected_at = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise RuntimeError("standby status clock is invalid") from None
+    if not math.isfinite(selected_at) or selected_at < 0:
+        raise RuntimeError("standby status clock is invalid")
+    return selected_at
 
 
 class StandbyAwareContinuityPipeline(ContinuityPipeline):
@@ -45,11 +58,12 @@ class StandbyAwareContinuityPipeline(ContinuityPipeline):
         return description.replace(_SYNTHETIC_SOURCE, replacement)
 
     def _write_standby_status(self) -> None:
+        selected_at = _validated_standby_status_time(time.time())
         atomic_write_json(
             self.standby_status_path,
             {
                 **public_standby_status(self.standby_selection),
-                "selected_at": time.time(),
+                "selected_at": selected_at,
             },
         )
 

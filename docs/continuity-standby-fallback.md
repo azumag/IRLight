@@ -46,6 +46,8 @@ Continuity imageのDockerfileはPython sourceを明示的に`/app`へcopyする�
 - `custom_configured`
 - `selected_at`
 
+`selected_at` は finite かつ non-negative な wall-clock 値だけを保存する。epoch `0.0` は有効値として許可する。負値、NaN、±Infinity、bool、非数値、float変換時のoverflowなど clock を安全に正規化できない場合は fail-closed とし、`atomic_write_json()` を開始しないため既存の `standby.json` を保持する。
+
 ローカルfilesystem path、ファイル名、署名URL、asset ID、expected/actual checksumなどはstatus/logへ保存しない。
 
 主なreason:
