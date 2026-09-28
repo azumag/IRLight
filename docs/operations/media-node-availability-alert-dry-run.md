@@ -40,7 +40,7 @@ NODE_HEARTBEAT_GRACE_SECONDS=120 \
 出力は JSON 1件です。repository 管理下の alert ID と aggregate 件数だけを返し、`node_id`、`session_id`、provider server ID、boot ID、token digest、raw authority は表示しません。
 
 - `0`: authority と catalog を検証できた。alert が一致した場合も dry-run 自体は正常終了
-- `3`: Node authority を安全に検証できない
+- `3`: evaluation clock または Node authority を安全に検証できない
 - `4`: alert catalog の severity / signal / threshold / runbook 契約が evaluator と一致しない
 
 例:
@@ -49,7 +49,7 @@ NODE_HEARTBEAT_GRACE_SECONDS=120 \
 {"available_nodes":0,"expected_running_nodes":2,"inspected_nodes":2,"matched_alerts":{"MEDIA_NODES_ALL_UNAVAILABLE":1},"status":"MATCHED","violations":{}}
 ```
 
-authority が欠損・破損・marker 不整合などで読めない場合は `UNAVAILABLE` を返し、available count が0だったと推測して Critical alert を確定しません。部分的に読めた値から recovery も推測しません。
+wall clock が finite/non-negative でない場合は `HEARTBEAT_CLOCK_UNAVAILABLE`、authority が欠損・破損・marker 不整合などで読めない場合は `NODE_AUTHORITY_UNAVAILABLE` として `UNAVAILABLE` を返し、available count が0だったと推測して Critical alert を確定しません。clock異常時は authority read 自体を開始せず、部分的に読めた値から recovery も推測しません。
 
 ## 安全境界
 
