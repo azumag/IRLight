@@ -14,6 +14,7 @@ It is safe to run repeatedly; every delete re-checks provider inventory.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -35,6 +36,19 @@ from session_store import (
 LOG = logging.getLogger("irlight.reaper")
 
 
+def _validated_reaper_number(value: object, *, label: str) -> float:
+    message = f"{label} must be a finite non-negative number"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(message)
+    return number
+
+
 @dataclass(frozen=True)
 class ReaperConfig:
     provisioning_timeout_seconds: float = 600.0
@@ -42,6 +56,23 @@ class ReaperConfig:
     hold_timeout_seconds: float = 1800.0
     heartbeat_grace_seconds: float = 120.0
     orphan_grace_seconds: float = 300.0
+
+    def __post_init__(self) -> None:
+        for field in (
+            "provisioning_timeout_seconds",
+            "no_ingest_timeout_seconds",
+            "hold_timeout_seconds",
+            "heartbeat_grace_seconds",
+            "orphan_grace_seconds",
+        ):
+            object.__setattr__(
+                self,
+                field,
+                _validated_reaper_number(
+                    getattr(self, field),
+                    label=f"reaper {field}",
+                ),
+            )
 
 
 class Reaper:
@@ -66,7 +97,10 @@ class Reaper:
         self.credential_store = default_ingest_store(store.state_dir)
 
     def now(self) -> float:
-        return self._now if self._now is not None else time.time()
+        return _validated_reaper_number(
+            self._now if self._now is not None else time.time(),
+            label="reaper clock",
+        )
 
     @staticmethod
     def _has_holding_event_since(session: dict[str, Any], started: float) -> bool:
@@ -130,7 +164,8 @@ class Reaper:
         except (TypeError, ValueError):
             registered_at = None
 
-        return last_heartbeat or registered_at, last_heartbeat
+        baseline = last_heartbeat if last_heartbeat is not None else registered_at
+        return baseline, last_heartbeat
 
     def run(self) -> dict[str, Any]:
         """One sweep; returns counts for tests and logs."""
@@ -161,6 +196,7 @@ class Reaper:
                         "provisioning_started_at": session.get("provisioning_started_at"),
                         "provisioning_operation_id": session.get("provisioning_operation_id"),
                     },
+                    sweep_now=now,
                 ):
                     result["timeout_failures"] += 1
 
@@ -182,6 +218,7 @@ class Reaper:
                     reason_code="ABSOLUTE_DEADLINE_EXCEEDED",
                     expected_status=str(session.get("status")),
                     expected_fields={"absolute_deadline_at": deadline},
+                    sweep_now=now,
                 ):
                     result["deadline_stops"] += 1
 
@@ -208,6 +245,7 @@ class Reaper:
                     reason_code="NO_INGEST_TIMEOUT",
                     expected_status="READY_WAIT_INGEST",
                     expected_fields={"ready_at": session.get("ready_at")},
+                    sweep_now=now,
                 ):
                     result["deadline_stops"] += 1
 
@@ -258,6 +296,7 @@ class Reaper:
                         "hold_deadline_at": hold_deadline,
                         "last_ingest_at": session.get("last_ingest_at"),
                     },
+                    sweep_now=now,
                 ):
                     result["deadline_stops"] += 1
 
@@ -265,6 +304,7 @@ class Reaper:
             self._stop_and_cleanup(
                 str(session["session_id"]),
                 reason_code="STOP_REQUESTED",
+                sweep_now=now,
             )
 
         for session in self.store.sessions_in_states({"FAILED_CLEANUP"}):
@@ -304,7 +344,7 @@ class Reaper:
             finally:
                 self.store.release_session_cleanup(session_id, lease_id)
 
-        result["orphan_cleanup"] = self._cleanup_orphans()
+        result["orphan_cleanup"] = self._cleanup_orphans(sweep_now=now)
         return result
 
     def _fail_missing_heartbeat(
@@ -369,6 +409,7 @@ class Reaper:
         reason_code: str = "PIPELINE_CRASHED",
         expected_status: str | None = None,
         expected_fields: dict[str, Any] | None = None,
+        sweep_now: float,
     ) -> bool:
         try:
             if expected_status is None:
@@ -424,7 +465,7 @@ class Reaper:
                 reason_code=reason_code,
                 payload={"failure_reason": reason, "cleanup_pending": False},
                 origin="reaper",
-                occurred_at=self.now(),
+                occurred_at=sweep_now,
             )
         finally:
             self.store.release_session_cleanup(session_id, lease_id)
@@ -437,6 +478,7 @@ class Reaper:
         reason_code: str = "DEADLINE_EXCEEDED",
         expected_status: str | None = None,
         expected_fields: dict[str, Any] | None = None,
+        sweep_now: float,
     ) -> bool:
         before = self.store.get(session_id) if expected_status is None else None
         from_state = expected_status or (str(before.get("status")) if before else None)
@@ -468,18 +510,18 @@ class Reaper:
                 reason_code=reason_code,
                 payload={"from_state": from_state, "to_state": "STOPPING"},
                 origin="reaper",
-                occurred_at=self.now(),
+                occurred_at=sweep_now,
             )
         if bool(stopping.get("provisioning_in_progress")):
             try:
                 started = float(
                     stopping.get("provisioning_started_at")
                     or stopping.get("updated_at")
-                    or self.now()
+                    or sweep_now
                 )
             except (TypeError, ValueError):
-                started = self.now()
-            if self.now() - started <= self.config.provisioning_timeout_seconds:
+                started = sweep_now
+            if sweep_now - started <= self.config.provisioning_timeout_seconds:
                 return True
             self.store.update(
                 session_id,
@@ -517,7 +559,7 @@ class Reaper:
                 reason_code=reason_code,
                 payload={"from_state": "STOPPING", "to_state": "FINISHED"},
                 origin="reaper",
-                occurred_at=self.now(),
+                occurred_at=sweep_now,
             )
         finally:
             self.store.release_session_cleanup(session_id, lease_id)
@@ -561,7 +603,7 @@ class Reaper:
                 ok = False
         return ok
 
-    def _cleanup_orphans(self) -> int:
+    def _cleanup_orphans(self, *, sweep_now: float) -> int:
         try:
             sessions = self.store.authoritative_snapshot()
         except SessionStateError as exc:
@@ -574,7 +616,7 @@ class Reaper:
             session_id = resource.session_id
             if (
                 resource.kind != "server"
-                or not self._orphan_delete_allowed(resource, known)
+                or not self._orphan_delete_allowed(resource, known, sweep_now=sweep_now)
             ):
                 continue
             if self._cleanup_orphan_resource(resource):
@@ -583,7 +625,7 @@ class Reaper:
             session_id = resource.session_id
             if (
                 resource.kind != "volume"
-                or not self._orphan_delete_allowed(resource, known)
+                or not self._orphan_delete_allowed(resource, known, sweep_now=sweep_now)
             ):
                 continue
             if self._cleanup_orphan_resource(resource):
@@ -648,6 +690,8 @@ class Reaper:
         self,
         resource: Any,
         known: dict[str, dict[str, Any]],
+        *,
+        sweep_now: float,
     ) -> bool:
         session_id = resource.session_id
         if session_id is None:
@@ -655,9 +699,8 @@ class Reaper:
         session = known.get(str(session_id))
         if session is not None and str(session.get("status")) not in TERMINAL_STATES:
             return False
-        now = self.now()
         try:
-            if resource.delete_after is not None and now >= float(resource.delete_after):
+            if resource.delete_after is not None and sweep_now >= float(resource.delete_after):
                 return True
         except (TypeError, ValueError):
             return False
@@ -665,7 +708,7 @@ class Reaper:
             created_at = float(resource.created_at)
         except (TypeError, ValueError):
             return False
-        return now - created_at >= max(0.0, self.config.orphan_grace_seconds)
+        return sweep_now - created_at >= self.config.orphan_grace_seconds
 
     def _orphan_still_unowned(self, session_id: str) -> bool:
         """Recheck state immediately before each destructive provider call."""

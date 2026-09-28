@@ -162,6 +162,22 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
         self.assertIsNone(detected["payload"]["last_heartbeat_at"])
         self.assertEqual(detected["payload"]["node_registered_at"], 50.0)
 
+    def test_epoch_zero_heartbeat_is_not_replaced_by_registration_time(self) -> None:
+        session_id, _ = self._session(registered_at=100.0)
+        self._write_nodes(session_id=session_id, last_heartbeat_at=0.0)
+
+        result = self._reaper(now=120.0).run()
+
+        self.assertEqual(result["heartbeat_failures"], 1)
+        session = self.store.get(session_id)
+        assert session is not None
+        detected = next(
+            event
+            for event in session["events"]
+            if event.get("type") == "session.failure_detected"
+        )
+        self.assertEqual(detected["payload"]["last_heartbeat_at"], 0.0)
+
     def test_missing_node_record_uses_registration_time(self) -> None:
         session_id, _ = self._session(registered_at=80.0)
         self.nodes_path.write_text(

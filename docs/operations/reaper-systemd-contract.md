@@ -6,6 +6,8 @@ The service intentionally uses `docker compose exec -T control-ui python /app/re
 
 The timer runs every five minutes. That interval must remain shorter than the reaper CLI's default 600-second provisioning timeout and substantially shorter than the default one-hour no-ingest timeout. `Persistent=true` asks systemd to make up a missed activation after a host downtime instead of silently skipping the sweep.
 
+Each reaper sweep samples its wall clock once, requires that sample to be a finite non-negative number, and reuses it for timeout decisions, orphan grace, and reaper-generated event timestamps. Reaper timeout/grace configuration is likewise required to be finite and non-negative. An invalid clock or duration fails closed before provider cleanup or Session mutation starts. Unix epoch `0.0` remains valid; this contract does not add a future-skew or timestamp-ordering policy.
+
 `tests/test_reaper_systemd_contract.py` protects these repository assumptions: the service must reuse the running `control-ui` container, avoid destructive Compose commands, keep a bounded execution timeout shorter than the timer interval, and keep the runbook commands aligned with the shipped unit names.
 
 This contract test does **not** prove that the timer is installed or enabled on a real host, nor does it exercise a real ConoHa account. Runtime installation and the destructive/provider lifecycle checks remain the explicit steps in `docs/conoha-runtime-verification.md`. Those checks can create and delete paid provider resources, so they must not be run automatically from repository CI or without explicit operational approval.
