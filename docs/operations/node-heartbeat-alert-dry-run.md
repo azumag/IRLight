@@ -40,10 +40,10 @@ Node ID、Session ID、provider server ID、boot ID、token hash、authority rec
 ## 終了コード
 
 - `0`: `MATCHED` または `NO_MATCHES`
-- `3`: Node authority が安全に読めず `UNAVAILABLE`
+- `3`: evaluation clock または Node authority を安全に検証できず `UNAVAILABLE`
 - `4`: alert catalog が不正または evaluator 契約と不一致
 
-`UNAVAILABLE` を「Node が存在しない」や「復旧済み」と推測しません。state / marker が読めない場合は alert 判定そのものを抑制し、`media-node-heartbeat-stopped.md` と authority 復旧 runbook を使って原因を確認します。
+`UNAVAILABLE` を「Node が存在しない」や「復旧済み」と推測しません。wall clock が finite/non-negative でない場合は `HEARTBEAT_CLOCK_UNAVAILABLE`、state / marker が読めない場合は `NODE_AUTHORITY_UNAVAILABLE` として alert 判定そのものを抑制します。いずれも Node/Session/provider identifier や raw exception は出力せず、`media-node-heartbeat-stopped.md` と authority 復旧 runbook を使って原因を確認します。
 
 ## 非目標
 
