@@ -60,16 +60,11 @@ class ReaperClockValidationTest(unittest.TestCase):
         provider = CountingProvider()
         reaper = Reaper(store, provider, ReaperConfig())
 
-        with patch.object(reaper, "now", return_value=math.nan):
+        with patch("reaper.time.time", return_value=math.nan):
             with self.assertRaisesRegex(
                 ValueError,
                 "reaper clock must be a finite non-negative number",
             ):
-                # Exercise the same validated boundary as the default wall clock
-                # without patching Python's shared time module used by SessionStore.
-                reaper.now = lambda: (_ for _ in ()).throw(
-                    ValueError("reaper clock must be a finite non-negative number")
-                )
                 reaper.run()
 
         self.assertEqual(store.path.read_bytes(), before)
