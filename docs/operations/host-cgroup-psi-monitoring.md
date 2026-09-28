@@ -39,4 +39,4 @@ bash -n scripts/check-host-cgroup-psi-pressure.sh
 bash -n scripts/lib/psi-pressure-common.sh
 ```
 
-この adapter 自体は host aggregate の既定出力を変更しない。aggregate へ接続する場合は別変更として default-off opt-in にし、明示 target と既存 severity ordering を維持する。
+host aggregate への接続は default-off opt-in で提供する。`IRLIGHT_HOST_CGROUP_PSI_MODE=enabled` と `IRLIGHT_CGROUP_PSI_DIR=/sys/fs/cgroup/<target>` を明示した場合だけ `cgroup_psi_status` が aggregate に参加する。target 未指定では `UNKNOWN` とし、root/current/PID/container cgroup は推測しない。aggregate でも既存の component timeout と `CRITICAL > UNKNOWN > WARNING > OK` を維持する。既定 mode は `disabled` のため既存 stdout / exit-code contract は変更しない。
