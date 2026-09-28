@@ -92,7 +92,7 @@ class ContinuityStandbyStatusClockTest(unittest.TestCase):
             pipeline = self._pipeline_for(status_path)
 
             for invalid in invalid_values:
-                with self.subTest(invalid=repr(invalid)[:32]):
+                with self.subTest(invalid_type=type(invalid).__name__):
                     before_stat = status_path.stat()
                     before_entries = sorted(path.name for path in root.iterdir())
 
