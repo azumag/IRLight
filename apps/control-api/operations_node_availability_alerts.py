@@ -13,12 +13,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
 from node_heartbeat_inspect_cli import (
     NodeHeartbeatInspectError,
+    _inspection_now,
     _positive_finite,
     _read_node_authority,
     summarize_node_heartbeats,
@@ -160,6 +160,15 @@ def main(argv: list[str] | None = None) -> int:
         return _exit_code(result["status"])
 
     try:
+        now = _inspection_now()
+    except NodeHeartbeatInspectError:
+        result = _empty_result(
+            "UNAVAILABLE", violations={"HEARTBEAT_CLOCK_UNAVAILABLE": 1}
+        )
+        _print(result)
+        return _exit_code(result["status"])
+
+    try:
         authority = _read_node_authority(Path(args.node_state_dir))
     except NodeHeartbeatInspectError:
         result = _empty_result(
@@ -171,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     result = evaluate_authority(
         authority,
         catalog,
-        now=time.time(),
+        now=now,
         grace_seconds=args.heartbeat_grace_seconds,
     )
     _print(result)

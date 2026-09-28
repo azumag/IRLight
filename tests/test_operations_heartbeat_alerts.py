@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import io
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -153,7 +154,7 @@ class OperationsHeartbeatAlertTests(unittest.TestCase):
             }
             output = io.StringIO()
 
-            with patch("operations_heartbeat_alerts.time.time", return_value=1000.0):
+            with patch("node_heartbeat_inspect_cli.time.time", return_value=1000.0):
                 with contextlib.redirect_stdout(output):
                     exit_code = module.main(
                         [
@@ -181,6 +182,39 @@ class OperationsHeartbeatAlertTests(unittest.TestCase):
                 if path.is_file()
             }
             self.assertEqual(after, before)
+
+
+    def test_invalid_clock_fails_closed_before_authority_read(self) -> None:
+        invalid_values = (-1.0, math.nan, math.inf, -math.inf, True, 10**10000)
+
+        for invalid in invalid_values:
+            with self.subTest(invalid=type(invalid).__name__):
+                output = io.StringIO()
+                with patch(
+                    "node_heartbeat_inspect_cli.time.time",
+                    return_value=invalid,
+                ):
+                    with patch.object(module, "_read_node_authority") as read_authority:
+                        with contextlib.redirect_stdout(output):
+                            exit_code = module.main(
+                                [
+                                    "--node-state-dir",
+                                    "/should-not-be-read",
+                                    "--catalog",
+                                    str(CATALOG_PATH),
+                                    "--repo-root",
+                                    str(REPO_ROOT),
+                                ]
+                            )
+
+                result = json.loads(output.getvalue())
+                self.assertEqual(exit_code, 3)
+                self.assertEqual(result["status"], "UNAVAILABLE")
+                self.assertEqual(result["matched_alerts"], {})
+                self.assertEqual(
+                    result["violations"], {"HEARTBEAT_CLOCK_UNAVAILABLE": 1}
+                )
+                read_authority.assert_not_called()
 
     def test_missing_authority_fails_closed_without_partial_alert(self) -> None:
         with tempfile.TemporaryDirectory(prefix="irlight-heartbeat-alert-missing-") as directory:
