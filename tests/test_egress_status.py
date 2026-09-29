@@ -52,14 +52,17 @@ class EgressStatusReaderTest(unittest.TestCase):
             ("connected", "false"),
             ("connected", 1),
             ("connected", []),
+            ("connected", None),
             ("attempt", True),
             ("attempt", 1.5),
             ("attempt", "2"),
             ("attempt", -1),
+            ("attempt", None),
             ("rendered_buffers", True),
             ("rendered_buffers", 1.5),
             ("rendered_buffers", "2"),
             ("rendered_buffers", -1),
+            ("rendered_buffers", None),
         )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "egress.json")
