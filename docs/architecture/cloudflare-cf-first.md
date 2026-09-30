@@ -15,7 +15,7 @@
 
 - mainの完全なGit tree（truncated=false）を確認。`package.json`、Node lockfile、`wrangler.*`、`cloudflare.config.ts`、`apps/control-plane/` はない
 - 16本の `.github/workflows/*` を読取り、Cloudflare / Wrangler / cf の操作参照なし。現行CIはPython、Compose、Docker smoke、fault/recovery等
-- #629はopen、コメント0件。open PR一覧は0件。直近20件のclosed PRにも本件の実装は見当たらない
+- 2026-09-30 06:31 UTCの調査時点で#629はopen、コメント0件。open PR一覧は0件。直近20件のclosed PRにも本件の実装は見当たらない
 - #630は2026-09-30 06:17:32 UTCにmerge済み。本件の変更対象には含めない
 - Cloudflareアカウント、実際のAccess設定、DNS zone、production token・権限、外部CI設定は未照会。以下はリポジトリの実装・設計棚卸しであり、稼働資産の存在・不存在を断定しない
 
@@ -80,7 +80,7 @@
 ## CI・権限・production境界
 
 - 最初のdocs PRはtoken不要。既存CIの `contents: read`、commit固定Action、Python/Compose検査を維持
-- Worker追加PRでNode jobを独立追加。未信頼PRではcf config、build、依存scriptが実行されてもproduction資格情報を一切渡さない
+- Worker追加PRでNode jobを独立追加。未信頼PRではcf config、build、依存scriptが実行されてもstagingを含むdeploy token・アプリsecretを一切渡さない
 - 型検査・unit test・build・dry-runが成功した同一commit/artifactだけをdeploy候補とする。buildとdeployのmodeが一致しなければ停止
 - deploy承認前にbindingの既存resource IDと不足resourceの作成計画を確認する。ID省略bindingはdeploy時に自動作成され得るため、意図しない課金resourceを作らない
 - non-interactiveで破壊操作を拒否したcfは `Aborted.` をstderrへ出しexit 0になる場合がある。exit codeだけで変更成功とせず、結果とread-backを確認する。自動的に `--force` を補って再実行しない
