@@ -46,6 +46,74 @@ class EgressStatusReaderTest(unittest.TestCase):
         self.assertNotIn("stream_key", result)
         self.assertNotIn("secret-key", str(result))
 
+
+    def test_malformed_health_scalars_reject_whole_status(self) -> None:
+        cases = (
+            ("connected", "false"),
+            ("connected", 1),
+            ("connected", []),
+            ("connected", None),
+            ("attempt", True),
+            ("attempt", 1.5),
+            ("attempt", "2"),
+            ("attempt", -1),
+            ("attempt", None),
+            ("rendered_buffers", True),
+            ("rendered_buffers", 1.5),
+            ("rendered_buffers", "2"),
+            ("rendered_buffers", -1),
+            ("rendered_buffers", None),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            for field, value in cases:
+                with self.subTest(field=field, value_type=type(value).__name__):
+                    payload = {
+                        "status": "CONNECTED",
+                        "connected": True,
+                        "attempt": 2,
+                        "rendered_buffers": 12,
+                        "observed_at": 100.0,
+                    }
+                    payload[field] = value
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+
+                    result = read_egress_status(
+                        path,
+                        now=101.0,
+                        max_age_seconds=30.0,
+                    )
+
+                    self.assertEqual(result["status"], "UNKNOWN")
+                    self.assertFalse(result["connected"])
+                    self.assertEqual(result["attempt"], 0)
+                    self.assertEqual(result["rendered_buffers"], 0)
+                    self.assertEqual(result["reason_code"], "STATUS_INVALID")
+
+    def test_missing_health_scalars_keep_legacy_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "CONNECTED",
+                        "observed_at": 100.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = read_egress_status(
+                path,
+                now=101.0,
+                max_age_seconds=30.0,
+            )
+
+        self.assertEqual(result["status"], "CONNECTED")
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["attempt"], 0)
+        self.assertEqual(result["rendered_buffers"], 0)
+        self.assertIsNone(result["reason_code"])
+
     def test_stale_nonterminal_status_is_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "egress.json")

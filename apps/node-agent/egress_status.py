@@ -60,11 +60,32 @@ def _reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, An
     return result
 
 
-def _nonnegative_int(value: object, default: int = 0) -> int:
-    try:
-        return max(0, int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError):
+def _optional_boolean_field(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    default: bool = False,
+) -> bool:
+    if key not in raw:
         return default
+    value = raw[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be a boolean")
+    return value
+
+
+def _optional_nonnegative_int_field(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    default: int = 0,
+) -> int:
+    if key not in raw:
+        return default
+    value = raw[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
 
 
 def _nonnegative_finite_number(value: object) -> int | float | None:
@@ -118,6 +139,15 @@ def read_egress_status(
     if status not in ALLOWED_STATUSES:
         return _unknown("STATUS_INVALID", observed_at=current)
 
+    try:
+        connected = _optional_boolean_field(raw, "connected")
+        attempt = _optional_nonnegative_int_field(raw, "attempt")
+        rendered_buffers = _optional_nonnegative_int_field(
+            raw, "rendered_buffers"
+        )
+    except ValueError:
+        return _unknown("STATUS_INVALID", observed_at=current)
+
     raw_observed_at = raw.get("observed_at")
     if raw_observed_at is None:
         observed_at = current
@@ -143,12 +173,12 @@ def read_egress_status(
 
     return {
         "status": status,
-        "connected": status == "CONNECTED" and bool(raw.get("connected", False)),
-        "attempt": _nonnegative_int(raw.get("attempt", 0)),
+        "connected": status == "CONNECTED" and connected,
+        "attempt": attempt,
         "reason_code": (
             str(raw.get("reason_code"))[:100] if raw.get("reason_code") else None
         ),
-        "rendered_buffers": _nonnegative_int(raw.get("rendered_buffers", 0)),
+        "rendered_buffers": rendered_buffers,
         "next_retry_at": _nonnegative_finite_number(raw.get("next_retry_at")),
         "destination_scheme": (
             str(raw.get("destination_scheme"))[:20]
