@@ -33,6 +33,10 @@ Phase B の Media Node は **ConoHa VPS を第一候補**として維持する�
 
 詳細は `docs/provider-selection.md`、将来TODOは Issue #287 を参照。
 
+## Cloudflare 実装・運用
+
+新規Cloudflare機能の設定・開発・運用は [cf-first契約](docs/architecture/cloudflare-cf-first.md) に従います。現行Python/Compose実装と予定のWorkers/Workflowsを区別し、production・secret・authorityの境界を維持します。
+
 ## CI の外部パッケージ取得
 
 Continuity image は Ubuntu / GStreamer の依存が大きいため、`apt` の取得処理では
