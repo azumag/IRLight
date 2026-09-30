@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import signal
@@ -45,7 +46,23 @@ ALLOWED_STATUSES = {
 
 
 class RuntimeStatusWriteError(ValueError):
-    """Raised when a runtime status payload cannot be serialized as strict JSON."""
+    """Raised when a runtime status payload cannot be serialized safely."""
+
+
+def _validated_status_timestamp(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeStatusWriteError(f"{field} is invalid")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeStatusWriteError(f"{field} is invalid") from None
+    if not math.isfinite(numeric) or numeric < 0:
+        raise RuntimeStatusWriteError(f"{field} is invalid")
+    return numeric
+
+
+def _validated_status_now(*, field: str) -> float:
+    return _validated_status_timestamp(time.time(), field=field)
 
 
 def env_float(name: str, default: float) -> float:
@@ -506,7 +523,7 @@ class EgressGateway:
             max_elapsed_seconds=env_float("EGRESS_MAX_RETRY_SECONDS", 0.0),
         )
         self.stop_event = threading.Event()
-        self.started_at = time.time()
+        self.started_at = _validated_status_now(field="egress started_at")
         self.failure_count = 0
         self.destination_scheme = ""
         self.destination_host = ""
@@ -528,6 +545,19 @@ class EgressGateway:
     ) -> None:
         if status not in ALLOWED_STATUSES:
             raise ValueError(f"invalid egress status: {status}")
+        started_at = _validated_status_timestamp(
+            self.started_at,
+            field="egress started_at",
+        )
+        observed_at = _validated_status_now(field="egress observed_at")
+        validated_next_retry_at = (
+            None
+            if next_retry_at is None
+            else _validated_status_timestamp(
+                next_retry_at,
+                field="egress next_retry_at",
+            )
+        )
         atomic_write_json(
             self.status_file,
             {
@@ -536,13 +566,13 @@ class EgressGateway:
                 "attempt": self.failure_count + 1,
                 "reason_code": reason_code,
                 "rendered_buffers": rendered_buffers,
-                "next_retry_at": next_retry_at,
+                "next_retry_at": validated_next_retry_at,
                 "error_domain": error_domain,
                 "error_code": error_code,
                 "destination_scheme": self.destination_scheme,
                 "destination_host": self.destination_host,
-                "started_at": self.started_at,
-                "observed_at": time.time(),
+                "started_at": started_at,
+                "observed_at": observed_at,
             },
         )
 
@@ -661,12 +691,16 @@ class EgressGateway:
                 return 3
 
             delay = self.policy.delay_for(self.failure_count, random.random())
+            next_retry_at = _validated_status_timestamp(
+                _validated_status_now(field="egress retry clock") + delay,
+                field="egress next_retry_at",
+            )
             self._write_status(
                 "RECONNECTING",
                 connected=False,
                 reason_code=result.reason_code,
                 rendered_buffers=result.rendered_buffers,
-                next_retry_at=time.time() + delay,
+                next_retry_at=next_retry_at,
                 error_domain=result.error_domain,
                 error_code=result.error_code,
             )
