@@ -6,11 +6,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
-from ingest_api import _connection_info, _public_ingest_host  # noqa: E402
+from ingest_api import (  # noqa: E402
+    _connection_info,
+    _public_ingest_host,
+    _relay_connection_info,
+)
 
 
 class RTMPSConnectionInfoTest(unittest.TestCase):
@@ -85,6 +91,110 @@ class RTMPSConnectionInfoTest(unittest.TestCase):
         self.assertIsNone(info["rtmps"]["server_url"])
         self.assertTrue(info["srt"]["enabled"])
         self.assertIsNotNone(info["srt"]["url"])
+
+
+    def test_invalid_enabled_ports_fail_closed(self) -> None:
+        cases = (
+            (
+                {"IRLIGHT_INGEST_RTMP_PORT": "0"},
+                lambda: _connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                    ["rtmp"],
+                ),
+            ),
+            (
+                {
+                    "IRLIGHT_INGEST_RTMP_PORT": "1935",
+                    "IRLIGHT_INGEST_RTMPS_ENABLED": "1",
+                    "IRLIGHT_INGEST_RTMPS_PORT": "65536",
+                },
+                lambda: _connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                    ["rtmp"],
+                ),
+            ),
+            (
+                {"IRLIGHT_INGEST_SRT_PORT": "-1"},
+                lambda: _connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                    ["srt"],
+                ),
+            ),
+            (
+                {"IRLIGHT_RELAY_RTMP_PORT": "broken"},
+                lambda: _relay_connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                ),
+            ),
+        )
+        for env, action in cases:
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(HTTPException) as failure:
+                    action()
+                self.assertEqual(failure.exception.status_code, 503)
+                self.assertEqual(
+                    failure.exception.detail,
+                    "ingest endpoint configuration unavailable",
+                )
+
+    def test_port_boundaries_are_preserved(self) -> None:
+        for port in ("1", "65535"):
+            with self.subTest(port=port), patch.dict(
+                os.environ,
+                {
+                    "IRLIGHT_INGEST_RTMP_PORT": port,
+                    "IRLIGHT_INGEST_RTMPS_ENABLED": "1",
+                    "IRLIGHT_INGEST_RTMPS_PORT": port,
+                    "IRLIGHT_INGEST_SRT_PORT": port,
+                    "IRLIGHT_RELAY_RTMP_PORT": port,
+                },
+                clear=True,
+            ):
+                info = _connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                    ["rtmp", "srt"],
+                )
+                relay = _relay_connection_info(
+                    self.session,
+                    "session-user",
+                    "secret",
+                )
+
+                self.assertIn(f":{port}/live/input", info["rtmp"]["server_url"])
+                self.assertIn(f":{port}/live/input", info["rtmps"]["server_url"])
+                self.assertEqual(info["srt"]["port"], int(port))
+                self.assertIn(f":{port}/output/relay", relay["server_url"])
+
+    def test_disabled_or_unrequested_protocol_port_is_not_validated(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "IRLIGHT_INGEST_RTMP_PORT": "1935",
+                "IRLIGHT_INGEST_RTMPS_PORT": "broken",
+                "IRLIGHT_INGEST_SRT_PORT": "broken",
+            },
+            clear=True,
+        ):
+            info = _connection_info(
+                self.session,
+                "session-user",
+                "secret",
+                ["rtmp"],
+            )
+
+        self.assertTrue(info["rtmp"]["enabled"])
+        self.assertFalse(info["rtmps"]["enabled"])
+        self.assertFalse(info["srt"]["enabled"])
 
     def test_connection_info_never_recovers_secret(self) -> None:
         with patch.dict(
