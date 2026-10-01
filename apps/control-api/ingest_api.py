@@ -21,6 +21,7 @@ ACCEPTING_INGEST_STATES = {"READY_WAIT_INGEST", "LIVE", "DEGRADED", "HOLDING"}
 INGEST_PATH = "live/input"
 RELAY_PATH = "output/relay"
 DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
+ENDPOINT_CONFIG_UNAVAILABLE = "ingest endpoint configuration unavailable"
 
 
 class IssueIngestCredentialRequest(BaseModel):
@@ -74,21 +75,79 @@ def _public_ingest_host(session: dict[str, Any]) -> str:
     return str(session.get("provider_public_ipv4") or "127.0.0.1")
 
 
+def _configured_port(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail=ENDPOINT_CONFIG_UNAVAILABLE,
+        ) from None
+    if port < 1 or port > 65535:
+        raise HTTPException(
+            status_code=503,
+            detail=ENDPOINT_CONFIG_UNAVAILABLE,
+        )
+    return port
+
+
+def _resolve_ingest_endpoint_config(
+    session: dict[str, Any],
+    protocols: Iterable[str],
+) -> dict[str, Any]:
+    allowed = {str(value).lower() for value in protocols}
+    host = _public_ingest_host(session)
+    rtmp_enabled = "rtmp" in allowed
+    rtmps_enabled = (
+        rtmp_enabled and os.getenv("IRLIGHT_INGEST_RTMPS_ENABLED", "") == "1"
+    )
+    srt_enabled = "srt" in allowed
+    return {
+        "host": host,
+        "host_for_url": _host_for_url(host),
+        "rtmp_enabled": rtmp_enabled,
+        "rtmps_enabled": rtmps_enabled,
+        "srt_enabled": srt_enabled,
+        "rtmp_port": (
+            _configured_port("IRLIGHT_INGEST_RTMP_PORT", 1935)
+            if rtmp_enabled
+            else None
+        ),
+        "rtmps_port": (
+            _configured_port("IRLIGHT_INGEST_RTMPS_PORT", 1936)
+            if rtmps_enabled
+            else None
+        ),
+        "srt_port": (
+            _configured_port("IRLIGHT_INGEST_SRT_PORT", 8890)
+            if srt_enabled
+            else None
+        ),
+    }
+
+
 def _connection_info(
     session: dict[str, Any],
     username: str,
     secret: str | None,
     protocols: Iterable[str] = ("rtmp", "srt"),
+    *,
+    endpoint_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    allowed = {str(value).lower() for value in protocols}
-    host = _public_ingest_host(session)
-    host_for_url = _host_for_url(host)
-    rtmp_port = int(os.getenv("IRLIGHT_INGEST_RTMP_PORT", "1935"))
-    rtmps_port = int(os.getenv("IRLIGHT_INGEST_RTMPS_PORT", "1936"))
-    srt_port = int(os.getenv("IRLIGHT_INGEST_SRT_PORT", "8890"))
-    rtmp_enabled = "rtmp" in allowed
-    rtmps_enabled = rtmp_enabled and os.getenv("IRLIGHT_INGEST_RTMPS_ENABLED", "") == "1"
-    srt_enabled = "srt" in allowed
+    config = (
+        _resolve_ingest_endpoint_config(session, protocols)
+        if endpoint_config is None
+        else endpoint_config
+    )
+    host = str(config["host"])
+    host_for_url = str(config["host_for_url"])
+    rtmp_enabled = bool(config["rtmp_enabled"])
+    rtmps_enabled = bool(config["rtmps_enabled"])
+    srt_enabled = bool(config["srt_enabled"])
+    rtmp_port = config["rtmp_port"]
+    rtmps_port = config["rtmps_port"]
+    srt_port = config["srt_port"]
 
     rtmp: dict[str, Any] = {
         "enabled": rtmp_enabled,
@@ -131,17 +190,31 @@ def _connection_info(
     return {"rtmp": rtmp, "rtmps": rtmps, "srt": srt}
 
 
+def _resolve_relay_endpoint_config(session: dict[str, Any]) -> dict[str, Any]:
+    host = _public_ingest_host(session)
+    return {
+        "host_for_url": _host_for_url(host),
+        "port": _configured_port("IRLIGHT_RELAY_RTMP_PORT", 1935),
+    }
+
+
 def _relay_connection_info(
     session: dict[str, Any],
     username: str,
     secret: str | None,
+    *,
+    endpoint_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    host = _public_ingest_host(session)
-    host_for_url = _host_for_url(host)
-    port = int(os.getenv("IRLIGHT_RELAY_RTMP_PORT", "1935"))
+    config = (
+        _resolve_relay_endpoint_config(session)
+        if endpoint_config is None
+        else endpoint_config
+    )
     return {
         "protocol": "rtmp",
-        "server_url": f"rtmp://{host_for_url}:{port}/{RELAY_PATH}",
+        "server_url": (
+            f"rtmp://{config['host_for_url']}:{config['port']}/{RELAY_PATH}"
+        ),
         "username": username,
         "password": secret,
         "password_available": secret is not None,
@@ -265,6 +338,14 @@ def issue_ingest_credential(
             detail="relay client credentials require RELAY_ONLY mode",
         )
 
+    if request.scope == "RELAY_CLIENT":
+        endpoint_config = _resolve_relay_endpoint_config(session)
+    else:
+        endpoint_config = _resolve_ingest_endpoint_config(
+            session,
+            request.protocols,
+        )
+
     ttl = float(request.ttl_seconds)
     deadline = session.get("absolute_deadline_at")
     if deadline is not None:
@@ -285,7 +366,10 @@ def issue_ingest_credential(
     )
     if request.scope == "RELAY_CLIENT":
         connection_info = _relay_connection_info(
-            session, str(record["username"]), secret
+            session,
+            str(record["username"]),
+            secret,
+            endpoint_config=endpoint_config,
         )
     else:
         connection_info = _connection_info(
@@ -293,6 +377,7 @@ def issue_ingest_credential(
             str(record["username"]),
             secret,
             record.get("protocols", []),
+            endpoint_config=endpoint_config,
         )
     return {
         **record,

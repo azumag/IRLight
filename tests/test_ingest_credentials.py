@@ -114,6 +114,125 @@ class IngestCredentialStoreTest(unittest.TestCase):
             self.assertIsNone(store.verify(username=session_id, secret=secret, protocol="rtmp", now=102.0))
 
 
+
+
+class IngestCredentialEndpointPreflightTest(unittest.TestCase):
+    def test_invalid_ingest_port_does_not_rotate_existing_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            credential_store = IngestCredentialStore(tmp)
+            session_id = "11111111-1111-4111-8111-111111111111"
+            old_record, old_secret = credential_store.issue(
+                session_id=session_id,
+                user_id="user-1",
+                protocols=["rtmp"],
+                now=100.0,
+            )
+            session_store = _SessionStore(
+                {
+                    "session_id": session_id,
+                    "user_id": "user-1",
+                    "status": "READY_WAIT_INGEST",
+                }
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"IRLIGHT_INGEST_RTMP_PORT": "broken"},
+                clear=True,
+            ), patch(
+                "ingest_api.default_store",
+                return_value=session_store,
+            ), patch(
+                "ingest_api.default_ingest_store",
+                return_value=credential_store,
+            ), patch.object(
+                credential_store,
+                "issue",
+                wraps=credential_store.issue,
+            ) as issue:
+                with self.assertRaises(HTTPException) as failure:
+                    issue_ingest_credential(
+                        session_id,
+                        IssueIngestCredentialRequest(protocols=["rtmp"]),
+                        {"id": "user-1"},
+                    )
+
+            self.assertEqual(failure.exception.status_code, 503)
+            self.assertEqual(
+                failure.exception.detail,
+                "ingest endpoint configuration unavailable",
+            )
+            issue.assert_not_called()
+            verified = credential_store.verify(
+                username=session_id,
+                secret=old_secret,
+                protocol="rtmp",
+                now=101.0,
+            )
+            self.assertIsNotNone(verified)
+            self.assertEqual(verified["id"], old_record["id"])
+
+    def test_invalid_relay_port_does_not_rotate_existing_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            credential_store = IngestCredentialStore(tmp)
+            session_id = "11111111-1111-4111-8111-111111111111"
+            old_record, old_secret = credential_store.issue(
+                session_id=session_id,
+                user_id="user-1",
+                scope="RELAY_CLIENT",
+                protocols=["rtmp"],
+                now=100.0,
+            )
+            session_store = _SessionStore(
+                {
+                    "session_id": session_id,
+                    "user_id": "user-1",
+                    "status": "READY_WAIT_INGEST",
+                    "egress_mode": "RELAY_ONLY",
+                }
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"IRLIGHT_RELAY_RTMP_PORT": "65536"},
+                clear=True,
+            ), patch(
+                "ingest_api.default_store",
+                return_value=session_store,
+            ), patch(
+                "ingest_api.default_ingest_store",
+                return_value=credential_store,
+            ), patch.object(
+                credential_store,
+                "issue",
+                wraps=credential_store.issue,
+            ) as issue:
+                with self.assertRaises(HTTPException) as failure:
+                    issue_ingest_credential(
+                        session_id,
+                        IssueIngestCredentialRequest(
+                            scope="RELAY_CLIENT",
+                            protocols=["rtmp"],
+                        ),
+                        {"id": "user-1"},
+                    )
+
+            self.assertEqual(failure.exception.status_code, 503)
+            self.assertEqual(
+                failure.exception.detail,
+                "ingest endpoint configuration unavailable",
+            )
+            issue.assert_not_called()
+            verified = credential_store.verify(
+                username=session_id,
+                secret=old_secret,
+                protocol="rtmp",
+                scope="RELAY_CLIENT",
+                now=101.0,
+            )
+            self.assertIsNotNone(verified)
+            self.assertEqual(verified["id"], old_record["id"])
+
 class MediaMTXAuthTest(unittest.TestCase):
     def test_valid_publish_is_authorized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
