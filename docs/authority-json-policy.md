@@ -42,6 +42,16 @@ The Continuity and Egress Gateway runtime status writers now apply the same stri
 
 ## Runtime clock inputs
 
+The Node Agent egress-status reader requires a present `observed_at` to be a
+finite, non-negative JSON number. It does not coerce boolean or numeric-string
+timestamps, and an explicit `null` is invalid rather than a fresh observation.
+Missing `observed_at` retains the legacy read-time fallback, while integer and
+floating-point epoch zero remain valid. Invalid present values reject the whole
+observation as `UNKNOWN` / `STATUS_INVALID`, including terminal statuses which
+otherwise bypass the age check. The reader leaves the file bytes and mtime
+unchanged; status expiry, future-clock policy and reconnect behavior are not
+changed by this validation.
+
 The Control Plane validates its own effective Node heartbeat clock as a non-negative finite number before changing Node heartbeat fields or invoking Session heartbeat and pipeline-health updates. Negative values, `NaN` / `Infinity`, and integers that overflow finite float normalization fail closed as `NodeStateError`, and the rejected heartbeat does not replace `nodes.json`. This only hardens the runtime clock boundary; Node status vocabulary, heartbeat cadence, health grace periods, Session capacity, provider, billing, and notification semantics are unchanged.
 
 The Egress Gateway applies the same finite/non-negative contract to every wall-clock value published in `egress.json`. Its startup `started_at`, per-write `observed_at`, retry clock sample, and derived `next_retry_at` are validated before the atomic writer is invoked; booleans, negative values, `NaN` / `Infinity`, non-numeric values, and integers that overflow finite float normalization fail as the fixed `RuntimeStatusWriteError` boundary. Epoch `0.0` remains valid. A rejected clock does not replace the last readable `egress.json` or create a status temporary file. This does not change reconnect delays, GStreamer behavior, Destination/provider configuration, credentials, billing, production defaults, or notification semantics.

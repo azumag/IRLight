@@ -148,16 +148,15 @@ def read_egress_status(
     except ValueError:
         return _unknown("STATUS_INVALID", observed_at=current)
 
-    raw_observed_at = raw.get("observed_at")
-    if raw_observed_at is None:
+    if "observed_at" not in raw:
+        # Only an absent legacy field may use the read-time fallback. An
+        # explicit null, boolean or numeric string is malformed evidence.
         observed_at = current
     else:
-        try:
-            observed_at = float(raw_observed_at)
-        except (TypeError, ValueError, OverflowError):
+        validated_observed_at = _nonnegative_finite_number(raw["observed_at"])
+        if validated_observed_at is None:
             return _unknown("STATUS_INVALID", observed_at=current)
-        if not math.isfinite(observed_at) or observed_at < 0:
-            return _unknown("STATUS_INVALID", observed_at=current)
+        observed_at = float(validated_observed_at)
     if max_age_seconds is None:
         max_age_seconds = _max_age_seconds(
             os.getenv("NODE_EGRESS_STATUS_MAX_AGE_SECONDS", "30")

@@ -235,6 +235,53 @@ class EgressStatusReaderTest(unittest.TestCase):
         self.assertFalse(result["connected"])
         self.assertEqual(result["reason_code"], "STATUS_INVALID")
 
+    def test_present_observed_at_is_a_strict_finite_nonnegative_number(self) -> None:
+        cases = (True, False, "100", "1", None, [], {}, -1, 10 ** 400)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            for value in cases:
+                with self.subTest(value_type=type(value).__name__):
+                    path.write_text(json.dumps({
+                        "status": "CONNECTED", "connected": True,
+                        "observed_at": value,
+                    }), encoding="utf-8")
+                    before = path.read_bytes()
+                    mtime = path.stat().st_mtime_ns
+                    # A large age allowance must not turn an invalid timestamp
+                    # into a trusted CONNECTED observation through coercion.
+                    result = read_egress_status(path, now=101.0, max_age_seconds=1000)
+                    self.assertEqual(result["status"], "UNKNOWN")
+                    self.assertEqual(result["reason_code"], "STATUS_INVALID")
+                    self.assertFalse(result["connected"])
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertEqual(path.stat().st_mtime_ns, mtime)
+
+    def test_observed_at_missing_and_epoch_zero_keep_legacy_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            for value, expected in ((0, 0.0), (0.0, 0.0), (100, 100.0), (100.5, 100.5)):
+                with self.subTest(value=value):
+                    path.write_text(json.dumps({
+                        "status": "CONNECTED", "connected": True,
+                        "observed_at": value,
+                    }), encoding="utf-8")
+                    result = read_egress_status(path, now=101.0, max_age_seconds=1000)
+                    self.assertEqual(result["status"], "CONNECTED")
+                    self.assertEqual(result["observed_at"], expected)
+            path.write_text(json.dumps({"status": "CONNECTED", "connected": True}), encoding="utf-8")
+            result = read_egress_status(path, now=101.0)
+            self.assertTrue(result["connected"])
+            self.assertEqual(result["observed_at"], 101.0)
+
+    def test_terminal_status_does_not_bypass_timestamp_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "egress.json")
+            for status in egress_status.TERMINAL_STATUSES:
+                with self.subTest(status=status):
+                    path.write_text(json.dumps({"status": status, "observed_at": "100"}), encoding="utf-8")
+                    result = read_egress_status(path, now=1000.0)
+                    self.assertEqual(result["reason_code"], "STATUS_INVALID")
+
     def test_nonfinite_observed_at_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "egress.json")
