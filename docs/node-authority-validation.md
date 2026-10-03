@@ -8,6 +8,15 @@ The Control Plane rejects non-standard JSON numeric constants (`NaN`, `Infinity`
 
 Each Node must keep a matching `node_id`, non-empty Session/provider/boot/agent identity, a valid access-token SHA-256 digest, known `status` and `desired_state`, finite lifecycle timestamps, and correctly typed safety booleans/counters. `next_node_seq` is a strict positive integer and must remain ahead of canonical `node-NNNN` IDs so corruption cannot overwrite an existing Node on the next bootstrap. Present ingest, egress, relay-client observations and Node events are structurally checked, while every nested numeric value must be finite.
 
+Node `status`, `desired_state`, present `egress_mode`, and observation `status`
+must be strings before they are checked against their existing enum vocabulary.
+JSON arrays and objects fail as `NodeStateError` rather than escaping validation
+as an unhashable-value `TypeError`. Rejected reads leave authority and markers
+unchanged, and rejected writes stop before atomic publication. The Reaper treats
+these malformed enum values like other untrusted Node registry data and skips
+heartbeat enforcement for that sweep; it does not infer that the Nodes vanished.
+Missing legacy optional fields remain compatible.
+
 Retained Node events must have strictly increasing positive `sequence` values. When `next_event_seq` is present it must be strictly greater than the retained tail, so a damaged counter cannot reuse an existing sequence. Legacy Nodes that predate `next_event_seq` remain readable; the next ingest, egress, or relay-client append derives its sequence from the retained tail plus one rather than from the retained list length. This remains correct after the bounded event history has dropped older entries.
 
 Bootstrap-token records retain the existing consumed-only invariant. Their timestamps are finite non-negative numbers, including protection against integer-to-float overflow, and canonical attempt identity continues to be cross-checked against the referenced Node.

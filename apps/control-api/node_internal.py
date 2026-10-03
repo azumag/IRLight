@@ -501,7 +501,7 @@ def _validate_observation(
     if not isinstance(observation, dict):
         raise NodeStateError(f"Node state has an invalid {label} observation")
     status = observation.get("status")
-    if status not in statuses:
+    if not isinstance(status, str) or status not in statuses:
         raise NodeStateError(f"Node state has an invalid {label} status")
     _require_finite_number(observation.get("observed_at"), f"{label} observed_at", minimum=0)
     for field in bool_fields:
@@ -570,13 +570,15 @@ def _validate_nodes(payload: dict[str, Any]) -> dict[str, Any]:
             raise NodeStateError("Node state has an invalid access token digest")
 
         status_value = node.get("status")
-        if status_value not in NODE_STATUSES:
+        if not isinstance(status_value, str) or status_value not in NODE_STATUSES:
             raise NodeStateError("Node state has an invalid status")
         desired_state = node.get("desired_state")
-        if desired_state not in NODE_DESIRED_STATES:
+        if not isinstance(desired_state, str) or desired_state not in NODE_DESIRED_STATES:
             raise NodeStateError("Node state has an invalid desired state")
-        if "egress_mode" in node and node["egress_mode"] not in NODE_EGRESS_MODES:
-            raise NodeStateError("Node state has an invalid egress mode")
+        if "egress_mode" in node:
+            egress_mode = node["egress_mode"]
+            if not isinstance(egress_mode, str) or egress_mode not in NODE_EGRESS_MODES:
+                raise NodeStateError("Node state has an invalid egress mode")
         if "destination_id" in node and node["destination_id"] is not None:
             _require_nonempty_string(node["destination_id"], "Destination binding")
 
