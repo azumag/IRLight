@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import node_internal  # noqa: E402
+from state_safety import initialization_marker, mark_initialized  # noqa: E402
 
 
 def valid_authority() -> dict[str, object]:
@@ -57,7 +58,58 @@ def event(sequence: int) -> dict[str, object]:
     }
 
 
+ENUM_FIELDS = ("status", "desired_state", "egress_mode", "ingest", "egress", "relay_client")
+
+
+def enum_authority(field: str, value: object) -> dict[str, object]:
+    state = valid_authority()
+    node = state["nodes"]["node-0001"]
+    if field in ("ingest", "egress", "relay_client"):
+        node[field] = {"status": value, "observed_at": 1_000.0}
+    else:
+        node[field] = value
+    return state
+
+
 class NodeAuthorityValidationTest(unittest.TestCase):
+    def test_nonstring_enums_fail_with_controlled_state_error(self) -> None:
+        for field in ENUM_FIELDS:
+            for value in ([], {}, ["READY"], {"status": "READY"}, None, True, 1):
+                with self.subTest(field=field, value=value):
+                    state = enum_authority(field, value)
+                    before = copy.deepcopy(state)
+                    with self.assertRaises(node_internal.NodeStateError):
+                        node_internal.validate_node_authority(state)
+                    self.assertEqual(state, before)
+
+    def test_container_enums_do_not_repair_or_publish_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nodes.json"
+            marker = initialization_marker(path)
+            mark_initialized(path)
+            marker_before = (marker.read_bytes(), marker.stat().st_mtime_ns)
+            for field in ENUM_FIELDS:
+                for value in ([], {}):
+                    with self.subTest(field=field, value=value):
+                        state = enum_authority(field, value)
+                        path.write_text(json.dumps(state), encoding="utf-8")
+                        before = (path.read_bytes(), path.stat().st_mtime_ns)
+                        with self.assertRaises(node_internal.NodeStateError):
+                            node_internal.read_node_authority_snapshot(path)
+                        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+
+                        path.write_text(json.dumps(valid_authority()), encoding="utf-8")
+                        before = (path.read_bytes(), path.stat().st_mtime_ns)
+                        with (
+                            patch.object(node_internal, "NODES_PATH", path),
+                            patch.object(node_internal, "atomic_write_json") as writer,
+                        ):
+                            with self.assertRaises(node_internal.NodeStateError):
+                                node_internal._write_authority(state)
+                            writer.assert_not_called()
+                        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+                        self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), marker_before)
+
     def test_valid_authority_is_accepted_without_mutation(self) -> None:
         state = valid_authority()
         before = copy.deepcopy(state)

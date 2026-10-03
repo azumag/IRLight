@@ -207,13 +207,17 @@ class NodeHeartbeatReaperTest(unittest.TestCase):
         session_id, _ = self._session(registered_at=10.0)
         self._write_nodes(session_id=session_id, last_heartbeat_at=0.0)
         payload = json.loads(self.nodes_path.read_text(encoding="utf-8"))
-        payload["nodes"]["node-0001"]["status"] = "INVALID"
-        self.nodes_path.write_text(json.dumps(payload), encoding="utf-8")
+        for status in ("INVALID", [], {}):
+            with self.subTest(status=status):
+                payload["nodes"]["node-0001"]["status"] = status
+                self.nodes_path.write_text(json.dumps(payload), encoding="utf-8")
+                before = self.nodes_path.read_bytes()
 
-        result = self._reaper(now=1_000.0).run()
-        self.assertEqual(result["heartbeat_failures"], 0)
-        self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
-        self.assertEqual(len(self.provider.list_managed_resources()), 2)
+                result = self._reaper(now=1_000.0).run()
+                self.assertEqual(result["heartbeat_failures"], 0)
+                self.assertEqual(self.store.get(session_id)["status"], "READY_WAIT_INGEST")
+                self.assertEqual(len(self.provider.list_managed_resources()), 2)
+                self.assertEqual(self.nodes_path.read_bytes(), before)
 
     def test_future_heartbeat_does_not_fail_on_wall_clock_correction(self) -> None:
         session_id, _ = self._session(registered_at=100.0)
