@@ -462,6 +462,8 @@ def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
 def _cleanup_srt_process(
     process: subprocess.Popen[bytes],
     reader: threading.Thread | None,
+    *,
+    cleanup_deadline: float | None = None,
 ) -> None:
     """Stop and reap the verifier within one shared cleanup budget.
 
@@ -470,7 +472,8 @@ def _cleanup_srt_process(
     No individual step receives a fresh timeout.
     """
 
-    cleanup_deadline = time.monotonic() + SRT_CLEANUP_SECONDS
+    if cleanup_deadline is None:
+        cleanup_deadline = time.monotonic() + SRT_CLEANUP_SECONDS
     cleanup_failed = False
 
     if process.poll() is None:
@@ -554,13 +557,8 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         deadline=deadline,
         timeout_message="SRT destination handshake timed out",
     )
-    remaining = _remaining_budget(deadline, "SRT destination handshake timed out")
     # Resolve once, validate all answers, then hand the CLI a literal IP so a
     # second DNS lookup cannot redirect the probe to an internal address.
-    sockaddr = addresses[0][4]
-    peer_ip = str(sockaddr[0])
-    host_for_uri = f"[{peer_ip}]" if ":" in peer_ip else peer_ip
-
     # Preserve the caller's original query encoding (notably streamid syntax)
     # while taking control of connection mode and timeout. Secret-bearing
     # streamids have already been rejected before this argv is constructed.
@@ -572,78 +570,123 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         key = unquote_plus(raw_key).lower()
         if key not in {"mode", "conntimeo"}:
             raw_tokens.append(token)
-    raw_tokens.extend(
-        [
-            "mode=caller",
-            f"conntimeo={max(1, int(remaining * 1000))}",
-        ]
-    )
-    safe_uri = urlunsplit(
-        (
-            "srt",
-            f"{host_for_uri}:{port}",
-            parsed.path,
-            "&".join(raw_tokens),
-            "",
-        )
-    )
 
     # srt-live-transmit is a stream relay/sample app, so its final exit code
     # describes the entire stream lifecycle, not just the SRT handshake. Keep
     # stdin open and wait for the application's explicit SRTS_CONNECTED event.
     # This lets verify stop immediately after the transport handshake without
     # having to publish media or depend on the destination's application path.
+    cleanup_deadline = deadline + SRT_CLEANUP_SECONDS
     connected_at: float | None = None
-    process: subprocess.Popen[bytes] | None = None
-    reader: threading.Thread | None = None
-    events: queue.Queue[str] = queue.Queue(maxsize=1)
-    try:
-        process = subprocess.Popen(
-            [
-                config.srt_binary,
-                "file://con",
-                safe_uri,
-                "-loglevel:error",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        if process.stderr is None:
-            raise DestinationProbeError("SRT verifier stderr is unavailable")
+    peer_ip: str | None = None
+    last_error: DestinationProbeError | None = None
 
-        reader = threading.Thread(
-            target=_read_srt_stderr_event,
-            args=(process.stderr, events),
-            daemon=True,
+    for _family, _socktype, _proto, _canonname, sockaddr in addresses:
+        peer_ip = str(sockaddr[0])
+        host_for_uri = f"[{peer_ip}]" if ":" in peer_ip else peer_ip
+        # Candidate failures may consume part of the one handshake budget.
+        # Recompute it immediately before each child launch.
+        remaining = _remaining_budget(deadline, "SRT destination handshake timed out")
+        safe_uri = urlunsplit(
+            (
+                "srt",
+                f"{host_for_uri}:{port}",
+                parsed.path,
+                "&".join(
+                    [
+                        *raw_tokens,
+                        "mode=caller",
+                        f"conntimeo={max(1, int(remaining * 1000))}",
+                    ]
+                ),
+                "",
+            )
         )
-        reader.start()
+        _remaining_budget(deadline, "SRT destination handshake timed out")
 
-        remaining = _remaining_budget(
-            deadline,
-            "SRT destination handshake timed out",
-        )
+        process: subprocess.Popen[bytes] | None = None
+        reader: threading.Thread | None = None
+        events: queue.Queue[str] = queue.Queue(maxsize=1)
+        candidate_failed = False
         try:
-            event = events.get(timeout=remaining)
-        except queue.Empty as exc:
-            raise DestinationProbeError("SRT destination handshake timed out") from exc
+            process = subprocess.Popen(
+                [
+                    config.srt_binary,
+                    "file://con",
+                    safe_uri,
+                    "-loglevel:error",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            if process.stderr is None:
+                raise DestinationProbeError("SRT verifier stderr is unavailable")
 
-        if event == SRT_STDERR_EVENT_OVERFLOW:
-            raise DestinationProbeError("SRT verifier output exceeded safety limit")
-        if event != SRT_STDERR_EVENT_CONNECTED:
-            raise DestinationProbeError("destination did not complete the SRT handshake")
+            reader = threading.Thread(
+                target=_read_srt_stderr_event,
+                args=(process.stderr, events),
+                daemon=True,
+            )
+            reader.start()
 
-        connected_at = time.monotonic()
-        if connected_at >= deadline:
-            raise DestinationProbeError("SRT destination handshake timed out")
-    except FileNotFoundError as exc:
-        raise DestinationProbeError("SRT verifier is unavailable") from exc
-    finally:
-        if process is not None:
-            _cleanup_srt_process(process, reader)
+            remaining = _remaining_budget(
+                deadline,
+                "SRT destination handshake timed out",
+            )
+            try:
+                event = events.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise DestinationProbeError(
+                    "SRT destination handshake timed out"
+                ) from exc
+
+            if event == SRT_STDERR_EVENT_OVERFLOW:
+                raise DestinationProbeError("SRT verifier output exceeded safety limit")
+            if event == SRT_STDERR_EVENT_EOF:
+                # EOF before the connected marker is a candidate-local
+                # connection failure. The child and its reader must be
+                # confirmed stopped before trying another resolved address.
+                candidate_failed = True
+                last_error = DestinationProbeError(
+                    "destination did not complete the SRT handshake"
+                )
+            elif event != SRT_STDERR_EVENT_CONNECTED:
+                raise DestinationProbeError(
+                    "destination did not complete the SRT handshake"
+                )
+            else:
+                connected_at = time.monotonic()
+                if connected_at >= deadline:
+                    raise DestinationProbeError("SRT destination handshake timed out")
+        except FileNotFoundError as exc:
+            raise DestinationProbeError("SRT verifier is unavailable") from exc
+        finally:
+            if process is not None:
+                _cleanup_srt_process(
+                    process,
+                    reader,
+                    cleanup_deadline=cleanup_deadline,
+                )
+
+        if connected_at is not None:
+            break
+        if candidate_failed:
+            # The previous child has been reaped by the cleanup above. Do not
+            # launch another one if either the handshake or shared cleanup
+            # budget has ended.
+            _remaining_budget(deadline, "SRT destination handshake timed out")
+            continue
+        raise DestinationProbeError("destination did not complete the SRT handshake")
 
     if connected_at is None:
-        raise DestinationProbeError("destination did not complete the SRT handshake")
+        if time.monotonic() >= deadline:
+            raise DestinationProbeError("SRT destination handshake timed out")
+        raise DestinationProbeError(
+            "destination did not complete the SRT handshake"
+        ) from last_error
+
+    assert peer_ip is not None
 
     elapsed_ms = round((connected_at - started) * 1000, 1)
     return {
