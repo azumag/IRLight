@@ -162,11 +162,23 @@ class NodeInternalApiTest(unittest.TestCase):
         self.assertIsInstance(failures[0], HTTPException)
         self.assertEqual(failures[0].status_code, 409)
 
-    def test_corrupt_node_state_fails_closed(self) -> None:
-        NODES_PATH.write_text("{broken", encoding="utf-8")
+    def test_corrupt_node_state_maps_to_safe_503_without_mutation(self) -> None:
+        from fastapi import HTTPException
 
-        with self.assertRaises(NodeStateError):
+        NODES_PATH.write_text("{broken", encoding="utf-8")
+        authority_before = (NODES_PATH.read_bytes(), NODES_PATH.stat().st_mtime_ns)
+        marker = initialization_marker(NODES_PATH)
+        marker_before = (marker.read_bytes(), marker.stat().st_mtime_ns)
+
+        with self.assertRaises(HTTPException) as failure:
             list_nodes(authorization="Bearer test-admin-token")
+
+        self.assertEqual(failure.exception.status_code, 503)
+        self.assertEqual(failure.exception.detail, {"code": "NODE_AUTHORITY_UNAVAILABLE"})
+        self.assertEqual(
+            (NODES_PATH.read_bytes(), NODES_PATH.stat().st_mtime_ns), authority_before
+        )
+        self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), marker_before)
 
     def test_list_nodes_maps_node_state_error_to_fixed_safe_http_reason(self) -> None:
         from fastapi import HTTPException
