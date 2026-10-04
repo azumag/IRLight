@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import multiprocessing
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -15,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 import destination_probe_admission as admission  # noqa: E402
+from destination_probe import (  # noqa: E402
+    DestinationProbeError,
+    ProbeConfig,
+    probe_destination,
+)
 from destination_probe_admission import (  # noqa: E402
     DEFAULT_MAX_CONCURRENT_PROBES,
     DestinationProbeAdmissionBusy,
@@ -23,6 +30,28 @@ from destination_probe_admission import (  # noqa: E402
     destination_probe_slot,
 )
 import catalog_api  # noqa: E402
+
+
+class _FailedSrtProcess:
+    def __init__(self) -> None:
+        self.stderr = io.BytesIO(b"connection setup failed\n")
+        self.stdin = io.BytesIO()
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 def _hold_probe_slot(lock_dir: str, ready: object, release: object) -> None:
@@ -49,6 +78,34 @@ class DestinationProbeAdmissionTest(unittest.TestCase):
 
             with destination_probe_slot(config):
                 pass
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.subprocess.Popen")
+    def test_failed_srt_candidates_release_probe_slot(self, popen, resolve) -> None:
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        processes = [_FailedSrtProcess(), _FailedSrtProcess()]
+        popen.side_effect = processes
+
+        with tempfile.TemporaryDirectory(prefix="irlight-probe-admission-") as root:
+            config = DestinationProbeAdmissionConfig(
+                max_concurrent=1,
+                lock_dir=Path(root) / "locks",
+            )
+            with self.assertRaises(DestinationProbeError):
+                with destination_probe_slot(config):
+                    probe_destination(
+                        "srt://probe.example.test:8890?streamid=publish:probe",
+                        ProbeConfig(timeout_seconds=1.0),
+                    )
+
+            with destination_probe_slot(config):
+                pass
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertTrue(all(process.returncode is not None for process in processes))
 
     def test_separate_worker_process_cannot_multiply_limit(self) -> None:
         context = multiprocessing.get_context("fork")
