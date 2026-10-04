@@ -168,6 +168,51 @@ class NodeInternalApiTest(unittest.TestCase):
         with self.assertRaises(NodeStateError):
             list_nodes(authorization="Bearer test-admin-token")
 
+    def test_list_nodes_maps_node_state_error_to_fixed_safe_http_reason(self) -> None:
+        from fastapi import HTTPException
+        from node_internal import TOKENS_PATH
+
+        self._bootstrap()
+        marker = initialization_marker(NODES_PATH)
+        authority_before = (NODES_PATH.read_bytes(), NODES_PATH.stat().st_mtime_ns)
+        marker_before = (marker.read_bytes(), marker.stat().st_mtime_ns)
+        token_marker = initialization_marker(TOKENS_PATH)
+        token_marker_before = (token_marker.read_bytes(), token_marker.stat().st_mtime_ns)
+        leaked_detail = f"path={NODES_PATH} token=secret-token hash=secret-hash"
+
+        with patch("node_internal._read_authority", side_effect=NodeStateError(leaked_detail)):
+            with self.assertRaises(HTTPException) as failure:
+                list_nodes(authorization="Bearer test-admin-token")
+
+        self.assertEqual(failure.exception.status_code, 503)
+        self.assertEqual(failure.exception.detail, {"code": "NODE_AUTHORITY_UNAVAILABLE"})
+        self.assertNotIn("secret-token", str(failure.exception.detail))
+        self.assertNotIn("secret-hash", str(failure.exception.detail))
+        self.assertNotIn(str(NODES_PATH), str(failure.exception.detail))
+        self.assertEqual(
+            (NODES_PATH.read_bytes(), NODES_PATH.stat().st_mtime_ns), authority_before
+        )
+        self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), marker_before)
+        self.assertEqual(
+            (token_marker.read_bytes(), token_marker.stat().st_mtime_ns),
+            token_marker_before,
+        )
+
+        # The shared state lock must be released on the error path.
+        self.assertEqual(
+            len(list_nodes(authorization="Bearer test-admin-token")["nodes"]), 1
+        )
+
+        # This mapping belongs only to GET; bootstrap and stop keep their existing errors.
+        with patch("node_internal._read_authority", side_effect=NodeStateError(leaked_detail)):
+            with self.assertRaises(NodeStateError):
+                self._bootstrap(
+                    request_id="bootstrap-request-after-list-error",
+                    node_access_token="node-access-after-list-error-0123456789abcdef",
+                )
+            with self.assertRaises(NodeStateError):
+                stop_node("node-0001", authorization="Bearer test-admin-token")
+
     def test_nested_bootstrap_authority_corruption_fails_closed(self) -> None:
         import node_internal
 
