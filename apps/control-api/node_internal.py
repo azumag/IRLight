@@ -1626,17 +1626,24 @@ def list_nodes(
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> dict[str, Any]:
     _require_admin_access(authorization)
-    with node_state_lock(exclusive=False):
-        authority = _read_authority()
-        return {
-            "next_node_seq": authority["next_node_seq"],
-            "nodes": {
-                node_id: {
-                    key: value
-                    for key, value in node.items()
-                    if key != "access_token_sha256"
-                }
-                for node_id, node in authority.get("nodes", {}).items()
-                if isinstance(node, dict)
-            },
-        }
+    try:
+        with node_state_lock(exclusive=False):
+            authority = _read_authority()
+    except NodeStateError:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "NODE_AUTHORITY_UNAVAILABLE"},
+        ) from None
+
+    return {
+        "next_node_seq": authority["next_node_seq"],
+        "nodes": {
+            node_id: {
+                key: value
+                for key, value in node.items()
+                if key != "access_token_sha256"
+            }
+            for node_id, node in authority.get("nodes", {}).items()
+            if isinstance(node, dict)
+        },
+    }
