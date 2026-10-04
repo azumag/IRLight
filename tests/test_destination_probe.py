@@ -15,6 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
+import destination_probe as destination_probe_module  # noqa: E402
 from destination_probe import (  # noqa: E402
     DestinationProbeError,
     ProbeConfig,
@@ -46,6 +47,32 @@ class _FakeProcess:
     def kill(self) -> None:
         self.killed = True
         self._returncode = -9
+
+
+class _ClockedStderr:
+    def __init__(
+        self,
+        clock: list[float],
+        *,
+        advance_seconds: float = 0.0,
+        data: bytes = b"",
+    ) -> None:
+        self.clock = clock
+        self.advance_seconds = advance_seconds
+        self.data = data
+        self.closed = False
+
+    def read1(self, size: int) -> bytes:
+        self.clock[0] += self.advance_seconds
+        self.advance_seconds = 0.0
+        chunk, self.data = self.data[:size], self.data[size:]
+        return chunk
+
+    def read(self, size: int) -> bytes:
+        return self.read1(size)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _UnstoppableSrtProcess:
@@ -529,6 +556,41 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertTrue(probe_rtmp.call_args.kwargs["use_tls"])
         self.assertEqual(probe_rtmp.call_args.kwargs["port"], 443)
 
+    def test_rtmps_tls_handshake_stall_uses_remaining_deadline(self) -> None:
+        clock = [0.0]
+        fake_socket = _BudgetSocket(clock, connect_step=0.2)
+        tls_timeouts: list[float] = []
+
+        class _StalledTlsContext:
+            def __init__(self, test_case) -> None:
+                self.test_case = test_case
+
+            def wrap_socket(self, stream, *, server_hostname: str):
+                self.test_case.assertEqual(server_hostname, "tls.example.test")
+                timeout = stream.timeouts[-1]
+                tls_timeouts.append(timeout)
+                clock[0] += timeout
+                raise socket.timeout("synthetic TLS handshake stall")
+
+        addresses = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 443))
+        ]
+        with patch("destination_probe._resolve", return_value=addresses), patch(
+            "destination_probe.socket.socket", return_value=fake_socket
+        ), patch(
+            "destination_probe.ssl.create_default_context",
+            return_value=_StalledTlsContext(self),
+        ), patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(DestinationProbeError, "probe timed out"):
+                probe_destination(
+                    "rtmps://tls.example.test/live",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(len(tls_timeouts), 1)
+        self.assertAlmostEqual(tls_timeouts[0], 0.8)
+        self.assertTrue(fake_socket.closed)
+
     @patch("destination_probe.subprocess.Popen")
     def test_srt_waits_for_real_connected_event_and_uses_literal_ip(self, popen) -> None:
         process = _FakeProcess(
@@ -561,6 +623,156 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(result["protocol"], "srt")
         self.assertTrue(process.terminated)
+
+    def test_srt_retries_next_resolved_candidate_with_remaining_budget(self) -> None:
+        clock = [0.0]
+        addresses = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        first = _FakeProcess(b"")
+        first.stderr = _ClockedStderr(clock)
+        second = _FakeProcess(b"Target connected (caller)\n")
+        processes = [first, second]
+        commands: list[list[str]] = []
+        cleanup_deadlines: list[float] = []
+        readers: list[threading.Thread] = []
+        original_cleanup = destination_probe_module._cleanup_srt_process
+
+        def start_process(command, **_kwargs):
+            if commands:
+                self.assertEqual(len(cleanup_deadlines), 1)
+                self.assertTrue(first.stderr.closed)
+                self.assertFalse(readers[0].is_alive())
+            commands.append(command)
+            return processes[len(commands) - 1]
+
+        def cleanup(process, reader, *, cleanup_deadline):
+            original_cleanup(process, reader, cleanup_deadline=cleanup_deadline)
+            self.assertIsNotNone(process.poll())
+            self.assertIsNotNone(reader)
+            self.assertFalse(reader.is_alive())
+            readers.append(reader)
+            cleanup_deadlines.append(cleanup_deadline)
+            if process is first:
+                # Time spent reaping the failed candidate consumes the same
+                # handshake deadline before the second child is launched.
+                clock[0] += 0.4
+
+        with patch("destination_probe._resolve", return_value=addresses), patch(
+            "destination_probe.subprocess.Popen", side_effect=start_process
+        ) as popen, patch(
+            "destination_probe._cleanup_srt_process", side_effect=cleanup
+        ), patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]):
+            result = probe_destination(
+                "srt://probe.invalid:8890?streamid=publish:probe",
+                ProbeConfig(timeout_seconds=1.0),
+            )
+
+        def conntimeo(command: list[str]) -> int:
+            token = next(
+                part
+                for part in command[2].split("&")
+                if part.startswith("conntimeo=")
+            )
+            return int(token.split("=", 1)[1])
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertIn("srt://203.0.113.10:8890?", commands[0][2])
+        self.assertIn("srt://203.0.113.11:8890?", commands[1][2])
+        self.assertEqual(conntimeo(commands[0]), 1000)
+        self.assertEqual(conntimeo(commands[1]), 600)
+        self.assertEqual(result["peer_ip"], "203.0.113.11")
+        self.assertTrue(first.terminated)
+        self.assertTrue(second.terminated)
+        self.assertEqual(cleanup_deadlines, [2.0, 2.0])
+
+    def test_srt_fails_after_all_resolved_candidates_are_reaped(self) -> None:
+        addresses = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        processes = [_FakeProcess(b"connection setup failed\n") for _ in addresses]
+        with patch("destination_probe._resolve", return_value=addresses), patch(
+            "destination_probe.subprocess.Popen", side_effect=processes
+        ) as popen:
+            with self.assertRaisesRegex(DestinationProbeError, "SRT handshake"):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(popen.call_count, len(addresses))
+        for process in processes:
+            self.assertTrue(process.terminated)
+            self.assertTrue(process.stderr.closed)
+
+    def test_srt_does_not_spawn_next_candidate_after_deadline_expires(self) -> None:
+        clock = [0.0]
+        addresses = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        first = _FakeProcess(b"")
+        first.stderr = _ClockedStderr(clock, advance_seconds=1.0)
+        with (
+            patch("destination_probe._resolve", return_value=addresses),
+            patch("destination_probe.subprocess.Popen", return_value=first) as popen,
+            patch("destination_probe.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            with self.assertRaisesRegex(DestinationProbeError, "handshake timed out"):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(first.terminated)
+        self.assertTrue(first.stderr.closed)
+
+    def test_srt_stops_when_candidate_cleanup_is_unconfirmed(self) -> None:
+        addresses = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        process = _FakeProcess(b"connection setup failed\n")
+        with patch("destination_probe._resolve", return_value=addresses), patch(
+            "destination_probe.subprocess.Popen", return_value=process
+        ) as popen, patch(
+            "destination_probe._cleanup_srt_process",
+            side_effect=DestinationProbeError("SRT verifier cleanup timed out"),
+        ):
+            with self.assertRaisesRegex(DestinationProbeError, "cleanup timed out"):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(popen.call_count, 1)
+
+    def test_srt_stderr_overflow_does_not_fall_through_to_next_candidate(self) -> None:
+        addresses = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890)),
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.11", 8890)),
+        ]
+        first = _FakeProcess(b"x" * (destination_probe_module.SRT_STDERR_MAX_BYTES + 1))
+        second = _FakeProcess(b"Target connected (caller)\n")
+        with (
+            patch("destination_probe._resolve", return_value=addresses),
+            patch(
+                "destination_probe.subprocess.Popen", side_effect=[first, second]
+            ) as popen,
+        ):
+            with self.assertRaisesRegex(
+                DestinationProbeError, "output exceeded safety limit"
+            ):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=1.0),
+                )
+
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(first.terminated)
 
     @patch("destination_probe._resolve")
     @patch("destination_probe.subprocess.Popen")
