@@ -1,5 +1,6 @@
 name: Egress process-isolation canary
 
+# Verification-only touch for Issue #545 current-main process-isolation acceptance.
 on:
   pull_request:
     paths:
