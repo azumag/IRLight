@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 import json
 import math
@@ -308,6 +309,143 @@ class NodeAuthorityValidationTest(unittest.TestCase):
                 online=True,
                 observed_at=math.nan,
             )
+
+
+class NodeAuthorityMissingReadTest(unittest.TestCase):
+    @contextmanager
+    def authority_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nodes = root / "nodes.json"
+            tokens = root / "bootstrap_tokens.json"
+            with patch.object(node_internal, "STATE_DIR", root), \
+                    patch.object(node_internal, "NODES_PATH", nodes), \
+                    patch.object(node_internal, "TOKENS_PATH", tokens):
+                yield nodes, tokens
+
+    @contextmanager
+    def disappear_at_open(self, target):
+        # Cooperating writers use the state lock. This models a lost/replaced
+        # mount or an external unlink after the reader's existence preflight.
+        original_open = Path.open
+
+        def raced_open(path, *args, **kwargs):
+            if path == target:
+                path.unlink()
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", raced_open):
+            yield
+
+    def test_canonical_read_rejects_disappearance_after_exists(self):
+        for initialized in (False, True):
+            with self.subTest(initialized=initialized), self.authority_paths() as (nodes, _):
+                nodes.write_text(json.dumps(valid_authority()), encoding="utf-8")
+                if initialized:
+                    mark_initialized(nodes)
+                marker = initialization_marker(nodes)
+                before = marker.read_bytes() if initialized else None
+                with self.disappear_at_open(nodes), \
+                        patch.object(node_internal, "atomic_write_json") as writer:
+                    with self.assertRaises(node_internal.NodeStateError):
+                        node_internal._read_authority()
+                writer.assert_not_called()
+                self.assertFalse(nodes.exists())
+                self.assertEqual(marker.read_bytes() if marker.exists() else None, before)
+
+    def test_startup_rejects_existing_authority_disappearance(self):
+        for initialized in (False, True):
+            with self.subTest(initialized=initialized), self.authority_paths() as (nodes, _):
+                nodes.write_text(json.dumps(valid_authority()), encoding="utf-8")
+                if initialized:
+                    mark_initialized(nodes)
+                marker = initialization_marker(nodes)
+                before = marker.read_bytes() if initialized else None
+                with self.disappear_at_open(nodes), \
+                        patch.object(node_internal, "atomic_write_json") as writer:
+                    with self.assertRaises(node_internal.NodeStateError):
+                        node_internal.ensure_state()
+                writer.assert_not_called()
+                self.assertFalse(nodes.exists())
+                self.assertEqual(marker.read_bytes() if marker.exists() else None, before)
+
+    def test_consumed_token_fuse_disappearance_is_not_empty_ledger(self):
+        with self.authority_paths() as (nodes, tokens):
+            nodes.write_text(json.dumps(valid_authority()), encoding="utf-8")
+            tokens.write_text(json.dumps({"tokens": {"a" * 64: {
+                "consumed": True, "consumed_at": 1.0,
+                "node_id": "node-0001", "session_id": "session-1",
+            }}}), encoding="utf-8")
+            mark_initialized(nodes)
+            mark_initialized(tokens)
+            node_before = nodes.read_bytes()
+            marker = initialization_marker(tokens)
+            marker_before = marker.read_bytes()
+            with self.disappear_at_open(tokens):
+                with self.assertRaises(node_internal.NodeStateError):
+                    node_internal._read_authority()
+            self.assertEqual(nodes.read_bytes(), node_before)
+            self.assertFalse(tokens.exists())
+            self.assertEqual(marker.read_bytes(), marker_before)
+
+    def test_missing_initialized_direct_read_rejects_default(self):
+        with self.authority_paths() as (nodes, _):
+            mark_initialized(nodes)
+            with self.assertRaises(node_internal.NodeStateError):
+                node_internal.read_json(nodes, node_internal._default_nodes())
+
+    def test_startup_migration_rejects_token_fuse_disappearance(self):
+        with self.authority_paths() as (nodes, tokens):
+            legacy = valid_authority()
+            legacy.pop("tokens")
+            nodes.write_text(json.dumps(legacy), encoding="utf-8")
+            tokens.write_text(json.dumps({"tokens": {}}), encoding="utf-8")
+            before = nodes.read_bytes()
+            with self.disappear_at_open(tokens), \
+                    patch.object(node_internal, "atomic_write_json") as writer:
+                with self.assertRaises(node_internal.NodeStateError):
+                    node_internal.ensure_state()
+            writer.assert_not_called()
+            self.assertEqual(nodes.read_bytes(), before)
+            self.assertFalse(initialization_marker(nodes).exists())
+            self.assertFalse(initialization_marker(tokens).exists())
+
+    def test_token_fuse_writer_does_not_replace_disappeared_ledger(self):
+        for initialized in (False, True):
+            with self.subTest(initialized=initialized), self.authority_paths() as (_, tokens):
+                tokens.write_text(json.dumps({"tokens": {"a" * 64: {
+                    "consumed": True, "consumed_at": 1.0,
+                    "node_id": "node-0001", "session_id": "session-1",
+                }}}), encoding="utf-8")
+                if initialized:
+                    mark_initialized(tokens)
+                marker = initialization_marker(tokens)
+                before = marker.read_bytes() if initialized else None
+                with self.disappear_at_open(tokens), \
+                        patch.object(node_internal, "atomic_write_json") as writer:
+                    with self.assertRaises(node_internal.NodeStateError):
+                        node_internal._write_legacy_token_fuse(
+                            "b" * 64, node_id="node-0002", session_id="session-2",
+                            consumed_at=2.0,
+                        )
+                writer.assert_not_called()
+                self.assertFalse(tokens.exists())
+                self.assertEqual(marker.read_bytes() if marker.exists() else None, before)
+
+    def test_uninitialized_missing_direct_read_keeps_legacy_default(self):
+        with self.authority_paths() as (nodes, _):
+            default = node_internal._default_nodes()
+            self.assertIs(node_internal.read_json(nodes, default), default)
+            self.assertFalse(nodes.exists())
+            self.assertFalse(initialization_marker(nodes).exists())
+
+    def test_cold_start_still_initializes_canonical_authority(self):
+        with self.authority_paths() as (nodes, tokens):
+            node_internal.ensure_state()
+            self.assertEqual(node_internal._read_authority(), node_internal._default_nodes())
+            self.assertTrue(nodes.exists())
+            self.assertTrue(initialization_marker(nodes).exists())
+            self.assertFalse(tokens.exists())
 
 
 if __name__ == "__main__":
