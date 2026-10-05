@@ -300,11 +300,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
-def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+def read_json(
+    path: Path, default: dict[str, Any], *, required: bool = False
+) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             value = load_json_authority(handle, parse_constant=_reject_json_constant)
     except FileNotFoundError:
+        # A prior exists() is not a snapshot: external removal can race open.
+        # Required reads also reject unmarked legacy files disappearing here;
+        # the marker guards callers that retain the pre-initialization default.
+        if required or was_initialized(path):
+            raise NodeStateError("Node authority is missing") from None
         return default
     except (json.JSONDecodeError, ValueError, OSError) as exc:
         raise NodeStateError(f"cannot read Node state {path}") from exc
@@ -341,12 +348,12 @@ def ensure_state() -> None:
             _write_authority(_default_nodes())
             return
 
-        authority = _validate_nodes(read_json(_nodes_path(), _default_nodes()))
+        authority = _validate_nodes(read_json(_nodes_path(), _default_nodes(), required=True))
         if not isinstance(authority.get("tokens"), dict):
             # One-time migration from the former split token ledger. Keeping
             # the old file is intentional: rollback must not silently lose it.
             if _tokens_path().exists():
-                legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens()))
+                legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens(), required=True))
                 authority["tokens"] = dict(legacy["tokens"])
                 _write_authority(authority)
             elif authority.get("nodes"):
@@ -366,13 +373,13 @@ def _read_authority() -> dict[str, Any]:
     if not _nodes_path().exists():
         detail = " disappeared after initialization" if was_initialized(_nodes_path()) else " is missing"
         raise NodeStateError(f"Node authority {_nodes_path()}{detail}")
-    authority = validate_node_authority(read_json(_nodes_path(), _default_nodes()))
+    authority = validate_node_authority(read_json(_nodes_path(), _default_nodes(), required=True))
     # The rollback ledger is also a write-ahead consumption fuse. If a process
     # dies after committing that fuse but before replacing nodes.json, merge
     # every consumed record into the in-memory authority so the current build
     # also rejects reuse. A later successful authority write persists it.
     if _tokens_path().exists():
-        legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens()))
+        legacy = _validate_tokens(read_json(_tokens_path(), _default_tokens(), required=True))
         for digest, record in legacy["tokens"].items():
             if not isinstance(digest, str) or not isinstance(record, dict):
                 raise NodeStateError("bootstrap token fuse has an invalid record")
@@ -415,7 +422,7 @@ def _write_legacy_token_fuse(
     )
     _refresh_legacy_paths()
     legacy = (
-        _validate_tokens(read_json(_tokens_path(), _default_tokens()))
+        _validate_tokens(read_json(_tokens_path(), _default_tokens(), required=True))
         if _tokens_path().exists()
         else _default_tokens()
     )
@@ -705,7 +712,7 @@ def validate_node_authority(payload: dict[str, Any]) -> dict[str, Any]:
 
 def read_node_authority_snapshot(path: Path) -> dict[str, Any]:
     """Read and validate one Node authority snapshot without creating state."""
-    return validate_node_authority(read_json(path, {}))
+    return validate_node_authority(read_json(path, {}, required=True))
 
 
 def _is_sha256(value: object) -> bool:

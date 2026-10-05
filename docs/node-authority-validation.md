@@ -6,6 +6,8 @@
 
 The Control Plane rejects non-standard JSON numeric constants (`NaN`, `Infinity`, `-Infinity`) and writes Node/token authority with `allow_nan=False`. Validation runs on canonical reads and before replacement writes. A rejected in-memory update therefore does not replace the last readable authority file.
 
+Canonical reads, startup reads of existing authority, and reads of an existing bootstrap-token fuse require the file to remain present through `open()`. A file disappearing after an existence preflight fails as `NodeStateError`, even for legacy files without an initialization marker; it never becomes an empty registry or ledger. Direct compatibility reads may return their supplied default only for an uninitialized missing file. Cold startup still creates the default authority explicitly when neither authority nor token fuse has ever existed. These checks do not claim to detect loss of an entire volume and its markers; the existing mount/generation readiness contract remains separate.
+
 Each Node must keep a matching `node_id`, non-empty Session/provider/boot/agent identity, a valid access-token SHA-256 digest, known `status` and `desired_state`, finite lifecycle timestamps, and correctly typed safety booleans/counters. `next_node_seq` is a strict positive integer and must remain ahead of canonical `node-NNNN` IDs so corruption cannot overwrite an existing Node on the next bootstrap. Present ingest, egress, relay-client observations and Node events are structurally checked, while every nested numeric value must be finite.
 
 Node `status`, `desired_state`, present `egress_mode`, and observation `status`
