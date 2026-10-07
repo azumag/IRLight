@@ -18,13 +18,19 @@ from __future__ import annotations
 import os
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from auth_client_address import client_address
 from auth_kdf_admission import (
     AuthKdfAdmissionBusy,
     AuthKdfAdmissionUnavailable,
     auth_kdf_slot,
+)
+from auth_rate_limit import (
+    AuthRateLimitExceeded,
+    AuthRateLimitUnavailable,
+    enforce_authentication_rate_limit,
 )
 from auth_store import (
     AuthError,
@@ -45,6 +51,8 @@ SESSION_TTL_SECONDS = 7 * 24 * 3600
 AUTH_STATE_UNAVAILABLE_CODE = "AUTH_STATE_UNAVAILABLE"
 AUTH_COMPUTE_BUSY_CODE = "AUTH_COMPUTE_BUSY"
 AUTH_COMPUTE_UNAVAILABLE_CODE = "AUTH_COMPUTE_UNAVAILABLE"
+AUTH_RATE_LIMITED_CODE = "AUTH_RATE_LIMITED"
+AUTH_RATE_LIMIT_UNAVAILABLE_CODE = "AUTH_RATE_LIMIT_UNAVAILABLE"
 
 # A simple, dependency-free "looks like an email" check; real deliverability
 # is out of scope here and would need an external service.
@@ -88,6 +96,39 @@ def _auth_compute_unavailable() -> HTTPException:
         status_code=503,
         detail={"code": AUTH_COMPUTE_UNAVAILABLE_CODE},
     )
+
+
+def _auth_rate_limited(retry_after_seconds: int) -> HTTPException:
+    """Return the retryable result of an exhausted admission window."""
+    return HTTPException(
+        status_code=429,
+        detail={"code": AUTH_RATE_LIMITED_CODE},
+        headers={"Retry-After": str(max(1, int(retry_after_seconds)))},
+    )
+
+
+def _auth_rate_limit_unavailable() -> HTTPException:
+    """Fail closed when the shared rate-admission boundary is unusable."""
+    return HTTPException(
+        status_code=503,
+        detail={"code": AUTH_RATE_LIMIT_UNAVAILABLE_CODE},
+    )
+
+
+def _charge_authentication_attempt(http_request: Request, email: str) -> None:
+    """Charge one authentication attempt before any expensive work starts.
+
+    The limiter runs before the KDF admission slot so a rejected attempt never
+    occupies password-compute capacity. Both known and unknown addresses are
+    charged identically, so the response cannot be used to test whether an
+    account exists.
+    """
+    try:
+        enforce_authentication_rate_limit(client_address(http_request), email)
+    except AuthRateLimitExceeded as exc:
+        raise _auth_rate_limited(exc.retry_after_seconds) from exc
+    except AuthRateLimitUnavailable as exc:
+        raise _auth_rate_limit_unavailable() from exc
 
 
 def _cookies_secure() -> bool:
@@ -155,7 +196,8 @@ def require_csrf(
 
 
 @router.post("/register")
-def register(request: RegisterRequest) -> dict[str, Any]:
+def register(request: RegisterRequest, http_request: Request) -> dict[str, Any]:
+    _charge_authentication_attempt(http_request, request.email)
     try:
         # Admission happens before register_user performs PBKDF2. The slot is
         # intentionally non-blocking so an overload does not create an
@@ -180,7 +222,8 @@ def register(request: RegisterRequest) -> dict[str, Any]:
 
 
 @router.post("/login")
-def login(request: LoginRequest, response: Response) -> dict[str, Any]:
+def login(request: LoginRequest, response: Response, http_request: Request) -> dict[str, Any]:
+    _charge_authentication_attempt(http_request, request.email)
     try:
         # Unknown and known addresses enter the same admission boundary before
         # authenticate_user performs its single real/dummy PBKDF2 verification.

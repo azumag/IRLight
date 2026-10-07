@@ -36,6 +36,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 - state / provider 所有権の read-only 照合: [state-provider-reconciliation.md](state-provider-reconciliation.md)
 - Destination verification の同時実行 admission: [destination-verification-admission.md](destination-verification-admission.md)
 - 認証 password KDF の同時実行 admission: [auth-kdf-admission.md](auth-kdf-admission.md)
+- 認証試行の頻度 admission（burst / sustained）: [auth-rate-limit.md](auth-rate-limit.md)
 - Media Node resource pressure の一次対応: [media-node-resource-pressure.md](media-node-resource-pressure.md)
 - Media stack restart baseline の stable read 契約: [media-stack-restart-baseline.md](media-stack-restart-baseline.md)
 - resource pressure check の実装・status 契約: [resource-pressure-check-contract.md](resource-pressure-check-contract.md)
