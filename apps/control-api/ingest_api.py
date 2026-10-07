@@ -22,6 +22,8 @@ INGEST_PATH = "live/input"
 RELAY_PATH = "output/relay"
 DEFAULT_AUTH_CACHE_MAX_AGE_SECONDS = 300.0
 ENDPOINT_CONFIG_UNAVAILABLE = "ingest endpoint configuration unavailable"
+INGEST_CLOCK_UNAVAILABLE = "ingest authority clock unavailable"
+INGEST_DEADLINE_UNAVAILABLE = "ingest deadline authority unavailable"
 
 
 class IssueIngestCredentialRequest(BaseModel):
@@ -267,6 +269,47 @@ def _cache_valid_until(
     )
 
 
+def _validated_ingest_clock(value: float | None = None) -> float:
+    """Return a finite, non-negative effective runtime clock or fail closed.
+
+    Credential issuance enforces the Session's persisted absolute deadline. A
+    damaged or non-finite wall clock would make that comparison unusable, so it
+    must reach the caller as the fixed ``INGEST_CLOCK_UNAVAILABLE`` response
+    instead of silently disabling the deadline cap or leaking an unhandled
+    exception.
+    """
+    candidate = time.time() if value is None else value
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+        raise HTTPException(status_code=503, detail=INGEST_CLOCK_UNAVAILABLE)
+    try:
+        current = float(candidate)
+    except (OverflowError, ValueError):
+        raise HTTPException(status_code=503, detail=INGEST_CLOCK_UNAVAILABLE) from None
+    if not math.isfinite(current) or current < 0:
+        raise HTTPException(status_code=503, detail=INGEST_CLOCK_UNAVAILABLE)
+    return current
+
+
+def _validated_ingest_deadline(value: Any) -> float:
+    """Return a persisted Session absolute deadline as a finite number.
+
+    The Session authority reader validates this field, but issuance must never
+    interpret a damaged value as "no deadline": silently dropping the cap would
+    let a credential outlive the Session it was issued for.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(status_code=503, detail=INGEST_DEADLINE_UNAVAILABLE)
+    try:
+        deadline = float(value)
+    except (OverflowError, ValueError):
+        raise HTTPException(
+            status_code=503, detail=INGEST_DEADLINE_UNAVAILABLE
+        ) from None
+    if not math.isfinite(deadline) or deadline < 0:
+        raise HTTPException(status_code=503, detail=INGEST_DEADLINE_UNAVAILABLE)
+    return deadline
+
+
 def _raise_auth_blocked(decision: Any) -> None:
     retry_after = max(1, int(getattr(decision, "retry_after_seconds", 1) or 1))
     raise HTTPException(
@@ -347,12 +390,12 @@ def issue_ingest_credential(
         )
 
     ttl = float(request.ttl_seconds)
+    # Pin and validate the effective clock once. An invalid wall clock must not
+    # silently disable the Session absolute-deadline cap below.
+    current = _validated_ingest_clock()
     deadline = session.get("absolute_deadline_at")
     if deadline is not None:
-        try:
-            remaining = float(deadline) - time.time()
-        except (TypeError, ValueError):
-            remaining = ttl
+        remaining = _validated_ingest_deadline(deadline) - current
         if remaining <= 0:
             raise HTTPException(status_code=409, detail="session deadline has expired")
         ttl = min(ttl, remaining)
@@ -363,6 +406,7 @@ def issue_ingest_credential(
         scope=request.scope,
         protocols=request.protocols,
         ttl_seconds=ttl,
+        now=current,
     )
     if request.scope == "RELAY_CLIENT":
         connection_info = _relay_connection_info(
