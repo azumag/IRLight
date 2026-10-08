@@ -14,7 +14,9 @@ from catalog_store import (
     CatalogStateError,
     CatalogValidationError,
     CatalogVerifyFailed,
+    complete_asset_upload as store_complete_asset_upload,
     create_asset as store_create_asset,
+    create_asset_upload_intent as store_create_asset_upload_intent,
     create_destination as store_create_destination,
     delete_asset as store_delete_asset,
     delete_destination as store_delete_destination,
@@ -56,6 +58,17 @@ class DestinationSecretUpdate(BaseModel):
 
 class AssetCreate(BaseModel):
     source_object_key: str = Field(min_length=1, max_length=500)
+
+
+class AssetUploadIntentCreate(BaseModel):
+    content_type: str = Field(min_length=1, max_length=200)
+
+
+class AssetUploadCompletion(BaseModel):
+    content_type: str = Field(min_length=1, max_length=200)
+    object_key: str = Field(min_length=1, max_length=500)
+    size_bytes: int = Field(gt=0)
+    sha256: str = Field(min_length=64, max_length=64)
 
 
 router = APIRouter(prefix="/v1")
@@ -253,6 +266,49 @@ def create_asset(
             source_object_key=request.source_object_key,
         )
     )
+
+
+@router.post("/assets/upload-intents")
+def create_asset_upload_intent(
+    request: AssetUploadIntentCreate, current_user: CurrentUser, _csrf: Csrf = None
+) -> dict[str, Any]:
+    """Issue a server-generated, owner-bound object key for a standby upload."""
+
+    try:
+        return _catalog_call(
+            lambda: store_create_asset_upload_intent(
+                user_id=str(current_user["id"]),
+                content_type=request.content_type,
+            )
+        )
+    except CatalogValidationError as exc:
+        raise _validation_error(exc) from exc
+
+
+@router.post("/assets/{asset_id}/upload-complete")
+def complete_asset_upload(
+    asset_id: str,
+    request: AssetUploadCompletion,
+    current_user: CurrentUser,
+    _csrf: Csrf = None,
+) -> dict[str, Any]:
+    """Validate an upload completion against the issued intent."""
+
+    try:
+        return _catalog_call(
+            lambda: store_complete_asset_upload(
+                asset_id=asset_id,
+                user_id=str(current_user["id"]),
+                content_type=request.content_type,
+                object_key=request.object_key,
+                size_bytes=request.size_bytes,
+                sha256=request.sha256,
+            )
+        )
+    except CatalogNotFound as exc:
+        raise _not_found(exc) from exc
+    except CatalogValidationError as exc:
+        raise _validation_error(exc) from exc
 
 
 @router.get("/assets")

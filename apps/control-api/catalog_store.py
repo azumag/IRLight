@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from asset_upload_intent import (
+    AssetUploadIntentError,
+    MAX_UPLOAD_BYTES,
+    is_owner_bound_source_object_key,
+    normalize_image_content_type,
+    source_object_key,
+    validate_upload_completion,
+)
 from destination_probe import DestinationProbeError, probe_destination
 from destination_url_safety import (
     DestinationUrlSafetyError,
@@ -506,3 +514,93 @@ def delete_asset(asset_id: str, user_id: str) -> None:
         _get_owned(catalog, "assets", asset_id, user_id)
         del catalog["assets"][asset_id]
         _save(catalog)
+
+
+def create_asset_upload_intent(*, user_id: str, content_type: str) -> dict[str, Any]:
+    """Issue a server-generated, owner-bound object key for a new upload.
+
+    The caller never chooses the object key: it is derived from the validated
+    owner id and the server-issued asset id by ``asset_upload_intent``. The
+    asset starts in ``UPLOADING`` and only ``complete_asset_upload`` can move it
+    into ``PROCESSING``. The legacy metadata-only ``create_asset`` path remains
+    for compatibility but grants no write access to any object key.
+    """
+
+    try:
+        normalized_type = normalize_image_content_type(content_type)
+        with _catalog_lock(exclusive=True):
+            catalog = _load()
+            now = _validated_catalog_now()
+            asset_id = str(uuid.uuid4())
+            key = source_object_key(user_id=user_id, asset_id=asset_id)
+            item = {
+                "id": asset_id,
+                "user_id": user_id,
+                "source_object_key": key,
+                "processing_status": "UPLOADING",
+                "content_type": normalized_type,
+                "max_bytes": MAX_UPLOAD_BYTES,
+                "created_at": now,
+                "updated_at": now,
+            }
+            catalog["assets"][asset_id] = item
+            _save(catalog)
+            return dict(item)
+    except AssetUploadIntentError as exc:
+        raise CatalogValidationError(str(exc)) from exc
+
+
+def complete_asset_upload(
+    *,
+    asset_id: str,
+    user_id: str,
+    content_type: str,
+    object_key: str,
+    size_bytes: int,
+    sha256: str,
+) -> dict[str, Any]:
+    """Validate an upload completion and move the asset into ``PROCESSING``.
+
+    Fail closed: a completion whose content type, object key, size, or checksum
+    does not match the issued intent never advances. The asset must currently be
+    ``UPLOADING`` so replays and out-of-order completions are rejected instead
+    of silently re-arming a finished asset. Only the owning user can complete
+    the upload, and only the exact server-derived key is accepted.
+    """
+
+    try:
+        normalized_type = normalize_image_content_type(content_type)
+        with _catalog_lock(exclusive=True):
+            catalog = _load()
+            asset = _get_owned(catalog, "assets", asset_id, user_id)
+            if asset.get("processing_status") != "UPLOADING":
+                raise CatalogValidationError("asset is not awaiting an upload")
+            if asset.get("content_type") != normalized_type:
+                raise CatalogValidationError(
+                    "upload completion content type does not match the issued intent"
+                )
+            completion = validate_upload_completion(
+                user_id=user_id,
+                asset_id=asset_id,
+                content_type=normalized_type,
+                object_key=object_key,
+                size_bytes=size_bytes,
+                sha256=sha256,
+            )
+            if not is_owner_bound_source_object_key(
+                user_id=user_id,
+                asset_id=asset_id,
+                object_key=asset.get("source_object_key"),
+            ):
+                raise CatalogValidationError(
+                    "stored asset object key is not bound to this owner and asset"
+                )
+            now = _validated_catalog_now()
+            asset["processing_status"] = "PROCESSING"
+            asset["uploaded_size_bytes"] = completion["size_bytes"]
+            asset["uploaded_sha256"] = completion["sha256"]
+            asset["updated_at"] = now
+            _save(catalog)
+            return dict(asset)
+    except AssetUploadIntentError as exc:
+        raise CatalogValidationError(str(exc)) from exc
