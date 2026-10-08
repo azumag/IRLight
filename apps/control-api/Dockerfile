@@ -31,6 +31,7 @@ COPY mountinfo_identity.py ./
 COPY apps/control-api/app.py apps/control-api/node_internal.py \
      apps/control-api/auth_api.py apps/control-api/auth_kdf_admission.py \
      apps/control-api/auth_session_gc.py apps/control-api/auth_store.py \
+     apps/control-api/asset_upload_intent.py \
      apps/control-api/catalog_api.py apps/control-api/catalog_store.py \
      apps/control-api/destination_probe.py apps/control-api/destination_probe_admission.py \
      apps/control-api/destination_url_safety.py \
