@@ -67,7 +67,7 @@ class AssetUploadIntentCreate(BaseModel):
 class AssetUploadCompletion(BaseModel):
     content_type: str = Field(min_length=1, max_length=200)
     object_key: str = Field(min_length=1, max_length=500)
-    size_bytes: int = Field(gt=0)
+    size_bytes: int = Field(strict=True, gt=0)
     sha256: str = Field(min_length=64, max_length=64)
 
 
