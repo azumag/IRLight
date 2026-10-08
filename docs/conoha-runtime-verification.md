@@ -76,23 +76,123 @@ state** が無いと何もしません。`reaper._cleanup_orphans` は
 `skipping orphan cleanup` をログして `orphan_cleanup=0` で抜けます。
 
 したがって「同じディレクトリを指している」だけでは不十分で、少なくとも次を
-確認します。
+確認します。host の Python 3 と、journal を読める sudo 権限を使います。
+このブロックは reaper を実行するため、既存の resource cleanup が発生します。
+実 ConoHa の実行許可を得た検証時だけ実施してください。
 
 ```bash
+(
+set -eu
 # 同じ STATE_DIR を Control Plane と reaper が実際に読む
 sudo docker compose -f /opt/irlight/docker-compose.poc.yml exec -T control-ui \
      sh -lc 'echo "$STATE_DIR"; ls -la "$STATE_DIR"'
 
-# 初期化マーカーと session state が存在する
+# 存在確認だけでは破損を検出できない。失敗したらここで停止する。
 sudo docker compose -f /opt/irlight/docker-compose.poc.yml exec -T control-ui \
      sh -lc 'ls -la "$STATE_DIR/sessions.json" "$STATE_DIR/.sessions.json.initialized"'
 
-# reaper の出力に "skipping orphan cleanup" が出ないこと
-sudo systemctl start irlight-reaper.service
-sudo journalctl -u irlight-reaper.service -n 100 --no-pager | grep -i "skipping orphan cleanup" \
-  && echo "STATE_DIR が未初期化です（Control Plane 側で Session を 1 件作成してから再実行）" \
-  || echo "STATE_DIR は初期化済み"
+python3 - <<'PY'
+import ast
+import json
+import subprocess
+
+UNIT = "irlight-reaper.service"
+START = "ExecMainStartTimestampMonotonic"
+PROPERTIES = ("Result", "ExecMainCode", "ExecMainStatus", START,
+              "ExecMainExitTimestampMonotonic", "ActiveState")
+
+
+def fail(reason):
+    raise SystemExit("STATE_DIR は未確認です: " + reason)
+
+
+def run(*args):
+    try:
+        result = subprocess.run(["sudo", *args], capture_output=True,
+                                text=True, timeout=150)
+    except (OSError, subprocess.TimeoutExpired):
+        fail(args[0] + " を実行できません")
+    if result.returncode != 0 or (args[0] == "journalctl" and result.stderr.strip()):
+        fail(args[0] + " が失敗、または journal の完全性を確認できません")
+    return result.stdout
+
+
+def properties():
+    output = run("systemctl", "show", UNIT, "--property=" + ",".join(PROPERTIES))
+    values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    if set(values) != set(PROPERTIES):
+        fail("service の実行結果が不足しています")
+    return values
+
+
+before = run("systemctl", "show", UNIT, "--property=" + START, "--value").strip()
+if not before.isdecimal():
+    fail("前回の実行時刻を取得できません")
+# 実行前の cursor を固定し、古い警告や成功ログを判定に使わない。
+try:
+    cursor = json.loads(run("journalctl", "-n", "1", "-o", "json", "--no-pager"))["__CURSOR"]
+    if not isinstance(cursor, str) or not cursor.strip():
+        fail("journal cursor が空です")
+except (ValueError, KeyError, TypeError):
+    fail("journal cursor を取得できません")
+
+run("systemctl", "start", UNIT)  # Type=oneshot の完了まで待つ。--no-block は使わない。
+state = properties()
+if (state["Result"] != "success" or state["ExecMainCode"] != "1"
+        or state["ExecMainStatus"] != "0" or state["ActiveState"] != "inactive"):
+    fail("今回の service が正常終了していません")
+if not all(state[key].isdecimal() for key in (START, "ExecMainExitTimestampMonotonic")):
+    fail("今回の実行時刻が不足しています")
+started = int(state[START])
+if started <= int(before) or int(state["ExecMainExitTimestampMonotonic"]) < started:
+    fail("新しい service 実行の完了を証明できません")
+
+journal = run("journalctl", "-b", "-u", UNIT, "--after-cursor=" + cursor,
+              "-o", "json", "--no-pager")
+# timer 等による次の実行が始まった場合も、混在した証拠で成功扱いしない。
+if properties() != state:
+    fail("ログ取得中に service の実行状態が変わりました")
+messages = []
+try:
+    for line in journal.splitlines():
+        entry = json.loads(line)
+        if int(entry["__MONOTONIC_TIMESTAMP"]) >= started:
+            message = entry["MESSAGE"]
+            if not isinstance(message, str):
+                fail("journal の本文が文字列ではありません")
+            messages.append(message)
+except (ValueError, KeyError, TypeError):
+    fail("今回の journal を解釈できません")
+if not messages:
+    fail("今回の実行ログが空です")
+if any("skipping orphan cleanup" in message.lower() for message in messages):
+    fail("orphan sweep が省略されました。STATE_DIR の初期化・破損を確認してください")
+
+# reaper_cli.py の既存 flat-dict 出力を安全に読み、正の完了証拠を要求する。
+# orphan_cleanup=0 は正常（削除対象が無い場合もある）。eval は使わない。
+summaries = []
+for message in messages:
+    for line in message.splitlines():
+        if line.startswith("{"):
+            try:
+                summaries.append(ast.literal_eval(line))
+            except (ValueError, SyntaxError):
+                fail("reaper の集計を解釈できません")
+if len(summaries) != 1 or not isinstance(summaries[0], dict):
+    fail("今回の reaper 完了集計を一意に確認できません")
+summary = summaries[0]
+count = summary.get("orphan_cleanup")
+if (type(count) is not int or count < 0
+        or summary.get("auth_session_gc_status") != "ok"):
+    fail("reaper 完了集計に成功の証拠がありません")
+print("STATE_DIR は初期化済み（今回の service 正常終了と orphan sweep 集計を確認）")
+PY
+)
 ```
+
+この確認は、service / journal 読取失敗、空ログ、成功集計の欠落、実行世代の
+変化をすべて「未確認」として停止します。全履歴の警告の有無だけで初期化を
+判定しません。journal が欠落・遅延していても、初期化成功とは扱いません。
 
 Control Plane が起動して Session を 1 件でも永続化していれば `sessions.json`
 と初期化マーカーができます。まだ無い空の `STATE_DIR` では orphan sweep は
@@ -130,9 +230,12 @@ SID=$(uuidgen | tr 'A-Z' 'a-z')
 JAR=$(mktemp)
 
 # 1. login: irlight_session / irlight_csrf を取得
-curl -sS -c "$JAR" -X POST "$API/v1/auth/login" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}"
+# JSON serializer で quote / backslash / 改行等を保持する。秘密値を argv に載せない。
+LOGIN_JSON=$(EMAIL="$EMAIL" PASSWORD="$PASSWORD" python3 -c \
+  'import json, os; print(json.dumps({"email": os.environ["EMAIL"], "password": os.environ["PASSWORD"]}))') || exit 1
+printf '%s' "$LOGIN_JSON" | curl -sS --fail -c "$JAR" -X POST "$API/v1/auth/login" \
+  -H 'Content-Type: application/json' --data-binary @- || exit 1
+unset LOGIN_JSON
 CSRF=$(awk '$6=="irlight_csrf"{print $7}' "$JAR")
 
 # 2. prepare: cookie + X-CSRF-Token + Idempotency-Key + destination
