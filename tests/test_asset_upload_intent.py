@@ -7,8 +7,10 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from pydantic import ValidationError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -352,6 +354,109 @@ class AssetUploadIntentApiTest(unittest.TestCase):
                 "missing", completion, {"id": "user-a"}, _csrf=None
             )
         self.assertEqual(raised.exception.status_code, 404)
+
+    def test_completion_model_rejects_non_integer_json_sizes(self) -> None:
+        for size in (True, False, "1", 1.0, 1.5, None):
+            with self.subTest(size=size):
+                payload = {
+                    "content_type": "image/png",
+                    "object_key": "users/user-a/assets/asset-1/source",
+                    "size_bytes": size,
+                    "sha256": _SHA256_HEX,
+                }
+                with self.assertRaises(ValidationError) as raised:
+                    catalog_api.AssetUploadCompletion.model_validate_json(json.dumps(payload))
+                self.assertEqual(raised.exception.errors()[0]["loc"], ("size_bytes",))
+
+
+class AssetUploadIntentHttpTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        CATALOG_PATH.unlink(missing_ok=True)
+        initialization_marker(CATALOG_PATH).unlink(missing_ok=True)
+        ensure_catalog()
+        self.app = FastAPI()
+        self.app.include_router(catalog_api.router)
+        self.app.dependency_overrides[catalog_api.require_user] = lambda: {"id": "user-a"}
+        self.app.dependency_overrides[catalog_api.require_csrf] = lambda: None
+
+    async def post_completion(self, asset_id: str, payload: dict):
+        # Exercise JSON parsing, dependency resolution and request validation,
+        # using the installed ASGI stack without another test dependency.
+        body = json.dumps(payload).encode()
+        messages = []
+        path = f"/v1/assets/{asset_id}/upload-complete"
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1", "scheme": "http", "method": "POST",
+            "path": path, "raw_path": path.encode(), "root_path": "",
+            "query_string": b"", "headers": [(b"content-type", b"application/json")],
+            "server": ("testserver", 80), "client": ("127.0.0.1", 12345),
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await self.app(scope, receive, send)
+        status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+        response = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+        return status, json.loads(response)
+
+    def completion_payload(self, item: dict, size: object) -> dict:
+        return {
+            "content_type": "image/png",
+            "object_key": item["source_object_key"],
+            "size_bytes": size,
+            "sha256": _SHA256_HEX,
+        }
+
+    async def test_non_integer_json_sizes_are_rejected_before_store(self) -> None:
+        for size in (True, False, "1", 1.0, 1.5, None):
+            with self.subTest(size=size):
+                item = create_asset_upload_intent(user_id="user-a", content_type="image/png")
+                before = CATALOG_PATH.read_bytes()
+                with patch.object(
+                    catalog_api, "store_complete_asset_upload", wraps=complete_asset_upload
+                ) as complete:
+                    status, response = await self.post_completion(
+                        item["id"], self.completion_payload(item, size)
+                    )
+                self.assertEqual(status, 422)
+                self.assertEqual(response["detail"][0]["loc"], ["body", "size_bytes"])
+                complete.assert_not_called()
+                self.assertEqual(CATALOG_PATH.read_bytes(), before)
+                self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "UPLOADING")
+
+    async def test_positive_integer_json_sizes_complete_upload(self) -> None:
+        for size in (1, 4096, MAX_UPLOAD_BYTES):
+            with self.subTest(size=size):
+                item = create_asset_upload_intent(user_id="user-a", content_type="image/png")
+                status, completed = await self.post_completion(
+                    item["id"], self.completion_payload(item, size)
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(completed["processing_status"], "PROCESSING")
+                stored = get_asset(item["id"], "user-a")
+                self.assertEqual(stored["uploaded_size_bytes"], size)
+                self.assertIs(type(stored["uploaded_size_bytes"]), int)
+                self.assertEqual(stored["uploaded_sha256"], _SHA256_HEX)
+
+    async def test_owner_and_size_limits_reject_without_catalog_changes(self) -> None:
+        cases = (("user-b", 1, 404), ("user-a", 0, 422),
+                 ("user-a", -1, 422), ("user-a", MAX_UPLOAD_BYTES + 1, 422))
+        for owner, size, expected_status in cases:
+            with self.subTest(owner=owner, size=size):
+                self.app.dependency_overrides[catalog_api.require_user] = lambda: {"id": owner}
+                item = create_asset_upload_intent(user_id="user-a", content_type="image/png")
+                before = CATALOG_PATH.read_bytes()
+                status, _ = await self.post_completion(
+                    item["id"], self.completion_payload(item, size)
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(CATALOG_PATH.read_bytes(), before)
+                self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "UPLOADING")
 
 
 if __name__ == "__main__":
