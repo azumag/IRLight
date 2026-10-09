@@ -19,6 +19,9 @@ IRL配信向けリレーサーバー。実装はIssueとPull Requestで段階的
 内部Node APIは、Nodeごとの一回限りbootstrap後に返すheartbeat Bearerと、
 list/stop専用の管理Bearerを分離する。
 
+Issue #12 の対象資産・信頼境界と、11脅威ごとの既存統制・回帰テスト・残ギャップは
+[脅威モデル](docs/threat-model.md) を参照してください。実装、CI 契約、実環境の受入を区別します。
+
 Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 `docs/ingest-device-compatibility.md` と Issue #39 を参照。
 

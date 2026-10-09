@@ -29,6 +29,7 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 
 ## 関連運用手順
 
+- セキュリティの対象資産・信頼境界・11脅威と残ギャップ: [脅威モデル](../threat-model.md)
 - deploy / rollback の判断・確認: [deploy-rollback.md](deploy-rollback.md)
 - production Compose の read-only preflight: [production-deploy-preflight.md](../production-deploy-preflight.md)
 - authority readiness: [state-readiness.md](state-readiness.md)
