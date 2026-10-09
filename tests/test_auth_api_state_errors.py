@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException, Response
+from starlette.requests import Request as HttpRequest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +18,24 @@ import auth_api  # noqa: E402
 from auth_store import AuthError, AuthStateError, InvalidCredentials  # noqa: E402
 
 
+def _http_request(address: str = "192.0.2.10") -> HttpRequest:
+    return HttpRequest({"type": "http", "client": (address, 12345), "headers": []})
+
+
 class AuthApiStateErrorTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # The admission limiter runs before the store call under test; keep its
+        # shared state inside a throwaway directory so these cases stay isolated.
+        temp_dir = tempfile.TemporaryDirectory(prefix="irlight-auth-rate-limit-")
+        self.addCleanup(temp_dir.cleanup)
+        env = patch.dict(
+            os.environ,
+            {"IRLIGHT_AUTH_RATE_LIMIT_DIR": temp_dir.name},
+            clear=False,
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
     def assert_state_unavailable(self, callback) -> None:
         with self.assertRaises(HTTPException) as raised:
             callback()
@@ -59,7 +79,7 @@ class AuthApiStateErrorTest(unittest.TestCase):
             "auth_api.register_user",
             side_effect=AuthStateError("user state /state/users.json is corrupt"),
         ):
-            self.assert_state_unavailable(lambda: auth_api.register(request))
+            self.assert_state_unavailable(lambda: auth_api.register(request, _http_request()))
 
     def test_login_maps_authenticate_state_error_to_stable_503(self) -> None:
         request = auth_api.LoginRequest(
@@ -71,7 +91,9 @@ class AuthApiStateErrorTest(unittest.TestCase):
             "auth_api.authenticate_user",
             side_effect=AuthStateError("user state /state/users.json is corrupt"),
         ):
-            self.assert_state_unavailable(lambda: auth_api.login(request, response))
+            self.assert_state_unavailable(
+                lambda: auth_api.login(request, response, _http_request())
+            )
 
     def test_login_maps_session_write_state_error_to_stable_503(self) -> None:
         request = auth_api.LoginRequest(
@@ -88,7 +110,9 @@ class AuthApiStateErrorTest(unittest.TestCase):
                 ),
             ),
         ):
-            self.assert_state_unavailable(lambda: auth_api.login(request, response))
+            self.assert_state_unavailable(
+                lambda: auth_api.login(request, response, _http_request())
+            )
 
     def test_logout_maps_session_revoke_state_error_to_stable_503(self) -> None:
         response = Response()
@@ -113,7 +137,7 @@ class AuthApiStateErrorTest(unittest.TestCase):
         )
         with patch("auth_api.register_user", side_effect=AuthError("invalid request")):
             with self.assertRaises(HTTPException) as raised:
-                auth_api.register(request)
+                auth_api.register(request, _http_request())
         self.assertEqual(raised.exception.status_code, 422)
         self.assertEqual(raised.exception.detail, "invalid request")
 
@@ -128,7 +152,7 @@ class AuthApiStateErrorTest(unittest.TestCase):
             side_effect=InvalidCredentials("invalid email or password"),
         ):
             with self.assertRaises(HTTPException) as raised:
-                auth_api.login(request, response)
+                auth_api.login(request, response, _http_request())
         self.assertEqual(raised.exception.status_code, 401)
         self.assertEqual(raised.exception.detail, "invalid email or password")
 
