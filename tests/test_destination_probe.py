@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -335,6 +336,147 @@ class DestinationProbeTest(unittest.TestCase):
         self.assertEqual(reader.join_timeouts, [0.0])
         self.assertEqual(clock[0], destination_probe.SRT_CLEANUP_SECONDS)
 
+    def test_srt_stderr_read_poll_interval_stays_below_cleanup_budget(self) -> None:
+        import destination_probe
+
+        self.assertGreater(destination_probe.SRT_STDERR_READ_POLL_SECONDS, 0)
+        self.assertLessEqual(
+            destination_probe.SRT_STDERR_READ_POLL_SECONDS,
+            destination_probe.SRT_CLEANUP_SECONDS / 2,
+        )
+
+    def test_srt_stderr_reader_stops_without_pipe_eof_and_publishes_no_event(self) -> None:
+        import destination_probe
+
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=io.DEFAULT_BUFFER_SIZE)
+        events: queue.Queue[str] = queue.Queue(maxsize=1)
+        stop_event = threading.Event()
+        reader = threading.Thread(
+            target=destination_probe._read_srt_stderr_event,
+            args=(stream, events),
+            kwargs={"stop_event": stop_event},
+            daemon=True,
+        )
+        try:
+            reader.start()
+            time.sleep(0.2)
+            self.assertTrue(reader.is_alive(), "reader left its loop before being asked")
+
+            stop_event.set()
+            reader.join(timeout=destination_probe.SRT_CLEANUP_SECONDS)
+            self.assertFalse(
+                reader.is_alive(),
+                "a stopped reader must not stay blocked on a pipe without EOF",
+            )
+            self.assertTrue(
+                events.empty(),
+                "a stop request must not publish a terminal event",
+            )
+        finally:
+            os.close(write_fd)
+            stream.close()
+
+    def test_srt_stderr_reader_reads_connected_marker_from_real_pipe(self) -> None:
+        import destination_probe
+
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=io.DEFAULT_BUFFER_SIZE)
+        events: queue.Queue[str] = queue.Queue(maxsize=1)
+        stop_event = threading.Event()
+        output_fd = write_fd
+        reader = threading.Thread(
+            target=destination_probe._read_srt_stderr_event,
+            args=(stream, events),
+            kwargs={"stop_event": stop_event},
+            daemon=True,
+        )
+        try:
+            reader.start()
+            os.write(output_fd, b"SRT target connected\n")
+            self.assertEqual(
+                events.get(timeout=2.0),
+                destination_probe.SRT_STDERR_EVENT_CONNECTED,
+            )
+            reader.join(timeout=destination_probe.SRT_CLEANUP_SECONDS)
+            self.assertFalse(reader.is_alive())
+        finally:
+            stop_event.set()
+            os.close(output_fd)
+            stream.close()
+
+    def test_srt_stderr_reader_reports_eof_from_real_pipe(self) -> None:
+        import destination_probe
+
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        stream = os.fdopen(read_fd, "rb", buffering=io.DEFAULT_BUFFER_SIZE)
+        events: queue.Queue[str] = queue.Queue(maxsize=1)
+        try:
+            with patch("destination_probe.time.monotonic", return_value=0.0):
+                destination_probe._read_srt_stderr_event(
+                    stream,
+                    events,
+                    stop_event=threading.Event(),
+                )
+            self.assertEqual(
+                events.get_nowait(),
+                destination_probe.SRT_STDERR_EVENT_EOF,
+            )
+        finally:
+            stream.close()
+
+    @patch("destination_probe._resolve")
+    @patch("destination_probe.subprocess.Popen")
+    def test_srt_probe_reclaims_reader_and_pipe_when_writer_outlives_verifier(
+        self, popen, resolve
+    ) -> None:
+        """A verifier whose stderr writer survives it must not leak the reader.
+
+        The verifier process is reaped here, but a helper that inherited stderr
+        keeps the pipe open, so the reader never observes EOF. Verification must
+        still end the reader inside the cleanup budget and close the pipe,
+        otherwise each attempt leaves one thread and one descriptor behind.
+        """
+
+        import destination_probe
+
+        resolve.return_value = [
+            (socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.10", 8890))
+        ]
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=io.DEFAULT_BUFFER_SIZE)
+        process = _FakeProcess(b"")
+        process.stderr = stream
+        popen.return_value = process
+        baseline_threads = set(threading.enumerate())
+        started = time.monotonic()
+
+        try:
+            with self.assertRaisesRegex(DestinationProbeError, "handshake timed out"):
+                probe_destination(
+                    "srt://probe.invalid:8890?streamid=publish:probe",
+                    ProbeConfig(timeout_seconds=0.3),
+                )
+        finally:
+            os.close(write_fd)
+
+        elapsed = time.monotonic() - started
+        self.assertLess(
+            elapsed,
+            0.3 + destination_probe.SRT_CLEANUP_SECONDS + 1.0,
+            "probe must stay bounded by the handshake deadline plus cleanup",
+        )
+        self.assertTrue(process.terminated)
+        self.assertIsNotNone(process.poll())
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(stream.closed, "the reader pipe must be reclaimed")
+        self.assertEqual(
+            set(threading.enumerate()) - baseline_threads,
+            set(),
+            "no stderr reader may outlive the probe",
+        )
+
     @patch("destination_probe._resolve")
     @patch("destination_probe.subprocess.Popen")
     @patch("destination_probe.queue.Queue")
@@ -647,8 +789,14 @@ class DestinationProbeTest(unittest.TestCase):
             commands.append(command)
             return processes[len(commands) - 1]
 
-        def cleanup(process, reader, *, cleanup_deadline):
-            original_cleanup(process, reader, cleanup_deadline=cleanup_deadline)
+        def cleanup(process, reader, *, cleanup_deadline, stop_event=None):
+            original_cleanup(
+                process,
+                reader,
+                cleanup_deadline=cleanup_deadline,
+                stop_event=stop_event,
+            )
+            self.assertTrue(stop_event is not None and stop_event.is_set())
             self.assertIsNotNone(process.poll())
             self.assertIsNotNone(reader)
             self.assertFalse(reader.is_alive())
