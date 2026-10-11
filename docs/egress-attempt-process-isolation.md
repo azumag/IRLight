@@ -49,7 +49,11 @@ The default canary windows are:
 
 They are only read when the canary is enabled, must be finite and non-negative, and do not alter the existing retry/backoff configuration. Before the first `CONNECTED` event, the supervisor also bounds an otherwise stuck attempt to the existing connect timeout plus the teardown window. A configured connect timeout of `0` keeps the historical disabled-timeout behavior.
 
-User stop sets a child-shared stop event first, then applies the same bounded teardown/reap sequence. IPC flooding cannot extend the stop or teardown deadline because deadlines are evaluated after every received message.
+User stop sets a child-shared stop event first, then applies the same bounded teardown/reap sequence. Progress-message flooding cannot extend the stop or teardown deadline because deadlines are evaluated after every received message.
+
+These bounds cover pre-connect, teardown, and explicit user stop. Receiving `connected` clears the startup deadline; a teardown deadline starts only after a `teardown` message. After `CONNECTED`, a child that stays alive while sending no IPC has no liveness deadline. Parent polling and the configured status heartbeat do not establish an IPC-silence deadline. Child-exit detection and explicit user-stop fencing remain available; continuous post-connect liveness supervision is an unimplemented gap.
+
+Each `teardown` message currently resets the teardown deadline. Repeated valid `teardown` messages can therefore postpone teardown fencing while the child stays alive; the progress-message flooding guarantee does not cover this sequence. The current child-side monitor emits a single teardown message on its normal path, but the IPC parser/supervisor does not enforce a single-message transition. This is a remaining supervision gap, separate from the post-connect IPC-silence case.
 
 ### Failure mapping
 
