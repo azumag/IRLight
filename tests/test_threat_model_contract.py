@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = Path("docs/threat-model.md")
+ISOLATION_PATH = Path("docs/egress-attempt-process-isolation.md")
 # Independent inventory copied from Issue #12, rather than inferred from the doc.
 THREATS = {
     "T01": "出力先stream keyの漏えい",
@@ -31,8 +32,16 @@ T04_SUPERVISION_BOUNDARY = {
     "状態": ("bounded teardown/reap",),
     "残ギャップ": (
         "CONNECTED 後", "child が生存", "IPC 無通信", "liveness deadline は未実装",
+        "反復する teardown message", "teardown deadline が再設定",
+        "progress message の洪水", "IPC 全般の洪水耐性としない",
     ),
 }
+ISOLATION_SUPERVISION_BOUNDARY = (
+    "Progress-message flooding cannot extend",
+    "Each `teardown` message currently resets the teardown deadline.",
+    "Repeated valid `teardown` messages can therefore postpone teardown fencing",
+    "the IPC parser/supervisor does not enforce a single-message transition.",
+)
 LINK = re.compile(r"\[[^\]\n]+\]\(([^\s()]+)\)")
 THREAT_HEADING = re.compile(r"^### (T\d+): (.+)$", re.MULTILINE)
 TEST_SYMBOL = re.compile(r"`([A-Za-z_][\w]*\.test_[\w]+)`")
@@ -171,6 +180,13 @@ def index_errors(source: Path, text: str) -> list[str]:
     return link_errors(source, f"[threat model]({links[0]})")
 
 
+def isolation_supervision_errors(text: str) -> list[str]:
+    return [
+        f"missing isolation supervision boundary: {fragment}"
+        for fragment in ISOLATION_SUPERVISION_BOUNDARY if fragment not in text
+    ]
+
+
 class ThreatModelContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -221,6 +237,18 @@ class ThreatModelContractTest(unittest.TestCase):
                         f"missing supervision boundary: T04 {field} {fragment}",
                         model_errors(mutated),
                     )
+
+    def test_isolation_doc_limits_flooding_claim_and_preserves_teardown_gap(self) -> None:
+        text = (REPO_ROOT / ISOLATION_PATH).read_text(encoding="utf-8")
+        self.assertEqual(isolation_supervision_errors(text), [])
+        for fragment in ISOLATION_SUPERVISION_BOUNDARY:
+            with self.subTest(fragment=fragment):
+                replacement = "IPC flooding cannot extend" if fragment.startswith("Progress-message") else ""
+                mutated = text.replace(fragment, replacement, 1)
+                self.assertIn(
+                    f"missing isolation supervision boundary: {fragment}",
+                    isolation_supervision_errors(mutated),
+                )
 
     def test_broken_evidence_file_and_anchor_are_detected(self) -> None:
         for old, new, reason in (
