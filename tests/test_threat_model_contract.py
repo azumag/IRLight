@@ -26,6 +26,13 @@ THREATS = {
     "T11": "依存コンテナ・FFmpeg/GStreamer等の脆弱性",
 }
 FIELDS = ("状態", "既存統制・根拠", "回帰テスト", "残ギャップ")
+# Keep the limited fencing claim separate from the still-missing liveness guard.
+T04_SUPERVISION_BOUNDARY = {
+    "状態": ("bounded teardown/reap",),
+    "残ギャップ": (
+        "CONNECTED 後", "child が生存", "IPC 無通信", "liveness deadline は未実装",
+    ),
+}
 LINK = re.compile(r"\[[^\]\n]+\]\(([^\s()]+)\)")
 THREAT_HEADING = re.compile(r"^### (T\d+): (.+)$", re.MULTILINE)
 TEST_SYMBOL = re.compile(r"`([A-Za-z_][\w]*\.test_[\w]+)`")
@@ -119,6 +126,12 @@ def model_errors(text: str) -> list[str]:
             else:
                 fields[field] = matches[0]
 
+        if threat_id == "T04":
+            for field, fragments in T04_SUPERVISION_BOUNDARY.items():
+                for fragment in fragments:
+                    if fragment not in fields.get(field, ""):
+                        errors.append(f"missing supervision boundary: T04 {field} {fragment}")
+
         evidence = fields.get("既存統制・根拠", "")
         paths = [local_target(MODEL_PATH, url) for url in LINK.findall(evidence)]
         if not any(p and p.suffix == ".md" for p in paths):
@@ -193,6 +206,21 @@ class ThreatModelContractTest(unittest.TestCase):
             with self.subTest(field=field):
                 mutated = re.sub(rf"^- {re.escape(field)}: .+\n", "", self.text, count=1, flags=re.MULTILINE)
                 self.assertIn(f"missing or duplicate field: T01 {field}", model_errors(mutated))
+
+    def test_t04_supervision_scope_and_liveness_gap_removal_are_detected(self) -> None:
+        start = self.text.index("### T04:")
+        end = self.text.index("### T05:")
+        block = self.text[start:end]
+        for field, fragments in T04_SUPERVISION_BOUNDARY.items():
+            for fragment in fragments:
+                with self.subTest(field=field, fragment=fragment):
+                    self.assertIn(fragment, block)
+                    replacement = "bounded attempt supervisor" if field == "状態" else ""
+                    mutated = self.text[:start] + block.replace(fragment, replacement, 1) + self.text[end:]
+                    self.assertIn(
+                        f"missing supervision boundary: T04 {field} {fragment}",
+                        model_errors(mutated),
+                    )
 
     def test_broken_evidence_file_and_anchor_are_detected(self) -> None:
         for old, new, reason in (

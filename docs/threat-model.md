@@ -70,10 +70,10 @@ Node Agent は Docker socket を mount し、stack を制御します。socket �
 
 ### T04: 不正なメディア入力によるprocess crash・DoS
 
-- 状態: 入力 policy、外部 egress 障害の分離、bounded attempt supervisor は実装済み、CI 固定済み。legacy process isolation は opt-in canary、実環境未確認。
-- 既存統制・根拠: [ingest policy](../apps/node-agent/ingest_policy.py) が codec / track / resolution / bitrate を検査。[Compose](../docker-compose.node.yml) の Continuity / Gateway / Node Agent は `cap_drop: [ALL]` と `no-new-privileges` を使用。[supervisor](../apps/egress-gateway/attempt_supervisor.py) は reap を確認し、[isolated attempt](../apps/egress-gateway/isolated_attempt.py) は sanitized IPC と旧 child fencing を持つ。[process-isolation 契約](egress-attempt-process-isolation.md) と [#545](https://github.com/azumag/IRLight/issues/545) を参照。
+- 状態: 入力 policy、外部 egress 障害の分離、bounded teardown/reap は実装済み、CI 固定済み。legacy process isolation は opt-in canary、実環境未確認。
+- 既存統制・根拠: [ingest policy](../apps/node-agent/ingest_policy.py) が codec / track / resolution / bitrate を検査。[Compose](../docker-compose.node.yml) の Continuity / Gateway / Node Agent は `cap_drop: [ALL]` と `no-new-privileges` を使用。[supervisor](../apps/egress-gateway/attempt_supervisor.py) は reap を確認し、[isolated attempt](../apps/egress-gateway/isolated_attempt.py) は sanitized IPC と旧 child fencing を持つ。[process-isolation 契約](egress-attempt-process-isolation.md#teardown-and-stop-fencing) と [#545](https://github.com/azumag/IRLight/issues/545) を参照。
 - 回帰テスト: [test_ingest_policy.py](../tests/test_ingest_policy.py) — `IngestPolicyTest.test_h265_is_rejected_and_rtmp_source_is_kicked`。[test_egress_attempt_supervisor.py](../tests/test_egress_attempt_supervisor.py) — `ChildReapingContractTest.test_unreapable_child_fails_closed`。[test_egress_isolated_attempt.py](../tests/test_egress_isolated_attempt.py) — `IsolatedAttemptContractTest.test_canary_is_explicit_and_never_wraps_rtmp2sink`。
-- 残ギャップ: `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY` の既定は `0`。#545 の canary を全 Node の既定 isolation 完成扱いにしない。root filesystem 全体の read-only、非 root 実行、CPU / memory / PID / file / time limit、明示 seccomp/AppArmor profile と egress network 制限、malicious codec corpus / fuzz、upload worker isolation は未実装・未確認部分がある。Docker の既定 profile を専用 sandbox の検証済み証拠としない。
+- 残ギャップ: CONNECTED 後、child が生存したまま IPC 無通信となる経路の liveness deadline は未実装であり、接続前・teardown・user stop の bound と実行中の生存監視を区別する。`EGRESS_LEGACY_PROCESS_ISOLATION_CANARY` の既定は `0`。#545 の canary を全 Node の既定 isolation 完成扱いにしない。root filesystem 全体の read-only、非 root 実行、CPU / memory / PID / file / time limit、明示 seccomp/AppArmor profile と egress network 制限、malicious codec corpus / fuzz、upload worker isolation は未実装・未確認部分がある。Docker の既定 profile を専用 sandbox の検証済み証拠としない。
 
 ### T05: 巨大画像・動画によるresource exhaustion
 
