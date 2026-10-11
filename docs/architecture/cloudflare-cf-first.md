@@ -100,7 +100,9 @@
 4. DNS adapter、activate/park、外部probeをsandboxで検証する
 5. アカウント資産・最小権限・rollbackとactive Session境界を確認してから、別承認でstaging、本番を進める
 
-Node/Vite template、CIのCloudflare job、実環境のtoken権限確認は未実施。既存Python/Compose CIを弱めない。現行path classifierは `docs/` のみを軽量扱いするため、AGENTSやREADMEの変更ではDocker-heavy CIが実行される。
+上記は2026-09-30のdocs-only slice時点の状態。次のsliceとして [production接続なしのWorker雛形](../../apps/control-plane/README.md) と独立したNode CIを追加する。雛形のmodeはVite既定値と予約語を避けて `offline`（local dev）/ `staging`（build/dry-run検証）に限定し、既定 `development` / `production`、未指定、未知modeを拒否する。`staging` も実アカウントを参照しない検証名であり、実deploy用の設定ではない。実環境のtoken権限確認とdeployは残件。
+
+既存Python/Compose CIを弱めない。現行path classifierは `docs/` のみを軽量扱いするため、WorkerやCIの変更ではDocker-heavy CIが実行される。templateのlocal devではMiniflareの `Request.cf` 外部metadata取得も無効化する。公式 `CLOUDFLARE_CF_FETCH_ENABLED=false` を固定し、cache更新GETをlocal検証へ持ち込まない。
 
 ## 検証状況と未決定事項
 
