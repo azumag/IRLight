@@ -1,0 +1,50 @@
+name: Control Plane template
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control-plane-template:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/control-plane
+    env:
+      CF_SEND_TELEMETRY: "false"
+      DO_NOT_TRACK: "1"
+      CLOUDFLARE_CF_FETCH_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: apps/control-plane/.node-version
+          cache: npm
+          cache-dependency-path: apps/control-plane/package-lock.json
+      - name: Check reviewed configuration before installation
+        run: test -f cloudflare.config.ts && test -f vite.config.ts && test -f package-lock.json
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-fund
+      - name: Audit Node toolchain dependencies
+        run: npm audit --audit-level=high
+      - name: Generate types and typecheck
+        run: npm run typecheck
+      - name: Test mode and handler contracts
+        run: npm test
+      - name: Test the local Workers runtime
+        run: timeout 90s npm run test:local
+      - name: Build explicit validation mode
+        run: npm run build
+      - name: Validate the same prebuilt output without API requests
+        run: npm run dry-run
