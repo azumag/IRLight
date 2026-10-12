@@ -117,7 +117,7 @@ class EgressReconnectStressHarnessTest(unittest.TestCase):
             "failure() && steps.egress_stress.outcome == 'failure'", source
         )
         self.assertIn(
-            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             source,
         )
         self.assertIn('cp -- "$GITHUB_STEP_SUMMARY" "$evidence_dir/summary.md"', source)
