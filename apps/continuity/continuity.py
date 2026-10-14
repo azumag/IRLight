@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import signal
 import tempfile
@@ -25,6 +26,22 @@ LOG = logging.getLogger("irlight.continuity")
 
 class RuntimeStatusWriteError(ValueError):
     """Raised when a runtime status payload cannot be serialized as strict JSON."""
+
+
+def _validated_status_timestamp(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeStatusWriteError(f"{field} is invalid")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeStatusWriteError(f"{field} is invalid") from None
+    if not math.isfinite(numeric) or numeric < 0:
+        raise RuntimeStatusWriteError(f"{field} is invalid")
+    return numeric
+
+
+def _validated_status_now(*, field: str) -> float:
+    return _validated_status_timestamp(time.time(), field=field)
 
 
 def env_float(name: str, default: float) -> float:
@@ -140,7 +157,7 @@ class ContinuityPipeline:
         self.last_command_id: str | None = None
         self.last_error: str | None = None
         self.control_error: str | None = None
-        self.started_at = time.time()
+        self.started_at = _validated_status_now(field="continuity started_at")
         self.main_loop = GLib.MainLoop()
 
     def run(self) -> None:
@@ -597,6 +614,14 @@ class ContinuityPipeline:
         else:
             self._activate_pad(self.audio_selector, self.fallback_audio_pad)
 
+        started_at = _validated_status_timestamp(
+            self.started_at,
+            field="continuity started_at",
+        )
+        updated_at = _validated_status_timestamp(
+            now_wall,
+            field="continuity updated_at",
+        )
         atomic_write_json(
             self.status_path,
             {
@@ -613,8 +638,8 @@ class ContinuityPipeline:
                 "source_retrying": self._input_pipeline is None,
                 "last_error": self.control_error or self.last_error,
                 "egress": redact_stream_url(self.egress_url),
-                "started_at": self.started_at,
-                "updated_at": now_wall,
+                "started_at": started_at,
+                "updated_at": updated_at,
             },
         )
         return True
