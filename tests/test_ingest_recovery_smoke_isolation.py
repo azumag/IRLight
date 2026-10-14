@@ -176,9 +176,11 @@ class IngestRecoverySmokeIsolationTest(unittest.TestCase):
 
 
 class SrtRecoveryEventContractTest(unittest.TestCase):
+    protocol = "srt"
+
     @classmethod
     def setUpClass(cls) -> None:
-        source = CORE_SCRIPTS["srt"].read_text(encoding="utf-8")
+        source = CORE_SCRIPTS[cls.protocol].read_text(encoding="utf-8")
         function = source.split("assert_recovery_events() {", 1)[1].split("\n}\n", 1)[0]
         match = re.search(
             r"session_events \| python3 -c '(.*?)' \"\$after\"",
@@ -186,18 +188,18 @@ class SrtRecoveryEventContractTest(unittest.TestCase):
             re.DOTALL,
         )
         if match is None:
-            raise AssertionError("SRT recovery event validator Python body not found")
-        cls.validator = compile(match.group(1), "<srt-recovery-validator>", "exec")
+            raise AssertionError(f"{cls.protocol.upper()} recovery event validator Python body not found")
+        cls.validator = compile(match.group(1), f"<{cls.protocol}-recovery-validator>", "exec")
 
     def run_validator(self, events: list[dict], baseline: int = 9) -> None:
         with (
-            patch.object(sys, "argv", ["srt-recovery-fixture", str(baseline)]),
+            patch.object(sys, "argv", [f"{self.protocol}-recovery-fixture", str(baseline)]),
             patch.object(sys, "stdin", io.StringIO(json.dumps(events))),
             redirect_stdout(io.StringIO()),
         ):
             exec(self.validator, {})
 
-    def test_srt_recovery_event_sequence_contract(self) -> None:
+    def test_recovery_event_sequence_contract(self) -> None:
         hold = {
             "sequence": 10,
             "type": "session.holding",
@@ -243,7 +245,7 @@ class SrtRecoveryEventContractTest(unittest.TestCase):
                 [hold, {"sequence": 11, "type": "ingest.reconnected"},
                  {"sequence": 12, "type": "session.recovered"},
                  {"sequence": 13, "type": "session.failed"}],
-                "fatal event during SRT recovery",
+                f"fatal event during {self.protocol.upper()} recovery",
             ),
         ]
         for name, events, error in cases:
@@ -254,6 +256,10 @@ class SrtRecoveryEventContractTest(unittest.TestCase):
                     with self.assertRaisesRegex(SystemExit, error):
                         self.run_validator(events)
 
+
+
+class RtmpsRecoveryEventContractTest(SrtRecoveryEventContractTest):
+    protocol = "rtmps"
 
 
 if __name__ == "__main__":
