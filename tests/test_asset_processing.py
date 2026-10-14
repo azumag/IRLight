@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
@@ -26,6 +27,12 @@ from catalog_store import (  # noqa: E402
     get_asset,
 )
 from state_safety import initialization_marker  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+
+import catalog_api  # noqa: E402
+
+_SHA256_HEX = "a" * 64
 
 
 class AssetProcessingModuleTest(unittest.TestCase):
@@ -96,6 +103,125 @@ class AssetProcessingStoreTest(unittest.TestCase):
         )
         self.assertEqual(completed["processing_status"], "FAILED")
         self.assertEqual(completed["failure_reason"], "bad decode")
+
+
+def _make_processing_asset(user_id: str = "user-a") -> dict:
+    item = create_asset_upload_intent(user_id=user_id, content_type="image/png")
+    complete_asset_upload(
+        asset_id=item["id"],
+        user_id=user_id,
+        content_type="image/png",
+        object_key=item["source_object_key"],
+        size_bytes=1024,
+        sha256=_SHA256_HEX,
+    )
+    return item
+
+
+class AssetProcessingCompletionHttpTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        CATALOG_PATH.unlink(missing_ok=True)
+        initialization_marker(CATALOG_PATH).unlink(missing_ok=True)
+        ensure_catalog()
+        self.app = FastAPI()
+        self.app.include_router(catalog_api.router)
+        self.app.dependency_overrides[catalog_api.require_user] = lambda: {"id": "user-a"}
+        self.app.dependency_overrides[catalog_api.require_csrf] = lambda: None
+
+    async def post_completion(self, asset_id: str, payload: dict):
+        body = json.dumps(payload).encode()
+        messages = []
+        path = f"/v1/assets/{asset_id}/processing-complete"
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1", "scheme": "http", "method": "POST",
+            "path": path, "raw_path": path.encode(), "root_path": "",
+            "query_string": b"", "headers": [(b"content-type", b"application/json")],
+            "server": ("testserver", 80), "client": ("127.0.0.1", 12345),
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await self.app(scope, receive, send)
+        status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+        response = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+        return status, json.loads(response)
+
+    async def test_ready_path_moves_processing_to_ready(self) -> None:
+        item = _make_processing_asset()
+        status, completed = await self.post_completion(
+            item["id"],
+            {
+                "processed_width": 64,
+                "processed_height": 64,
+                "processed_sha256": _SHA256_HEX,
+                "variants": {"720p30": {"size_bytes": 10}},
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(completed["processing_status"], "READY")
+        self.assertIsNotNone(completed.get("ready_at"))
+        stored = get_asset(item["id"], "user-a")
+        self.assertEqual(stored["processing_status"], "READY")
+        self.assertEqual(stored["processed_width"], 64)
+        self.assertEqual(stored["processed_height"], 64)
+        self.assertEqual(stored["processed_sha256"], _SHA256_HEX)
+        self.assertIn("variants", stored)
+
+    async def test_failure_path_moves_processing_to_failed(self) -> None:
+        item = _make_processing_asset()
+        status, completed = await self.post_completion(
+            item["id"], {"failure_reason": "bad decode"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(completed["processing_status"], "FAILED")
+        self.assertEqual(completed["failure_reason"], "bad decode")
+        stored = get_asset(item["id"], "user-a")
+        self.assertEqual(stored["processing_status"], "FAILED")
+
+    async def test_unknown_asset_returns_404(self) -> None:
+        import uuid as _uuid
+        asset_id = str(_uuid.uuid4())
+        before = CATALOG_PATH.read_bytes()
+        status, _ = await self.post_completion(asset_id, {})
+        self.assertEqual(status, 404)
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+
+    async def test_foreign_owner_returns_404(self) -> None:
+        item = _make_processing_asset()
+        self.app.dependency_overrides[catalog_api.require_user] = lambda: {"id": "user-b"}
+        before = CATALOG_PATH.read_bytes()
+        status, _ = await self.post_completion(item["id"], {})
+        self.assertEqual(status, 404)
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+        self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "PROCESSING")
+
+    async def test_coerced_dimensions_are_rejected_before_store(self) -> None:
+        coerced = (True, False, "1080", 1.0, 1.5)
+        for field in ("processed_width", "processed_height"):
+            for value in coerced:
+                with self.subTest(field=field, value=value):
+                    item = _make_processing_asset()
+                    before = CATALOG_PATH.read_bytes()
+                    with patch.object(
+                        catalog_api, "store_complete_asset_processing",
+                        wraps=complete_asset_processing,
+                    ) as complete:
+                        status, response = await self.post_completion(
+                            item["id"], {field: value}
+                        )
+                    self.assertEqual(status, 422)
+                    self.assertEqual(response["detail"][0]["loc"], ["body", field])
+                    complete.assert_not_called()
+                    self.assertEqual(CATALOG_PATH.read_bytes(), before)
+                    self.assertEqual(
+                        get_asset(item["id"], "user-a")["processing_status"],
+                        "PROCESSING",
+                    )
 
 
 if __name__ == "__main__":

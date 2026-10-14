@@ -74,8 +74,8 @@ class AssetUploadCompletion(BaseModel):
 
 class AssetProcessingCompletion(BaseModel):
     processed_sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    processed_width: int | None = Field(default=None, gt=0)
-    processed_height: int | None = Field(default=None, gt=0)
+    processed_width: int | None = Field(default=None, strict=True, gt=0)
+    processed_height: int | None = Field(default=None, strict=True, gt=0)
     variants: dict[str, Any] | None = None
     failure_reason: str | None = Field(default=None, min_length=1, max_length=500)
 
