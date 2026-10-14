@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import os
 
+from egress_report_cadence import liveness_window_can_be_armed
+
 
 class RuntimeTimerConfigError(ValueError):
     """Raised when an Egress runtime timer cannot be interpreted safely."""
@@ -42,9 +44,11 @@ def validate_liveness_window(
     """Require an isolated liveness window strictly wider than the report cadence.
 
     The child's only post-connect liveness evidence is the status-heartbeat
-    progress message. A disabled heartbeat leaves the child with no channel to
-    report on, and a window no wider than that cadence would expire between two
-    healthy reports. Either combination fences a healthy attempt and drives the
+    progress message, emitted on the existing 250 ms sink poll. The configured
+    heartbeat is rounded up to that nominal poll cadence. A disabled heartbeat
+    leaves no evidence channel, and a window no wider than the cadence expires
+    between two healthy reports. Either combination fences an otherwise healthy
+    attempt and drives the
     RECONNECTING loop this bound exists to shorten, so both fail closed here
     instead. A liveness window of `0` keeps the historical unbounded behavior
     and is not constrained.
@@ -54,10 +58,10 @@ def validate_liveness_window(
 
     if liveness_timeout_seconds <= 0:
         return
-    if (
-        status_heartbeat_seconds <= 0
-        or liveness_timeout_seconds <= status_heartbeat_seconds
+    if not liveness_window_can_be_armed(
+        liveness_timeout_seconds, status_heartbeat_seconds
     ):
         raise RuntimeTimerConfigError(
-            f"{LIVENESS_TIMEOUT_NAME} must be greater than {STATUS_HEARTBEAT_NAME}"
+            f"{LIVENESS_TIMEOUT_NAME} must be greater than the poll-rounded "
+            f"{STATUS_HEARTBEAT_NAME} report interval"
         )

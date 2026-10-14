@@ -60,7 +60,7 @@ After `CONNECTED`, the child must keep reporting. Any accepted `connected` or `p
 
 The stop and teardown deadlines are the ones flooding cannot move: both are armed exactly once. The liveness window is deliberately not in that set, because withholding the refresh would fence a healthy child that is still reporting.
 
-The window is armed only when the child has a channel that can refresh it in time. `EGRESS_STATUS_HEARTBEAT_SECONDS` is the only post-connect liveness evidence the child can emit, so the liveness window must be strictly wider than that cadence, and a disabled heartbeat (`0`) leaves the window unarmed. Enabling the canary with a window that is not wider than the heartbeat is rejected at startup rather than left to fence a healthy attempt inside a reconnect loop.
+The window is armed only when the child has a channel that can refresh it in time. `EGRESS_STATUS_HEARTBEAT_SECONDS` is the only post-connect liveness evidence the child can emit, and reports are emitted only by the existing 250 ms sink poll. The liveness window must be strictly wider than the heartbeat rounded up to that nominal poll interval: a 0.1-second heartbeat requires a window over 0.25 seconds, and a 0.3-second heartbeat requires one over 0.5 seconds. This nominal cadence is not a guarantee against scheduler or IPC delays. A disabled heartbeat (`0`) leaves the window unarmed. Enabling the canary with a window that is not wider than the heartbeat is rejected at startup rather than left to fence a healthy attempt inside a reconnect loop.
 
 A configured liveness timeout of `0` keeps the historical unbounded post-connect behavior, exactly like a disabled connect timeout.
 

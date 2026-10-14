@@ -27,7 +27,7 @@ Python の `float()` は `NaN`、`Infinity`、`-Infinity` を通常の変換成�
 
 ## legacy process isolation の liveness window との関係
 
-`EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS`（既定 20）は `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY=1` の legacy `rtmpsink` だけに効く。CONNECTED 後の child が出せる唯一の liveness evidence は status heartbeat の `progress` なので、この window は `EGRESS_STATUS_HEARTBEAT_SECONDS` より厳密に広くなければならない。等しいか狭い場合、2 回の正常 report の間に deadline が切れて healthy attempt を fence し、短縮対象の `RECONNECTING` ループを延々と回すことになる。
+`EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS`（既定 20）は `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY=1` の legacy `rtmpsink` だけに効く。CONNECTED 後の child が出せる唯一の liveness evidence は status heartbeat の `progress` なので、child は既存の 250 ms sink poll でのみ report するため、この window は `EGRESS_STATUS_HEARTBEAT_SECONDS` を 250 ms 単位で切り上げた nominal report 間隔より厳密に広くなければならない。例えば heartbeat 0.1 秒なら 0.25 秒、0.3 秒なら 0.5 秒を超える window が必要になる。この nominal 間隔は scheduler / IPC delay の上限を保証しない。等しいか狭い場合、2 回の正常 report の間に deadline が切れて healthy attempt を fence し、短縮対象の `RECONNECTING` ループを延々と回すことになる。
 
 canary 有効時にこの関係を満たさない設定は起動時に fail-closed で拒否する。`EGRESS_STATUS_HEARTBEAT_SECONDS=0`（heartbeat 無効）では child に報告経路がなく、window は arm されない。`EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS=0` は従来どおり非 bounded のままなので、この制約の対象外である。どちらの設定値もログへ出さない。
 
