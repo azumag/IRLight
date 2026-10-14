@@ -30,6 +30,12 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 ## 関連運用手順
 
 - セキュリティの対象資産・信頼境界・11脅威と残ギャップ: [脅威モデル](../threat-model.md)
+- 利用規約ドラフト: [利用規約](../legal/terms-of-service-draft.md)
+- プライバシーポリシードラフト: [プライバシーポリシー](../legal/privacy-policy-draft.md)
+- 特商法表示ドラフト: [特定商取引法に基づく表示](../legal/tokushoho-disclosure-draft.md)
+- セキュリティ連絡先: [セキュリティ連絡先](../legal/security-contact.md)
+- データ保持・削除方針: [データ保持・削除](data-retention-deletion.md)
+- 通報・停止・異議申立て: [abuse-report-takedown](abuse-report-takedown.md)
 - deploy / rollback の判断・確認: [deploy-rollback.md](deploy-rollback.md)
 - production Compose の read-only preflight: [production-deploy-preflight.md](../production-deploy-preflight.md)
 - authority readiness: [state-readiness.md](state-readiness.md)

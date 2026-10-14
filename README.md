@@ -22,6 +22,11 @@ list/stop専用の管理Bearerを分離する。
 Issue #12 の対象資産・信頼境界と、11脅威ごとの既存統制・回帰テスト・残ギャップは
 [脅威モデル](docs/threat-model.md) を参照してください。実装、CI 契約、実環境の受入を区別します。
 
+利用規約・プライバシーポリシー・特定商取引法に基づく表示・セキュリティ連絡先・
+データ保持削除方針のドラフトは `docs/legal/` および
+`docs/operations/data-retention-deletion.md` / `docs/operations/abuse-report-takedown.md`
+を参照してください。公開前に法務・運用確認が必要です。
+
 Ingestの実機互換性確認（OBS / mobile publisher / hardware encoder）は
 `docs/ingest-device-compatibility.md` と Issue #39 を参照。
 
