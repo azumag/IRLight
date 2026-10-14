@@ -14,6 +14,7 @@ from catalog_store import (
     CatalogStateError,
     CatalogValidationError,
     CatalogVerifyFailed,
+    complete_asset_processing as store_complete_asset_processing,
     complete_asset_upload as store_complete_asset_upload,
     create_asset as store_create_asset,
     create_asset_upload_intent as store_create_asset_upload_intent,
@@ -69,6 +70,14 @@ class AssetUploadCompletion(BaseModel):
     object_key: str = Field(min_length=1, max_length=500)
     size_bytes: int = Field(strict=True, gt=0)
     sha256: str = Field(min_length=64, max_length=64)
+
+
+class AssetProcessingCompletion(BaseModel):
+    processed_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    processed_width: int | None = Field(default=None, gt=0)
+    processed_height: int | None = Field(default=None, gt=0)
+    variants: dict[str, Any] | None = None
+    failure_reason: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 router = APIRouter(prefix="/v1")
@@ -303,6 +312,31 @@ def complete_asset_upload(
                 object_key=request.object_key,
                 size_bytes=request.size_bytes,
                 sha256=request.sha256,
+            )
+        )
+    except CatalogNotFound as exc:
+        raise _not_found(exc) from exc
+    except CatalogValidationError as exc:
+        raise _validation_error(exc) from exc
+
+
+@router.post("/assets/{asset_id}/processing-complete")
+def complete_asset_processing(
+    asset_id: str,
+    request: AssetProcessingCompletion,
+    current_user: CurrentUser,
+    _csrf: Csrf = None,
+) -> dict[str, Any]:
+    try:
+        return _catalog_call(
+            lambda: store_complete_asset_processing(
+                asset_id=asset_id,
+                user_id=str(current_user["id"]),
+                processed_sha256=request.processed_sha256,
+                processed_width=request.processed_width,
+                processed_height=request.processed_height,
+                variants=request.variants,
+                failure_reason=request.failure_reason,
             )
         )
     except CatalogNotFound as exc:
