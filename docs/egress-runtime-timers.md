@@ -25,6 +25,12 @@ Python の `float()` は `NaN`、`Infinity`、`-Infinity` を通常の変換成�
 
 `EGRESS_RETRY_INITIAL_SECONDS`、`EGRESS_RETRY_MAX_SECONDS`、`EGRESS_RETRY_MULTIPLIER`、`EGRESS_RETRY_JITTER_RATIO`、`EGRESS_MAX_RETRY_SECONDS` は `ReconnectPolicy` が有限値と既存の値域を検証する。今回の runtime timer 境界はそれを置き換えず、connect / heartbeat / stability / stall の残っていた timer を同じ fail-closed 方針へ揃える。
 
+## legacy process isolation の liveness window との関係
+
+`EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS`（既定 20）は `EGRESS_LEGACY_PROCESS_ISOLATION_CANARY=1` の legacy `rtmpsink` だけに効く。CONNECTED 後の child が出せる唯一の liveness evidence は status heartbeat の `progress` なので、この window は `EGRESS_STATUS_HEARTBEAT_SECONDS` より厳密に広くなければならない。等しいか狭い場合、2 回の正常 report の間に deadline が切れて healthy attempt を fence し、短縮対象の `RECONNECTING` ループを延々と回すことになる。
+
+canary 有効時にこの関係を満たさない設定は起動時に fail-closed で拒否する。`EGRESS_STATUS_HEARTBEAT_SECONDS=0`（heartbeat 無効）では child に報告経路がなく、window は arm されない。`EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS=0` は従来どおり非 bounded のままなので、この制約の対象外である。どちらの設定値もログへ出さない。
+
 ## Verification
 
 変更時は少なくとも以下を回帰確認する。

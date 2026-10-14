@@ -32,10 +32,12 @@ CANARY_ENV = "EGRESS_LEGACY_PROCESS_ISOLATION_CANARY"
 TEARDOWN_TIMEOUT_ENV = "EGRESS_ISOLATED_TEARDOWN_TIMEOUT_SECONDS"
 TERMINATE_TIMEOUT_ENV = "EGRESS_ISOLATED_TERMINATE_TIMEOUT_SECONDS"
 KILL_TIMEOUT_ENV = "EGRESS_ISOLATED_KILL_TIMEOUT_SECONDS"
+LIVENESS_TIMEOUT_ENV = "EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS"
 
 _DEFAULT_TEARDOWN_TIMEOUT_SECONDS = 8.0
 _DEFAULT_TERMINATE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_KILL_TIMEOUT_SECONDS = 2.0
+_DEFAULT_LIVENESS_TIMEOUT_SECONDS = 20.0
 _PARENT_POLL_SECONDS = 0.1
 _NATURAL_REAP_SECONDS = 0.5
 
@@ -333,6 +335,8 @@ def supervise_attempt_child(
     parent_stop_event: Any,
     *,
     connect_timeout_seconds: float,
+    liveness_timeout_seconds: float,
+    status_heartbeat_seconds: float,
     teardown_timeout_seconds: float,
     terminate_timeout_seconds: float,
     kill_timeout_seconds: float,
@@ -345,6 +349,12 @@ def supervise_attempt_child(
 
     connect_timeout = _legacy_nonnegative_timer(
         connect_timeout_seconds, name="connect_timeout_seconds"
+    )
+    liveness_timeout = _nonnegative_timeout(
+        liveness_timeout_seconds, name="liveness_timeout_seconds"
+    )
+    status_heartbeat = _legacy_nonnegative_timer(
+        status_heartbeat_seconds, name="status_heartbeat_seconds"
     )
     teardown_timeout = _nonnegative_timeout(
         teardown_timeout_seconds, name="teardown_timeout_seconds"
@@ -363,6 +373,20 @@ def supervise_attempt_child(
         if connect_timeout > 0
         else None
     )
+    # A configured value of 0 keeps the historical unbounded post-connect
+    # behavior, exactly like a disabled connect timeout. The window is only
+    # armed when the child has a channel that can refresh it in time: the
+    # status heartbeat is the sole post-connect liveness evidence, so a
+    # disabled heartbeat, or a cadence no faster than the window itself, would
+    # expire between two healthy reports and fence a healthy attempt. The
+    # canary validates the same relationship at startup; enforcing it here too
+    # keeps every direct caller of this supervisor on the safe side.
+    liveness_armed = (
+        liveness_timeout > 0
+        and status_heartbeat > 0
+        and liveness_timeout > status_heartbeat
+    )
+    liveness_deadline: float | None = None
     teardown_deadline: float | None = None
     stop_deadline: float | None = None
     pending_result: ChildAttemptResult | None = None
@@ -406,6 +430,8 @@ def supervise_attempt_child(
                 if message.kind == "connected":
                     connected_once = True
                     startup_deadline = None
+                    if liveness_armed:
+                        liveness_deadline = monotonic() + liveness_timeout
                     if on_connected is not None:
                         on_connected(rendered_buffers)
                 elif on_progress is not None:
@@ -416,10 +442,20 @@ def supervise_attempt_child(
                 connected_once = connected_once or pending_result.connected_once
                 rendered_buffers = max(rendered_buffers, pending_result.rendered_buffers)
                 if message.kind == "teardown":
-                    teardown_deadline = monotonic() + teardown_timeout
+                    # Enforce a single teardown transition. The child-side
+                    # monitor emits exactly one marker, so a repeated valid
+                    # message can only be an attempt to postpone fencing.
+                    if teardown_deadline is None:
+                        teardown_deadline = monotonic() + teardown_timeout
                 else:
                     fence(natural_timeout=_NATURAL_REAP_SECONDS)
                     return pending_result
+
+            # Any accepted message is liveness evidence. A child that wedges in
+            # a blocking sink call cannot emit one, so silence is the only
+            # signal the parent has that the attempt stopped reporting.
+            if liveness_deadline is not None:
+                liveness_deadline = monotonic() + liveness_timeout
 
         # Always evaluate deadlines after one IPC message. A misbehaving child
         # must not keep user-stop or teardown fencing alive forever by flooding
@@ -446,6 +482,19 @@ def supervise_attempt_child(
             return ChildAttemptResult(
                 reason_code="TIMEOUT",
                 connected_once=False,
+                rendered_buffers=rendered_buffers,
+                terminal=False,
+            )
+
+        if liveness_deadline is not None and now >= liveness_deadline:
+            # The child stayed alive but stopped reporting after CONNECTED.
+            # Fence it here so the parent can publish RECONNECTING instead of
+            # leaving a stale CONNECTED status, and keep the child's own
+            # classification when it already announced a teardown reason.
+            fence(natural_timeout=0.0)
+            return pending_result or ChildAttemptResult(
+                reason_code="TIMEOUT",
+                connected_once=connected_once,
                 rendered_buffers=rendered_buffers,
                 terminal=False,
             )
@@ -504,6 +553,9 @@ class IsolatedEgressAttempt:
         self.kill_timeout_seconds = _env_timeout(
             KILL_TIMEOUT_ENV, _DEFAULT_KILL_TIMEOUT_SECONDS
         )
+        self.liveness_timeout_seconds = _env_timeout(
+            LIVENESS_TIMEOUT_ENV, _DEFAULT_LIVENESS_TIMEOUT_SECONDS
+        )
 
     def run(
         self,
@@ -540,6 +592,8 @@ class IsolatedEgressAttempt:
                 child_stop_event,
                 self.stop_event,
                 connect_timeout_seconds=self.config.connect_timeout_seconds,
+                liveness_timeout_seconds=self.liveness_timeout_seconds,
+                status_heartbeat_seconds=self.config.status_heartbeat_seconds,
                 teardown_timeout_seconds=self.teardown_timeout_seconds,
                 terminate_timeout_seconds=self.terminate_timeout_seconds,
                 kill_timeout_seconds=self.kill_timeout_seconds,

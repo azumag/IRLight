@@ -9,13 +9,19 @@ import egress
 from isolated_attempt import (
     CANARY_ENV,
     KILL_TIMEOUT_ENV,
+    LIVENESS_TIMEOUT_ENV,
     TERMINATE_TIMEOUT_ENV,
     TEARDOWN_TIMEOUT_ENV,
     IsolatedEgressAttempt,
     legacy_isolation_enabled,
 )
 from rtmp_sink import destination_url_for_sink, parse_rtmp_sink_factory
-from runtime_timer_config import RuntimeTimerConfigError, finite_env_float
+from runtime_timer_config import (
+    RuntimeTimerConfigError,
+    STATUS_HEARTBEAT_NAME,
+    finite_env_float,
+    validate_liveness_window,
+)
 from secret_inputs import read_destination_url as _read_secret_destination_url
 from secret_inputs import read_input_uri
 from stack_signal import STACK_SIGNAL_NAME, install_stack_signal_handler
@@ -32,6 +38,7 @@ _ISOLATION_TIMERS = (
     (TEARDOWN_TIMEOUT_ENV, 8.0),
     (TERMINATE_TIMEOUT_ENV, 2.0),
     (KILL_TIMEOUT_ENV, 2.0),
+    (LIVENESS_TIMEOUT_ENV, 20.0),
 )
 _STACK_SIGNAL_DIAGNOSTICS_ENV = "EGRESS_STACK_SIGNAL_DIAGNOSTICS"
 
@@ -76,6 +83,15 @@ def _configure_attempt_isolation() -> None:
             raise RuntimeTimerConfigError(
                 f"{name} must be a finite non-negative number"
             )
+
+    # The child's only post-connect liveness evidence is the status-heartbeat
+    # progress message. A window that is not strictly wider than that cadence
+    # would fence a healthy attempt, so the relationship is validated here
+    # rather than left to fail at runtime inside a reconnect loop.
+    validate_liveness_window(
+        finite_env_float(LIVENESS_TIMEOUT_ENV, 20.0),
+        finite_env_float(STATUS_HEARTBEAT_NAME, 5.0),
+    )
 
     # EgressGateway resolves EgressAttempt at runtime. The spawned child imports
     # egress in a fresh interpreter, so it still receives the original

@@ -27,20 +27,32 @@ THREATS = {
     "T11": "依存コンテナ・FFmpeg/GStreamer等の脆弱性",
 }
 FIELDS = ("状態", "既存統制・根拠", "回帰テスト", "残ギャップ")
-# Keep the limited fencing claim separate from the still-missing liveness guard.
+# Keep the canary-only liveness bound separate from the still-unguarded default path.
 T04_SUPERVISION_BOUNDARY = {
     "状態": ("bounded teardown/reap",),
     "残ギャップ": (
-        "CONNECTED 後", "child が生存", "IPC 無通信", "liveness deadline は未実装",
-        "反復する teardown message", "teardown deadline が再設定",
-        "progress message の洪水", "IPC 全般の洪水耐性としない",
+        "接続前・teardown・user stop・CONNECTED 後の IPC 無通信",
+        "isolated canary の bound で覆われる",
+        "production default には liveness bound がない",
+        "`EGRESS_LEGACY_PROCESS_ISOLATION_CANARY` の既定は `0`",
+        "全 Node の既定 isolation 完成扱いにしない",
     ),
 }
+# The isolation contract doc must keep claiming the implemented liveness bound
+# and the single-shot teardown transition, not the older "unimplemented gap".
+# The flooding bound covers only the arm-once deadlines: the liveness window is
+# deliberately extended by an arriving message, because an arriving message is
+# itself the evidence that the child is alive.
 ISOLATION_SUPERVISION_BOUNDARY = (
-    "Progress-message flooding cannot extend",
-    "Each `teardown` message currently resets the teardown deadline.",
-    "Repeated valid `teardown` messages can therefore postpone teardown fencing",
-    "the IPC parser/supervisor does not enforce a single-message transition.",
+    "Progress-message flooding cannot extend the stop or teardown deadline",
+    "These bounds cover pre-connect, teardown, explicit user stop, and post-connect silence.",
+    "### Post-connect liveness",
+    "Any accepted `connected` or `progress` message refreshes the liveness window",
+    "The liveness window is deliberately not in that set",
+    "A configured liveness timeout of `0` keeps the historical unbounded post-connect behavior",
+    "The teardown transition is single-shot",
+    "repeated valid `teardown` messages cannot postpone fencing",
+    "The progress-message flooding guarantee therefore covers the arm-once stop and teardown deadlines, not the liveness window.",
 )
 LINK = re.compile(r"\[[^\]\n]+\]\(([^\s()]+)\)")
 THREAT_HEADING = re.compile(r"^### (T\d+): (.+)$", re.MULTILINE)
@@ -223,7 +235,7 @@ class ThreatModelContractTest(unittest.TestCase):
                 mutated = re.sub(rf"^- {re.escape(field)}: .+\n", "", self.text, count=1, flags=re.MULTILINE)
                 self.assertIn(f"missing or duplicate field: T01 {field}", model_errors(mutated))
 
-    def test_t04_supervision_scope_and_liveness_gap_removal_are_detected(self) -> None:
+    def test_t04_supervision_scope_and_default_path_gap_are_detected(self) -> None:
         start = self.text.index("### T04:")
         end = self.text.index("### T05:")
         block = self.text[start:end]
@@ -238,7 +250,7 @@ class ThreatModelContractTest(unittest.TestCase):
                         model_errors(mutated),
                     )
 
-    def test_isolation_doc_limits_flooding_claim_and_preserves_teardown_gap(self) -> None:
+    def test_isolation_doc_claims_liveness_bound_and_single_shot_teardown(self) -> None:
         text = (REPO_ROOT / ISOLATION_PATH).read_text(encoding="utf-8")
         self.assertEqual(isolation_supervision_errors(text), [])
         for fragment in ISOLATION_SUPERVISION_BOUNDARY:

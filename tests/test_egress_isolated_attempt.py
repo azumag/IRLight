@@ -61,6 +61,41 @@ class _Connection:
         self.closed = True
 
 
+class _HeartbeatConnection:
+    """A healthy child: CONNECTED at t=0, then one progress per cadence seconds.
+
+    Mirrors the production child, whose only post-connect liveness evidence is
+    the status-heartbeat progress message. A cadence of 0 models a disabled
+    heartbeat, where the child can never emit post-connect IPC at all.
+    """
+
+    def __init__(self, clock: _Clock, cadence: float) -> None:
+        self.clock = clock
+        self.cadence = cadence
+        self.pending: list[object] = [{"type": "connected", "rendered_buffers": 1}]
+        self.next_heartbeat = cadence if cadence > 0 else None
+        self.progress_sent = 0
+
+    def poll(self, timeout: float = 0.0) -> bool:
+        self.clock.advance(timeout)
+        while (
+            self.next_heartbeat is not None
+            and self.clock.value >= self.next_heartbeat
+        ):
+            self.progress_sent += 1
+            self.pending.append(
+                {"type": "progress", "rendered_buffers": self.progress_sent + 1}
+            )
+            self.next_heartbeat += self.cadence
+        return bool(self.pending)
+
+    def recv(self) -> object:
+        return self.pending.pop(0)
+
+    def close(self) -> None:
+        pass
+
+
 class _Event:
     def __init__(self, initial: bool = False) -> None:
         self.value = initial
@@ -75,13 +110,19 @@ class _Event:
 
 
 class _Process:
-    def __init__(self, alive: bool) -> None:
+    def __init__(self, alive: bool, dies_after_polls: int | None = None) -> None:
         self.alive = alive
         self.exitcode = None if alive else 0
         self.calls: list[tuple[str, float | None]] = []
+        self.dies_after_polls = dies_after_polls
+        self.polls = 0
 
     def is_alive(self) -> bool:
         self.calls.append(("is_alive", None))
+        self.polls += 1
+        if self.dies_after_polls is not None and self.polls >= self.dies_after_polls:
+            self.alive = False
+            self.exitcode = 0
         return self.alive
 
     def join(self, timeout: float | None = None) -> None:
@@ -173,6 +214,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             _Event(),
             connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=2,
             kill_timeout_seconds=2,
@@ -195,6 +238,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             _Event(),
             connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.2,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -227,6 +272,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             _Event(),
             connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=2,
             kill_timeout_seconds=2,
@@ -246,6 +293,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             _Event(),
             connect_timeout_seconds=0.2,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.2,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -254,6 +303,172 @@ class IsolatedAttemptContractTest(unittest.TestCase):
         )
         self.assertEqual(result.reason_code, "TIMEOUT")
         self.assertFalse(result.terminal)
+        self.assertIn(("terminate", None), process.calls)
+
+    def test_healthy_child_is_never_fenced_by_the_liveness_window(self) -> None:
+        # The child's only post-connect liveness evidence is the status
+        # heartbeat, so a window that cannot be refreshed inside the cadence
+        # would fence a healthy attempt and drive the RECONNECTING loop this
+        # bound exists to shorten. Every permitted configuration must survive.
+        for cadence, liveness in (
+            (5.0, 20.0),   # production default heartbeat and window
+            (5.0, 5.0),    # window exactly equal to the cadence
+            (30.0, 20.0),  # cadence slower than the default window
+            (0.0, 20.0),   # heartbeat disabled: no evidence channel at all
+        ):
+            with self.subTest(cadence=cadence, liveness=liveness):
+                clock = _Clock()
+                process = _Process(alive=True, dies_after_polls=400)
+                connection = _HeartbeatConnection(clock, cadence)
+                ISOLATED.supervise_attempt_child(
+                    process,
+                    connection,
+                    _Event(),
+                    _Event(),
+                    connect_timeout_seconds=15,
+                    liveness_timeout_seconds=liveness,
+                    status_heartbeat_seconds=cadence,
+                    teardown_timeout_seconds=8,
+                    terminate_timeout_seconds=2,
+                    kill_timeout_seconds=2,
+                    poll_seconds=0.1,
+                    monotonic=clock,
+                )
+                self.assertNotIn(("terminate", None), process.calls)
+                self.assertNotIn(("kill", None), process.calls)
+
+    def test_post_connect_ipc_silence_fences_child_and_publishes_reconnecting(
+        self,
+    ) -> None:
+        # The #545 failure mode: the child survives CONNECTED but wedges in a
+        # blocking sink call and never emits teardown or a result. Silence must
+        # become a bounded, retryable timeout instead of a stale CONNECTED.
+        clock = _Clock()
+        process = _Process(alive=True)
+        connection = _Connection(clock, [{"type": "connected", "rendered_buffers": 5}])
+        result = ISOLATED.supervise_attempt_child(
+            process,
+            connection,
+            _Event(),
+            _Event(),
+            connect_timeout_seconds=15,
+            liveness_timeout_seconds=0.3,
+            status_heartbeat_seconds=0.1,
+            teardown_timeout_seconds=8,
+            terminate_timeout_seconds=0.1,
+            kill_timeout_seconds=0.1,
+            poll_seconds=0.1,
+            monotonic=clock,
+        )
+        self.assertEqual(result.reason_code, "TIMEOUT")
+        self.assertTrue(result.connected_once)
+        self.assertFalse(result.terminal)
+        self.assertEqual(result.rendered_buffers, 5)
+        self.assertIn(("terminate", None), process.calls)
+        self.assertFalse(process.is_alive())
+
+    def test_post_connect_progress_refreshes_liveness_deadline(self) -> None:
+        # A healthy child reports on every heartbeat, so the liveness window
+        # must never fire while progress keeps arriving even though the elapsed
+        # time far exceeds the window itself.
+        clock = _Clock()
+        process = _Process(alive=True)
+        messages: list[object] = [{"type": "connected", "rendered_buffers": 1}]
+        messages += [
+            {"type": "progress", "rendered_buffers": index} for index in range(2, 40)
+        ]
+        connection = _Connection(clock, messages)
+        result = ISOLATED.supervise_attempt_child(
+            process,
+            connection,
+            _Event(),
+            _Event(),
+            connect_timeout_seconds=15,
+            liveness_timeout_seconds=0.5,
+            status_heartbeat_seconds=0.1,
+            teardown_timeout_seconds=8,
+            terminate_timeout_seconds=0.1,
+            kill_timeout_seconds=0.1,
+            poll_seconds=0.1,
+            monotonic=clock,
+        )
+        self.assertEqual(result.rendered_buffers, 39)
+        self.assertEqual(result.reason_code, "TIMEOUT")
+        # 39 messages span 3.9s against a 0.5s window, so the child was fenced
+        # only after it actually went silent, within one poll of that deadline.
+        self.assertGreater(clock.value, 3.9)
+        self.assertLess(clock.value, 3.9 + 0.5 + 2 * 0.1)
+        self.assertIn(("terminate", None), process.calls)
+
+    def test_zero_liveness_timeout_leaves_post_connect_silence_unfenced(self) -> None:
+        # 0 keeps the historical unbounded post-connect behavior, so a silent
+        # child must not be fenced by the liveness deadline at all. The child
+        # exits on its own instead.
+        clock = _Clock()
+        process = _Process(alive=True, dies_after_polls=4)
+        connection = _Connection(clock, [{"type": "connected", "rendered_buffers": 2}])
+        result = ISOLATED.supervise_attempt_child(
+            process,
+            connection,
+            _Event(),
+            _Event(),
+            connect_timeout_seconds=15,
+            liveness_timeout_seconds=0,
+            status_heartbeat_seconds=5,
+            teardown_timeout_seconds=8,
+            terminate_timeout_seconds=0.1,
+            kill_timeout_seconds=0.1,
+            poll_seconds=0.1,
+            monotonic=clock,
+        )
+        self.assertEqual(result.reason_code, "LOCAL_PIPELINE_FAILED")
+        self.assertTrue(result.connected_once)
+        self.assertNotIn(("terminate", None), process.calls)
+        self.assertNotIn(("kill", None), process.calls)
+
+    def test_invalid_liveness_timeout_is_rejected_without_echoing_value(self) -> None:
+        for value in ("-1", "nan", "inf", "-inf", "not-a-number"):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {ISOLATED.LIVENESS_TIMEOUT_ENV: value},
+                clear=False,
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    ISOLATED.IsolatedEgressAttempt(
+                        "rtsp://media.invalid/live",
+                        "rtmp://publish.invalid/live/key",
+                        _Event(),
+                        connect_timeout_seconds=15,
+                        status_heartbeat_seconds=5,
+                        sink_factory="rtmpsink",
+                    )
+                self.assertNotIn(value, str(raised.exception))
+
+    def test_repeated_teardown_messages_cannot_postpone_fencing(self) -> None:
+        # The child-side monitor emits one marker, so a second valid teardown
+        # message can only be an attempt to keep the deadline moving.
+        clock = _Clock()
+        process = _Process(alive=True)
+        teardown = self._result_message(kind="teardown", reason="TIMEOUT")
+        connection = _Connection(clock, [teardown.copy() for _ in range(10)])
+        result = ISOLATED.supervise_attempt_child(
+            process,
+            connection,
+            _Event(),
+            _Event(),
+            connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
+            teardown_timeout_seconds=0.25,
+            terminate_timeout_seconds=0.1,
+            kill_timeout_seconds=0.1,
+            poll_seconds=0.1,
+            monotonic=clock,
+        )
+        self.assertEqual(result.reason_code, "TIMEOUT")
+        # The first deadline was armed at 0.1s and fires at 0.35s; the child is
+        # fenced long before the tenth message could have extended it.
+        self.assertLess(clock.value, 0.1 * 10)
         self.assertIn(("terminate", None), process.calls)
 
     def test_malformed_ipc_fences_child_and_fails_closed(self) -> None:
@@ -280,6 +495,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             _Event(),
             connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -301,6 +518,8 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             child_stop,
             _Event(initial=True),
             connect_timeout_seconds=15,
+            liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.25,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
