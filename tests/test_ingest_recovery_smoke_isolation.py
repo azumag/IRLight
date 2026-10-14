@@ -1,3 +1,9 @@
+from contextlib import redirect_stdout
+import io
+import json
+import re
+import sys
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
@@ -167,6 +173,87 @@ class IngestRecoverySmokeIsolationTest(unittest.TestCase):
             with self.subTest(script=name):
                 self.assertNotIn("ingest_secret", wrapper)
                 self.assertNotIn("credential_secret", wrapper)
+
+
+class SrtRecoveryEventContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        source = CORE_SCRIPTS["srt"].read_text(encoding="utf-8")
+        function = source.split("assert_recovery_events() {", 1)[1].split("\n}\n", 1)[0]
+        match = re.search(
+            r"session_events \| python3 -c '(.*?)' \"\$after\"",
+            function,
+            re.DOTALL,
+        )
+        if match is None:
+            raise AssertionError("SRT recovery event validator Python body not found")
+        cls.validator = compile(match.group(1), "<srt-recovery-validator>", "exec")
+
+    def run_validator(self, events: list[dict], baseline: int = 9) -> None:
+        with (
+            patch.object(sys, "argv", ["srt-recovery-fixture", str(baseline)]),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(events))),
+            redirect_stdout(io.StringIO()),
+        ):
+            exec(self.validator, {})
+
+    def test_srt_recovery_event_sequence_contract(self) -> None:
+        hold = {
+            "sequence": 10,
+            "type": "session.holding",
+            "reason_code": "INGEST_DISCONNECTED",
+        }
+        cases = [
+            (
+                "ordered recovery",
+                [hold, {"sequence": 11, "type": "ingest.reconnected"},
+                 {"sequence": 12, "type": "session.recovered"}],
+                None,
+            ),
+            (
+                "recovery before reconnect",
+                [hold, {"sequence": 11, "type": "session.recovered"},
+                 {"sequence": 12, "type": "ingest.reconnected"}],
+                "did not follow ingest.reconnected",
+            ),
+            (
+                "same event sequence",
+                [hold, {"sequence": 11, "type": "ingest.reconnected"},
+                 {"sequence": 11, "type": "session.recovered"}],
+                "did not follow ingest.reconnected",
+            ),
+            (
+                "array order differs from sequence order",
+                [hold, {"sequence": 12, "type": "session.recovered"},
+                 {"sequence": 11, "type": "ingest.reconnected"}],
+                None,
+            ),
+            (
+                "missing reconnect",
+                [hold, {"sequence": 11, "type": "session.recovered"}],
+                "missing ingest.reconnected",
+            ),
+            (
+                "missing recovery",
+                [hold, {"sequence": 11, "type": "ingest.reconnected"}],
+                "missing session.recovered",
+            ),
+            (
+                "fatal recovery event",
+                [hold, {"sequence": 11, "type": "ingest.reconnected"},
+                 {"sequence": 12, "type": "session.recovered"},
+                 {"sequence": 13, "type": "session.failed"}],
+                "fatal event during SRT recovery",
+            ),
+        ]
+        for name, events, error in cases:
+            with self.subTest(case=name):
+                if error is None:
+                    self.run_validator(events)
+                else:
+                    with self.assertRaisesRegex(SystemExit, error):
+                        self.run_validator(events)
+
 
 
 if __name__ == "__main__":
