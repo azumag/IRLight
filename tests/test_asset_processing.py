@@ -16,7 +16,7 @@ _TMP = tempfile.mkdtemp(prefix="irlight-asset-processing-")
 os.environ["STATE_DIR"] = _TMP
 
 from asset_processing import normalize_image_blob, image_dimensions  # noqa: E402
-from asset_upload_intent import source_object_key  # noqa: E402
+from asset_upload_intent import source_object_key, variant_object_key  # noqa: E402
 from catalog_store import (  # noqa: E402
     CATALOG_PATH,
     CatalogValidationError,
@@ -171,6 +171,10 @@ class AssetProcessingCompletionHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["processed_height"], 64)
         self.assertEqual(stored["processed_sha256"], _SHA256_HEX)
         self.assertIn("variants", stored)
+        expected_key = variant_object_key(
+            user_id="user-a", asset_id=item["id"], profile="720p30"
+        )
+        self.assertEqual(stored["variants"]["720p30"]["object_key"], expected_key)
 
     async def test_failure_path_moves_processing_to_failed(self) -> None:
         item = _make_processing_asset()
@@ -199,6 +203,44 @@ class AssetProcessingCompletionHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 404)
         self.assertEqual(CATALOG_PATH.read_bytes(), before)
         self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "PROCESSING")
+
+    async def test_foreign_variant_object_keys_are_rejected(self) -> None:
+        item = _make_processing_asset()
+        asset_id = item["id"]
+        correct_key = variant_object_key(
+            user_id="user-a", asset_id=asset_id, profile="720p30"
+        )
+        wrong_profile_key = variant_object_key(
+            user_id="user-a", asset_id=asset_id, profile="1080p30"
+        )
+        foreign_owner_key = variant_object_key(
+            user_id="user-b", asset_id=asset_id, profile="720p30"
+        )
+        bad_keys = [
+            ("foreign-owner", foreign_owner_key, "user-b owner"),
+            ("right-asset-wrong-profile", wrong_profile_key, "1080p30 key"),
+            ("prefix-alias", correct_key + "x", "suffix alias"),
+            ("suffix-alias", "x" + correct_key, "prefix alias"),
+            ("path-traversal", correct_key + "/../720p30.mp4", "traversal"),
+        ]
+        for label, bad_key, _desc in bad_keys:
+            with self.subTest(case=label):
+                fresh = _make_processing_asset()
+                before = CATALOG_PATH.read_bytes()
+                status, response = await self.post_completion(
+                    fresh["id"],
+                    {
+                        "variants": {
+                            "720p30": {"object_key": bad_key, "size_bytes": 1}
+                        }
+                    },
+                )
+                self.assertEqual(status, 422, (label, response))
+                self.assertEqual(CATALOG_PATH.read_bytes(), before)
+                self.assertEqual(
+                    get_asset(fresh["id"], "user-a")["processing_status"],
+                    "PROCESSING",
+                )
 
     async def test_coerced_dimensions_are_rejected_before_store(self) -> None:
         coerced = (True, False, "1080", 1.0, 1.5)

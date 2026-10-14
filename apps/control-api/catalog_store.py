@@ -637,6 +637,8 @@ def complete_asset_processing(
             if processed_sha256 is None:
                 processed_sha256 = asset.get("uploaded_sha256")
 
+            from asset_upload_intent import variant_object_key
+
             normalized_variants: dict[str, Any] | None = None
             if variants is not None:
                 if not isinstance(variants, dict) or not variants:
@@ -646,7 +648,44 @@ def complete_asset_processing(
                     normalized_profile = normalize_variant_profile(profile)
                     if not isinstance(record, dict):
                         raise CatalogValidationError("variant record must be an object")
-                    normalized_variants[normalized_profile] = dict(record)
+                    # Server-derived object key: callers may only repeat the
+                    # exact key we would derive; any other value is fail-closed.
+                    derived_key = variant_object_key(
+                        user_id=user_id,
+                        asset_id=asset_id,
+                        profile=normalized_profile,
+                    )
+                    supplied_key = record.get("object_key", None)
+                    if supplied_key is not None and supplied_key != derived_key:
+                        raise CatalogValidationError(
+                            "variant object key is not bound to this owner and asset"
+                        )
+                    # Type/range-check any other record fields.
+                    if "sha256" in record and record["sha256"] is not None:
+                        sha = record["sha256"]
+                        if (
+                            not isinstance(sha, str)
+                            or len(sha) != 64
+                            or any(c not in "0123456789abcdef" for c in sha)
+                        ):
+                            raise CatalogValidationError(
+                                "variant sha256 must be 64 lowercase hex characters"
+                            )
+                    if "size_bytes" in record and record["size_bytes"] is not None:
+                        size = record["size_bytes"]
+                        if isinstance(size, bool) or not isinstance(size, int):
+                            raise CatalogValidationError(
+                                "variant size_bytes must be a positive integer"
+                            )
+                        if size <= 0 or size > MAX_UPLOAD_BYTES:
+                            raise CatalogValidationError(
+                                "variant size_bytes is outside the allowed range"
+                            )
+                    normalized_record = dict(record)
+                    # Always store the server-derived key so caller intent cannot
+                    # address another owner's namespace.
+                    normalized_record["object_key"] = derived_key
+                    normalized_variants[normalized_profile] = normalized_record
 
             asset["processing_status"] = "READY"
             asset["ready_at"] = now
