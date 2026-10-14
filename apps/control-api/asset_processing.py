@@ -12,7 +12,6 @@ import hashlib
 
 from asset_upload_intent import (
     SUPPORTED_VARIANT_PROFILES,
-    normalize_image_content_type,
 )
 
 # Keep the same Node-local standby bound so processing agrees with upload and
