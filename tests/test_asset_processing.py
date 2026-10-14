@@ -61,7 +61,7 @@ class AssetProcessingStoreTest(unittest.TestCase):
         initialization_marker(CATALOG_PATH).unlink(missing_ok=True)
         ensure_catalog()
 
-    def test_complete_processing_moves_to_ready(self):
+    def test_complete_processing_to_ready_is_not_exposed(self):
         item = create_asset_upload_intent(user_id="user-a", content_type="image/png")
         complete_asset_upload(
             asset_id=item["id"],
@@ -71,17 +71,16 @@ class AssetProcessingStoreTest(unittest.TestCase):
             size_bytes=1024,
             sha256="a" * 64,
         )
-        completed = complete_asset_processing(
-            asset_id=item["id"],
-            user_id="user-a",
-            processed_width=64,
-            processed_height=64,
-            variants={"720p30": {"size_bytes": 10}},
-        )
-        self.assertEqual(completed["processing_status"], "READY")
-        self.assertIn("variants", completed)
+        with self.assertRaises(CatalogValidationError):
+            complete_asset_processing(
+                asset_id=item["id"],
+                user_id="user-a",
+                processed_width=64,
+                processed_height=64,
+                variants={"720p30": {"size_bytes": 10}},
+            )
         fetched = get_asset(item["id"], "user-a")
-        self.assertEqual(fetched["processing_status"], "READY")
+        self.assertEqual(fetched["processing_status"], "PROCESSING")
 
     def test_complete_processing_requires_processing_state(self):
         item = create_asset_upload_intent(user_id="user-a", content_type="image/png")
@@ -151,9 +150,18 @@ class AssetProcessingCompletionHttpTest(unittest.IsolatedAsyncioTestCase):
         response = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
         return status, json.loads(response)
 
-    async def test_ready_path_moves_processing_to_ready(self) -> None:
+    async def test_ready_promotion_is_not_exposed(self) -> None:
         item = _make_processing_asset()
-        status, completed = await self.post_completion(
+        before = CATALOG_PATH.read_bytes()
+        status, response = await self.post_completion(item["id"], {})
+        self.assertEqual(status, 422)
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+        self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "PROCESSING")
+
+    async def test_ready_path_payload_is_not_exposed(self) -> None:
+        item = _make_processing_asset()
+        before = CATALOG_PATH.read_bytes()
+        status, response = await self.post_completion(
             item["id"],
             {
                 "processed_width": 64,
@@ -162,19 +170,9 @@ class AssetProcessingCompletionHttpTest(unittest.IsolatedAsyncioTestCase):
                 "variants": {"720p30": {"size_bytes": 10}},
             },
         )
-        self.assertEqual(status, 200)
-        self.assertEqual(completed["processing_status"], "READY")
-        self.assertIsNotNone(completed.get("ready_at"))
-        stored = get_asset(item["id"], "user-a")
-        self.assertEqual(stored["processing_status"], "READY")
-        self.assertEqual(stored["processed_width"], 64)
-        self.assertEqual(stored["processed_height"], 64)
-        self.assertEqual(stored["processed_sha256"], _SHA256_HEX)
-        self.assertIn("variants", stored)
-        expected_key = variant_object_key(
-            user_id="user-a", asset_id=item["id"], profile="720p30"
-        )
-        self.assertEqual(stored["variants"]["720p30"]["object_key"], expected_key)
+        self.assertEqual(status, 422)
+        self.assertEqual(CATALOG_PATH.read_bytes(), before)
+        self.assertEqual(get_asset(item["id"], "user-a")["processing_status"], "PROCESSING")
 
     async def test_failure_path_moves_processing_to_failed(self) -> None:
         item = _make_processing_asset()

@@ -634,6 +634,18 @@ def complete_asset_processing(
                 _save(catalog)
                 return dict(asset)
 
+            # READY promotion requires a verified processing result. In this
+            # partial slice there is no authenticated worker boundary that
+            # inspects the processing output; exposing READY from the public
+            # owner API would let an end-user session assert READY with
+            # unverified metadata alone. Keeping the store function
+            # fail-closed here means the READY path is reachable only by the
+            # future worker slice, not by caller metadata.
+            raise CatalogValidationError(
+                "processing completion cannot promote an asset to READY"
+                " from this public API; a verified processing result is required"
+            )
+
             if processed_sha256 is None:
                 processed_sha256 = asset.get("uploaded_sha256")
 
