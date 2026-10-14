@@ -29,7 +29,9 @@ DB、Workflows、DNS、provider、配信・メディア処理は実装してい�
 CLI / plugin はbetaです。更新はexact pinとlockfileを同時にreviewし、下記検証を再実行してください。
 stable 1.x plugin は Wrangler をpeer dependencyに持つため、この雛形では採用しません。
 現lockfileには Wrangler がありません。Node toolchain advisory は専用CIの `npm audit --audit-level=high` で検査します。
-既存Python dependency audit、Docker CI、update policyは変更しません。npm用Dependabot設定は別途残件です。
+既存Python dependency audit、Docker CI、update policyは変更しません。
+npm の依存更新は `.github/dependabot.yml` の `npm` ecosystem（`/apps/control-plane`）で継続追跡します。
+exact pin を維持するため、update PRは内容を確認して採用を判断してください。
 
 ## 開発・検証
 
