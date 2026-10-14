@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import unittest
@@ -8,9 +9,25 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 EGRESS_DIR = ROOT / "apps" / "egress-gateway"
-sys.path.insert(0, str(EGRESS_DIR))
 
-from runtime_timer_config import RuntimeTimerConfigError, finite_env_float  # noqa: E402
+# apps/continuity ships its own runtime_timer_config module under the same
+# top-level name, so a plain `from runtime_timer_config import ...` resolves
+# to whichever one reached sys.modules first. Load this app's module by
+# path, the same way test_egress_isolated_attempt.py loads isolated_attempt.py.
+_spec = importlib.util.spec_from_file_location(
+    "irlight_egress_runtime_timer_config", EGRESS_DIR / "runtime_timer_config.py"
+)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError("failed to load egress runtime timer config module")
+RUNTIME_TIMER_CONFIG = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = RUNTIME_TIMER_CONFIG
+_spec.loader.exec_module(RUNTIME_TIMER_CONFIG)
+
+LIVENESS_TIMEOUT_NAME = RUNTIME_TIMER_CONFIG.LIVENESS_TIMEOUT_NAME
+STATUS_HEARTBEAT_NAME = RUNTIME_TIMER_CONFIG.STATUS_HEARTBEAT_NAME
+RuntimeTimerConfigError = RUNTIME_TIMER_CONFIG.RuntimeTimerConfigError
+finite_env_float = RUNTIME_TIMER_CONFIG.finite_env_float
+validate_liveness_window = RUNTIME_TIMER_CONFIG.validate_liveness_window
 
 
 RUNTIME_TIMERS = (
@@ -91,6 +108,65 @@ class EgressRuntimeTimerConfigTest(unittest.TestCase):
             'LOG.error("invalid finite egress runtime timer configuration")',
             source,
         )
+
+    def test_liveness_window_wider_than_status_heartbeat_is_accepted(self) -> None:
+        # The default canary window must satisfy the relationship, otherwise
+        # enabling the canary at all would be rejected at startup.
+        for liveness, heartbeat in ((20.0, 5.0), (6.0, 5.0), (20.0, 0.5)):
+            with self.subTest(liveness=liveness, heartbeat=heartbeat):
+                validate_liveness_window(liveness, heartbeat)
+
+    def test_liveness_window_not_wider_than_status_heartbeat_is_rejected(self) -> None:
+        # A window no wider than the report cadence expires between two healthy
+        # reports, fencing a healthy attempt into the RECONNECTING loop this
+        # bound exists to shorten. Equal windows fail too: the window must be
+        # strictly wider.
+        for liveness, heartbeat in ((20.0, 20.0), (5.0, 20.0), (20.0, 30.0)):
+            with self.subTest(liveness=liveness, heartbeat=heartbeat):
+                with self.assertRaisesRegex(
+                    RuntimeTimerConfigError,
+                    rf"^{LIVENESS_TIMEOUT_NAME} must be greater than "
+                    rf"{STATUS_HEARTBEAT_NAME}$",
+                ):
+                    validate_liveness_window(liveness, heartbeat)
+
+    def test_disabled_status_heartbeat_rejects_an_armed_liveness_window(self) -> None:
+        # With the heartbeat disabled the child has no post-connect channel to
+        # emit liveness evidence, so any armed window would fence it blind.
+        with self.assertRaises(RuntimeTimerConfigError):
+            validate_liveness_window(20.0, 0.0)
+
+    def test_disabled_liveness_window_is_not_constrained(self) -> None:
+        # 0 keeps the historical unbounded post-connect behavior, so it is
+        # accepted even alongside a disabled heartbeat.
+        for liveness in (0.0, -1.0):
+            with self.subTest(liveness=liveness):
+                validate_liveness_window(liveness, 0.0)
+                validate_liveness_window(liveness, 5.0)
+
+    def test_liveness_window_rejection_echoes_no_configuration_value(self) -> None:
+        try:
+            validate_liveness_window(20.0, 30.0)
+        except RuntimeTimerConfigError as exc:
+            message = str(exc)
+        else:
+            self.fail("narrow liveness window unexpectedly accepted")
+        # Only the variable names appear; neither raw value reaches the message.
+        self.assertIn(LIVENESS_TIMEOUT_NAME, message)
+        self.assertIn(STATUS_HEARTBEAT_NAME, message)
+        self.assertNotIn("30", message)
+        self.assertNotIn("20.0", message)
+
+    def test_production_entrypoint_validates_liveness_window_relationship(self) -> None:
+        source = (EGRESS_DIR / "egress_entrypoint.py").read_text(encoding="utf-8")
+        self.assertIn("validate_liveness_window(", source)
+        self.assertIn(STATUS_HEARTBEAT_NAME, source)
+        # The canary hook must validate the relationship before it swaps in the
+        # isolated attempt, and before any GStreamer pipeline is constructed.
+        isolation = source.index("def _configure_attempt_isolation()")
+        validation = source.index("validate_liveness_window(", isolation)
+        wrapper = source.index("egress.EgressAttempt = IsolatedEgressAttempt")
+        self.assertLess(validation, wrapper)
 
     def test_egress_image_packages_timer_validator(self) -> None:
         dockerfile = (EGRESS_DIR / "Dockerfile").read_text(encoding="utf-8")

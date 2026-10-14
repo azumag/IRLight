@@ -40,14 +40,19 @@ T04_SUPERVISION_BOUNDARY = {
 }
 # The isolation contract doc must keep claiming the implemented liveness bound
 # and the single-shot teardown transition, not the older "unimplemented gap".
+# The flooding bound covers only the arm-once deadlines: the liveness window is
+# deliberately extended by an arriving message, because an arriving message is
+# itself the evidence that the child is alive.
 ISOLATION_SUPERVISION_BOUNDARY = (
-    "Progress-message flooding cannot extend the stop, teardown, or liveness deadline",
+    "Progress-message flooding cannot extend the stop or teardown deadline",
     "These bounds cover pre-connect, teardown, explicit user stop, and post-connect silence.",
     "### Post-connect liveness",
+    "Any accepted `connected` or `progress` message refreshes the liveness window",
+    "The liveness window is deliberately not in that set",
     "A configured liveness timeout of `0` keeps the historical unbounded post-connect behavior",
     "The teardown transition is single-shot",
     "repeated valid `teardown` messages cannot postpone fencing",
-    "The progress-message flooding guarantee therefore covers all IPC message kinds.",
+    "The progress-message flooding guarantee therefore covers the arm-once stop and teardown deadlines, not the liveness window.",
 )
 LINK = re.compile(r"\[[^\]\n]+\]\(([^\s()]+)\)")
 THREAT_HEADING = re.compile(r"^### (T\d+): (.+)$", re.MULTILINE)

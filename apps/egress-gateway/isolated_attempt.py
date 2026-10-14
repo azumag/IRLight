@@ -336,6 +336,7 @@ def supervise_attempt_child(
     *,
     connect_timeout_seconds: float,
     liveness_timeout_seconds: float,
+    status_heartbeat_seconds: float,
     teardown_timeout_seconds: float,
     terminate_timeout_seconds: float,
     kill_timeout_seconds: float,
@@ -351,6 +352,9 @@ def supervise_attempt_child(
     )
     liveness_timeout = _nonnegative_timeout(
         liveness_timeout_seconds, name="liveness_timeout_seconds"
+    )
+    status_heartbeat = _legacy_nonnegative_timer(
+        status_heartbeat_seconds, name="status_heartbeat_seconds"
     )
     teardown_timeout = _nonnegative_timeout(
         teardown_timeout_seconds, name="teardown_timeout_seconds"
@@ -370,7 +374,18 @@ def supervise_attempt_child(
         else None
     )
     # A configured value of 0 keeps the historical unbounded post-connect
-    # behavior, exactly like a disabled connect timeout.
+    # behavior, exactly like a disabled connect timeout. The window is only
+    # armed when the child has a channel that can refresh it in time: the
+    # status heartbeat is the sole post-connect liveness evidence, so a
+    # disabled heartbeat, or a cadence no faster than the window itself, would
+    # expire between two healthy reports and fence a healthy attempt. The
+    # canary validates the same relationship at startup; enforcing it here too
+    # keeps every direct caller of this supervisor on the safe side.
+    liveness_armed = (
+        liveness_timeout > 0
+        and status_heartbeat > 0
+        and liveness_timeout > status_heartbeat
+    )
     liveness_deadline: float | None = None
     teardown_deadline: float | None = None
     stop_deadline: float | None = None
@@ -415,7 +430,7 @@ def supervise_attempt_child(
                 if message.kind == "connected":
                     connected_once = True
                     startup_deadline = None
-                    if liveness_timeout > 0:
+                    if liveness_armed:
                         liveness_deadline = monotonic() + liveness_timeout
                     if on_connected is not None:
                         on_connected(rendered_buffers)
@@ -578,6 +593,7 @@ class IsolatedEgressAttempt:
                 self.stop_event,
                 connect_timeout_seconds=self.config.connect_timeout_seconds,
                 liveness_timeout_seconds=self.liveness_timeout_seconds,
+                status_heartbeat_seconds=self.config.status_heartbeat_seconds,
                 teardown_timeout_seconds=self.teardown_timeout_seconds,
                 terminate_timeout_seconds=self.terminate_timeout_seconds,
                 kill_timeout_seconds=self.kill_timeout_seconds,

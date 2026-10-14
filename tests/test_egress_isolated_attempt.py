@@ -61,6 +61,41 @@ class _Connection:
         self.closed = True
 
 
+class _HeartbeatConnection:
+    """A healthy child: CONNECTED at t=0, then one progress per cadence seconds.
+
+    Mirrors the production child, whose only post-connect liveness evidence is
+    the status-heartbeat progress message. A cadence of 0 models a disabled
+    heartbeat, where the child can never emit post-connect IPC at all.
+    """
+
+    def __init__(self, clock: _Clock, cadence: float) -> None:
+        self.clock = clock
+        self.cadence = cadence
+        self.pending: list[object] = [{"type": "connected", "rendered_buffers": 1}]
+        self.next_heartbeat = cadence if cadence > 0 else None
+        self.progress_sent = 0
+
+    def poll(self, timeout: float = 0.0) -> bool:
+        self.clock.advance(timeout)
+        while (
+            self.next_heartbeat is not None
+            and self.clock.value >= self.next_heartbeat
+        ):
+            self.progress_sent += 1
+            self.pending.append(
+                {"type": "progress", "rendered_buffers": self.progress_sent + 1}
+            )
+            self.next_heartbeat += self.cadence
+        return bool(self.pending)
+
+    def recv(self) -> object:
+        return self.pending.pop(0)
+
+    def close(self) -> None:
+        pass
+
+
 class _Event:
     def __init__(self, initial: bool = False) -> None:
         self.value = initial
@@ -180,6 +215,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=2,
             kill_timeout_seconds=2,
@@ -203,6 +239,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.2,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -236,6 +273,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=2,
             kill_timeout_seconds=2,
@@ -256,6 +294,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=0.2,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.2,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -265,6 +304,38 @@ class IsolatedAttemptContractTest(unittest.TestCase):
         self.assertEqual(result.reason_code, "TIMEOUT")
         self.assertFalse(result.terminal)
         self.assertIn(("terminate", None), process.calls)
+
+    def test_healthy_child_is_never_fenced_by_the_liveness_window(self) -> None:
+        # The child's only post-connect liveness evidence is the status
+        # heartbeat, so a window that cannot be refreshed inside the cadence
+        # would fence a healthy attempt and drive the RECONNECTING loop this
+        # bound exists to shorten. Every permitted configuration must survive.
+        for cadence, liveness in (
+            (5.0, 20.0),   # production default heartbeat and window
+            (5.0, 5.0),    # window exactly equal to the cadence
+            (30.0, 20.0),  # cadence slower than the default window
+            (0.0, 20.0),   # heartbeat disabled: no evidence channel at all
+        ):
+            with self.subTest(cadence=cadence, liveness=liveness):
+                clock = _Clock()
+                process = _Process(alive=True, dies_after_polls=400)
+                connection = _HeartbeatConnection(clock, cadence)
+                ISOLATED.supervise_attempt_child(
+                    process,
+                    connection,
+                    _Event(),
+                    _Event(),
+                    connect_timeout_seconds=15,
+                    liveness_timeout_seconds=liveness,
+                    status_heartbeat_seconds=cadence,
+                    teardown_timeout_seconds=8,
+                    terminate_timeout_seconds=2,
+                    kill_timeout_seconds=2,
+                    poll_seconds=0.1,
+                    monotonic=clock,
+                )
+                self.assertNotIn(("terminate", None), process.calls)
+                self.assertNotIn(("kill", None), process.calls)
 
     def test_post_connect_ipc_silence_fences_child_and_publishes_reconnecting(
         self,
@@ -282,6 +353,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=0.3,
+            status_heartbeat_seconds=0.1,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -313,6 +385,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=0.5,
+            status_heartbeat_seconds=0.1,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -341,6 +414,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=0,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -384,6 +458,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.25,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -421,6 +496,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=8,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
@@ -443,6 +519,7 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             _Event(initial=True),
             connect_timeout_seconds=15,
             liveness_timeout_seconds=20,
+            status_heartbeat_seconds=5,
             teardown_timeout_seconds=0.25,
             terminate_timeout_seconds=0.1,
             kill_timeout_seconds=0.1,
