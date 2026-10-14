@@ -94,7 +94,7 @@ Node Agent は Docker socket を mount し、stack を制御します。socket �
 - 状態: Session stop / credential revoke と緊急停止手順は実装済み、基盤の下記テストは CI 固定済み。通報から停止までの管理者運用と法務は未実装 / 未決、実環境未確認。
 - 既存統制・根拠: [Session workflow](../apps/control-api/session_workflow.py) と [ingest store](../apps/control-api/ingest_store.py) に通常停止・失効経路。[緊急停止 runbook](operations/emergency-abuse-stop.md) は人による対象確認、最小 Session 範囲、metadata の保全と実 Node の actual state 確認を要求する。runbook に窓口への言及があっても窓口実在の根拠にはしない。
 - 回帰テスト: [test_session_lifecycle.py](../tests/test_session_lifecycle.py) — `WorkflowPrepareTest.test_stop_is_idempotent`。[test_ingest_credentials.py](../tests/test_ingest_credentials.py) — `IngestCredentialStoreTest.test_revoke_session_invalidates_all_active_credentials`。[test_operations_runbook_inventory.py](../tests/test_operations_runbook_inventory.py)（手順の存在・索引契約。通報運用の E2E ではない）。
-- 残ギャップ: 公開通報窓口、security contact、管理者が他 owner の不正 Session を止める権限モデル、誤通報 / 異議申立て / 反復違反停止 / 法的要請の記録、証拠保持期間、利用規約 / プライバシー / 特商法表示と専門家確認は未決・未実装。内容審査や自動録画を本書で導入しない。
+- 残ギャップ: 公開通報窓口の運用確定、security contact 窓口の運用確定、管理者が他 owner の不正 Session を止める権限モデル、誤通報 / 異議申立て / 反復違反停止 / 法的要請の記録、証拠保持期間。利用規約 / プライバシー / 特商法表示のドラフトは `docs/legal/` に追加済みだが、専門家確認と公開前確定は未決。内容審査や自動録画を本書で導入しない。
 
 ### T08: 管理者権限の濫用
 
