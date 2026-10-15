@@ -125,5 +125,13 @@ class ControlUiRuntimeErrorCopyContractTest(unittest.TestCase):
         )
 
 
+    def test_fault_row_clears_summary_and_action_when_runtime_is_unreachable(self) -> None:
+        # The clearing itself (not only the call site) must be present: a
+        # mutant that deletes the body of the null branch would otherwise
+        # keep the last fault on screen while the runtime is stale/unavailable.
+        self.assertIn("summary.textContent = '—';", INDEX)
+        self.assertIn("action.hidden = true;", INDEX)
+        self.assertIn("action.textContent = '';", INDEX)
+
 if __name__ == "__main__":
     unittest.main()
