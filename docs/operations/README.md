@@ -97,5 +97,5 @@ runbook や関連運用手順を追加・移動する場合は対応する inven
 - ユーザー向け状態通知・復旧案内: [user-facing-status-display.md](user-facing-status-display.md)
 - ユーザー向け状態通知（別名）: [user-facing-status.md](user-facing-status.md)
 - Status Page 契約（別名）: [status-page.md](status-page.md)
-- metric / log schema: [operations-metric-log-schema.json](../config/operations-metric-log-schema.json)
-- metric / log schema（別名）: [metric-log-schema.json](../config/metric-log-schema.json)
+- metric / log schema: [operations-metric-log-schema.json](../../config/operations-metric-log-schema.json)
+- metric / log schema（別名）: [metric-log-schema.json](../../config/metric-log-schema.json)
