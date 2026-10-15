@@ -169,7 +169,7 @@ class ContinuityPipeline:
         bus.add_signal_watch()
         bus.connect("message", self._on_output_message)
 
-        GLib.timeout_add(250, self._reconcile)
+        GLib.timeout_add(250, self._reconcile_timeout)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._stop)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self._stop)
 
@@ -585,6 +585,13 @@ class ContinuityPipeline:
 
     def _on_audio_handoff(self, _identity: Gst.Element, _buffer: Gst.Buffer) -> None:
         self.model.observe_audio(time.monotonic())
+
+    def _reconcile_timeout(self) -> bool:
+        try:
+            return self._reconcile()
+        except RuntimeStatusWriteError:
+            LOG.warning("Skipping invalid runtime status update")
+            return True
 
     def _reconcile(self) -> bool:
         now_wall = time.time()

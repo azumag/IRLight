@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import math
@@ -218,6 +219,146 @@ class ContinuityStatusWriterClockTest(unittest.TestCase):
             self.assertEqual(payload["actual_audio_mode"], "SILENT_FALLBACK")
             self.assertEqual(payload["started_at"], 100.0)
             self.assertEqual(payload["updated_at"], 1234.5)
+
+    def test_timeout_registration_uses_guarded_callback(self) -> None:
+        tree = ast.parse((CONTINUITY_DIR / "continuity.py").read_text())
+        pipeline = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "ContinuityPipeline"
+        )
+        run = next(
+            node for node in pipeline.body
+            if isinstance(node, ast.FunctionDef) and node.name == "run"
+        )
+        registrations = [
+            node for node in ast.walk(run)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and ast.unparse(node.func) == "GLib.timeout_add"
+        ]
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual(ast.unparse(registrations[0].args[0]), "250")
+        self.assertEqual(
+            ast.unparse(registrations[0].args[1]), "self._reconcile_timeout"
+        )
+
+    def test_validated_startup_clock_rejects_invalid_and_accepts_zero(self) -> None:
+        invalid_values = (
+            -1.0, math.nan, math.inf, -math.inf, True, None, "1", 10**10000,
+        )
+        for invalid in invalid_values:
+            with self.subTest(invalid_type=type(invalid).__name__):
+                with mock.patch.object(CONTINUITY.time, "time", return_value=invalid):
+                    with self.assertRaisesRegex(
+                        CONTINUITY.RuntimeStatusWriteError,
+                        r"^continuity started_at is invalid$",
+                    ):
+                        CONTINUITY._validated_status_now(field="continuity started_at")
+        for zero in (0, 0.0, -0.0):
+            with mock.patch.object(CONTINUITY.time, "time", return_value=zero):
+                self.assertEqual(
+                    CONTINUITY._validated_status_now(field="continuity started_at"),
+                    0.0,
+                )
+
+    def test_timeout_keeps_source_on_invalid_status_clocks(self) -> None:
+        invalid_values = (
+            -1.0, math.nan, math.inf, -math.inf, True, None, "1", 10**10000,
+        )
+        for field in ("started_at", "updated_at"):
+            for invalid in invalid_values:
+                with self.subTest(field=field, invalid_type=type(invalid).__name__):
+                    pipeline = self._pipeline(Path("unused-status.json"))
+                    wall = invalid if field == "updated_at" else 101.0
+                    if field == "started_at":
+                        pipeline.started_at = invalid
+                    with (
+                        mock.patch.object(CONTINUITY.time, "time", return_value=wall),
+                        mock.patch.object(
+                            CONTINUITY.time, "monotonic", return_value=10.0,
+                        ),
+                        mock.patch.object(CONTINUITY, "atomic_write_json") as writer,
+                        mock.patch.object(CONTINUITY.LOG, "warning") as warning,
+                        mock.patch.object(pipeline, "_activate_pad") as activate,
+                    ):
+                        self.assertTrue(pipeline._reconcile_timeout())
+                        writer.assert_not_called()
+                        self.assertEqual(activate.call_count, 2)
+                        warning.assert_called_once_with(
+                            "Skipping invalid runtime status update"
+                        )
+
+    def test_timeout_keeps_switching_and_recovers_status(self) -> None:
+        pipeline = self._pipeline(Path("unused-status.json"))
+        pipeline.model = CONTINUITY.ContinuityState(
+            input_timeout=1.5, stable_window=0.0,
+        )
+        control = SimpleNamespace(audio_mode="LIVE", version=3, command_id=None)
+        pipeline.control_reader.read = lambda: (control, None)
+        with (
+            mock.patch.object(
+                CONTINUITY.time, "time", side_effect=[-1.0, math.nan, math.inf, 101.0],
+            ),
+            mock.patch.object(
+                CONTINUITY.time, "monotonic", side_effect=[10.0, 12.0, 13.0, 14.0],
+            ),
+            mock.patch.object(CONTINUITY, "atomic_write_json") as writer,
+            mock.patch.object(CONTINUITY.LOG, "warning"),
+            mock.patch.object(pipeline, "_activate_pad") as activate,
+        ):
+            pipeline.model.observe_video(10.0)
+            pipeline.model.observe_audio(10.0)
+            self.assertTrue(pipeline._reconcile_timeout())
+            writer.assert_not_called()
+            self.assertTrue(pipeline._reconcile_timeout())
+            writer.assert_not_called()
+            control.audio_mode = "MUTED"
+            pipeline.model.observe_video(13.0)
+            pipeline.model.observe_audio(13.0)
+            self.assertTrue(pipeline._reconcile_timeout())
+            writer.assert_not_called()
+            control.audio_mode = "LIVE"
+            pipeline.model.observe_video(14.0)
+            pipeline.model.observe_audio(14.0)
+            self.assertTrue(pipeline._reconcile_timeout())
+            self.assertEqual(activate.call_args_list, [
+                mock.call(pipeline.video_selector, pipeline.live_video_pad),
+                mock.call(pipeline.audio_selector, pipeline.live_audio_pad),
+                mock.call(pipeline.video_selector, pipeline.fallback_video_pad),
+                mock.call(pipeline.audio_selector, pipeline.fallback_audio_pad),
+                mock.call(pipeline.video_selector, pipeline.live_video_pad),
+                mock.call(pipeline.audio_selector, pipeline.fallback_audio_pad),
+                mock.call(pipeline.video_selector, pipeline.live_video_pad),
+                mock.call(pipeline.audio_selector, pipeline.live_audio_pad),
+            ])
+            writer.assert_called_once()
+            payload = writer.call_args.args[1]
+            normalized = json.loads(json.dumps(payload, allow_nan=False))
+            self.assertEqual(normalized["updated_at"], 101.0)
+            self.assertEqual(payload["actual_audio_mode"], "LIVE")
+
+    def test_timeout_only_handles_status_errors(self) -> None:
+        pipeline = self._pipeline(Path("unused-status.json"))
+        with (
+            mock.patch.object(
+                pipeline, "_reconcile",
+                side_effect=CONTINUITY.RuntimeStatusWriteError(
+                    "runtime status payload is not strict JSON"
+                ),
+            ),
+            mock.patch.object(CONTINUITY.LOG, "warning") as warning,
+        ):
+            self.assertTrue(pipeline._reconcile_timeout())
+            warning.assert_called_once_with("Skipping invalid runtime status update")
+        errors = (RuntimeError("unexpected"), OSError("write failed"), ValueError("control"))
+        for error in errors:
+            with self.subTest(error_type=type(error).__name__):
+                with mock.patch.object(pipeline, "_reconcile", side_effect=error):
+                    with self.assertRaises(type(error)) as raised:
+                        pipeline._reconcile_timeout()
+                    self.assertIs(raised.exception, error)
+        with mock.patch.object(pipeline, "_reconcile", return_value=False):
+            self.assertFalse(pipeline._reconcile_timeout())
 
 
 if __name__ == "__main__":
