@@ -62,32 +62,37 @@ class _Connection:
 
 
 class _HeartbeatConnection:
-    """A healthy child: CONNECTED at t=0, then one progress per cadence seconds.
+    """A healthy child reporting only on the real nominal 250 ms sink polls.
 
-    Mirrors the production child, whose only post-connect liveness evidence is
-    the status-heartbeat progress message. A cadence of 0 models a disabled
-    heartbeat, where the child can never emit post-connect IPC at all.
+    CONNECTED resets the producer's heartbeat timestamp at t=0. A heartbeat
+    of 0 disables progress; otherwise a poll reports only once it is due.
+    This fixed-callback fake does not model scheduler or IPC jitter.
     """
 
     def __init__(self, clock: _Clock, cadence: float) -> None:
         self.clock = clock
         self.cadence = cadence
         self.pending: list[object] = [{"type": "connected", "rendered_buffers": 1}]
-        self.next_heartbeat = cadence if cadence > 0 else None
+        self.next_sink_poll = 0.25
+        self.last_report = 0.0
         self.progress_sent = 0
 
     def poll(self, timeout: float = 0.0) -> bool:
-        self.clock.advance(timeout)
-        while (
-            self.next_heartbeat is not None
-            and self.clock.value >= self.next_heartbeat
-        ):
-            self.progress_sent += 1
-            self.pending.append(
-                {"type": "progress", "rendered_buffers": self.progress_sent + 1}
-            )
-            self.next_heartbeat += self.cadence
-        return bool(self.pending)
+        if self.pending:
+            return True
+        deadline = self.clock.value + timeout
+        while self.next_sink_poll <= deadline:
+            self.clock.value = self.next_sink_poll
+            self.next_sink_poll += 0.25
+            if self.cadence > 0 and self.clock.value - self.last_report >= self.cadence:
+                self.last_report = self.clock.value
+                self.progress_sent += 1
+                self.pending.append(
+                    {"type": "progress", "rendered_buffers": self.progress_sent + 1}
+                )
+                return True
+        self.clock.value = deadline
+        return False
 
     def recv(self) -> object:
         return self.pending.pop(0)
@@ -315,6 +320,12 @@ class IsolatedAttemptContractTest(unittest.TestCase):
             (5.0, 5.0),    # window exactly equal to the cadence
             (30.0, 20.0),  # cadence slower than the default window
             (0.0, 20.0),   # heartbeat disabled: no evidence channel at all
+            (0.1, 0.15),   # next possible progress is at 0.25, not 0.1
+            (0.1, 0.25),   # equal to the nominal poll-rounded report interval
+            (0.3, 0.4),    # next possible progress is at 0.5, not 0.3
+            (0.3, 0.5),    # equal to the nominal poll-rounded report interval
+            (0.1, 0.3),    # short window wider than the 0.25 report interval
+            (0.3, 0.6),    # short window wider than the 0.5 report interval
         ):
             with self.subTest(cadence=cadence, liveness=liveness):
                 clock = _Clock()

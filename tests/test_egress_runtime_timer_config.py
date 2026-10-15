@@ -21,7 +21,11 @@ if _spec is None or _spec.loader is None:
     raise RuntimeError("failed to load egress runtime timer config module")
 RUNTIME_TIMER_CONFIG = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = RUNTIME_TIMER_CONFIG
-_spec.loader.exec_module(RUNTIME_TIMER_CONFIG)
+sys.path.insert(0, str(EGRESS_DIR))
+try:
+    _spec.loader.exec_module(RUNTIME_TIMER_CONFIG)
+finally:
+    sys.path.remove(str(EGRESS_DIR))
 
 LIVENESS_TIMEOUT_NAME = RUNTIME_TIMER_CONFIG.LIVENESS_TIMEOUT_NAME
 STATUS_HEARTBEAT_NAME = RUNTIME_TIMER_CONFIG.STATUS_HEARTBEAT_NAME
@@ -112,7 +116,7 @@ class EgressRuntimeTimerConfigTest(unittest.TestCase):
     def test_liveness_window_wider_than_status_heartbeat_is_accepted(self) -> None:
         # The default canary window must satisfy the relationship, otherwise
         # enabling the canary at all would be rejected at startup.
-        for liveness, heartbeat in ((20.0, 5.0), (6.0, 5.0), (20.0, 0.5)):
+        for liveness, heartbeat in ((20.0, 5.0), (6.0, 5.0), (20.0, 0.5), (0.3, 0.1), (0.6, 0.3)):
             with self.subTest(liveness=liveness, heartbeat=heartbeat):
                 validate_liveness_window(liveness, heartbeat)
 
@@ -121,12 +125,15 @@ class EgressRuntimeTimerConfigTest(unittest.TestCase):
         # reports, fencing a healthy attempt into the RECONNECTING loop this
         # bound exists to shorten. Equal windows fail too: the window must be
         # strictly wider.
-        for liveness, heartbeat in ((20.0, 20.0), (5.0, 20.0), (20.0, 30.0)):
+        for liveness, heartbeat in (
+            (20.0, 20.0), (5.0, 20.0), (20.0, 30.0),
+            (0.15, 0.1), (0.25, 0.1), (0.4, 0.3), (0.5, 0.3),
+        ):
             with self.subTest(liveness=liveness, heartbeat=heartbeat):
                 with self.assertRaisesRegex(
                     RuntimeTimerConfigError,
-                    rf"^{LIVENESS_TIMEOUT_NAME} must be greater than "
-                    rf"{STATUS_HEARTBEAT_NAME}$",
+                    rf"^{LIVENESS_TIMEOUT_NAME} must be greater than the poll-rounded "
+                    rf"{STATUS_HEARTBEAT_NAME} report interval$",
                 ):
                     validate_liveness_window(liveness, heartbeat)
 
@@ -171,6 +178,7 @@ class EgressRuntimeTimerConfigTest(unittest.TestCase):
     def test_egress_image_packages_timer_validator(self) -> None:
         dockerfile = (EGRESS_DIR / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("runtime_timer_config.py", dockerfile)
+        self.assertIn("egress_report_cadence.py", dockerfile)
         self.assertIn('CMD ["python3", "-u", "/app/egress_entrypoint.py"]', dockerfile)
 
 

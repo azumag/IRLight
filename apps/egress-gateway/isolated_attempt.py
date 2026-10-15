@@ -22,6 +22,7 @@ from destination_guard import (
     read_verified_peer_ip,
     validate_destination_runtime,
 )
+from egress_report_cadence import liveness_window_can_be_armed
 from rtmp_sink import destination_url_for_sink
 from secret_inputs import read_destination_url, read_input_uri
 
@@ -377,14 +378,12 @@ def supervise_attempt_child(
     # behavior, exactly like a disabled connect timeout. The window is only
     # armed when the child has a channel that can refresh it in time: the
     # status heartbeat is the sole post-connect liveness evidence, so a
-    # disabled heartbeat, or a cadence no faster than the window itself, would
-    # expire between two healthy reports and fence a healthy attempt. The
+    # disabled heartbeat, or a nominal poll-rounded cadence no faster than the
+    # window itself, would expire between two healthy reports. The
     # canary validates the same relationship at startup; enforcing it here too
     # keeps every direct caller of this supervisor on the safe side.
-    liveness_armed = (
-        liveness_timeout > 0
-        and status_heartbeat > 0
-        and liveness_timeout > status_heartbeat
+    liveness_armed = liveness_window_can_be_armed(
+        liveness_timeout, status_heartbeat
     )
     liveness_deadline: float | None = None
     teardown_deadline: float | None = None
