@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -61,8 +64,44 @@ class ControlUiRuntimeErrorCopyContractTest(unittest.TestCase):
     def test_unknown_reason_code_fails_closed_to_generic_copy(self) -> None:
         self.assertIn("const RUNTIME_ERROR_UNKNOWN = {", INDEX)
         self.assertIn(
-            "return RUNTIME_ERROR_COPY[prefix] || RUNTIME_ERROR_UNKNOWN;", INDEX
+            "Object.prototype.hasOwnProperty.call(RUNTIME_ERROR_COPY, prefix)",
+            INDEX,
         )
+
+        # Execute the production mapping function, not a copied approximation.
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for the runtime mapping regression")
+        start = INDEX.index("const RUNTIME_ERROR_COPY = {")
+        end = INDEX.index("\nfunction announceStatus", start)
+        production_mapping = INDEX[start:end]
+        reasons = [
+            "INPUT_PIPELINE_ERROR:gst-stream-error:6",
+            "UNKNOWN_RUNTIME_REASON:internal-detail",
+            "constructor:internal-detail",
+            "toString:internal-detail",
+            "__proto__:internal-detail",
+        ]
+        script = production_mapping + "\nconst reasons = " + json.dumps(reasons) + ";\n"
+        script += "process.stdout.write(JSON.stringify(reasons.map(runtimeErrorCopy)));"
+        result = subprocess.run(
+            [node, "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        copies = json.loads(result.stdout)
+        self.assertEqual(
+            copies[0],
+            {
+                "summary": "入力の受信が停止しました",
+                "action": "配信アプリが切断されていないか確認してください。復帰するまで待機画面を表示します。",
+            },
+        )
+        unknown = {
+            "summary": "配信を継続できません",
+            "action": "しばらく待ってから再確認してください。続く場合は配信を停止して作り直してください。",
+        }
+        self.assertEqual(copies[1:], [unknown] * 4)
 
     def test_internal_reason_code_is_never_rendered_verbatim(self) -> None:
         # Only the mapped summary/action text may reach the DOM. The raw code

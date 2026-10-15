@@ -174,7 +174,10 @@ const RUNTIME_ERROR_UNKNOWN = {
 function runtimeErrorCopy(reason) {
   if (typeof reason !== 'string' || reason === '') return null;
   const prefix = reason.split(':', 1)[0];
-  return RUNTIME_ERROR_COPY[prefix] || RUNTIME_ERROR_UNKNOWN;
+  if (Object.prototype.hasOwnProperty.call(RUNTIME_ERROR_COPY, prefix)) {
+    return RUNTIME_ERROR_COPY[prefix];
+  }
+  return RUNTIME_ERROR_UNKNOWN;
 }
 
 function announceStatus(message) {
