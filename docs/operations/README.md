@@ -89,3 +89,13 @@ IRLight の障害対応 runbook を一か所から参照するための索引で
 障害の根因が authority、deploy regression、secret 監査などにある場合は、必須12シナリオの runbook だけで復旧を推測せず、上記の専用手順を優先してください。
 
 runbook や関連運用手順を追加・移動する場合は対応する inventory test も更新し、Issue #11 の必須シナリオと主要な関連運用契約が索引から脱落しないことを CI で確認します。
+
+## 監視・指標・状態表示
+
+- 運用 dashboard 契約: [dashboard.md](dashboard.md)
+- 運用 dashboard 定義（別名）: [monitoring-dashboard.md](monitoring-dashboard.md)
+- ユーザー向け状態通知・復旧案内: [user-facing-status-display.md](user-facing-status-display.md)
+- ユーザー向け状態通知（別名）: [user-facing-status.md](user-facing-status.md)
+- Status Page 契約（別名）: [status-page.md](status-page.md)
+- metric / log schema: [operations-metric-log-schema.json](../config/operations-metric-log-schema.json)
+- metric / log schema（別名）: [metric-log-schema.json](../config/metric-log-schema.json)
