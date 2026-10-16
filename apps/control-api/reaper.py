@@ -90,7 +90,13 @@ class Reaper:
         self.config = config or ReaperConfig()
         self._now = now
         self.node_state_path = node_state_path or Path(
-            os.getenv("NODE_STATE_DIR", "/state")
+            # The Node authority root must resolve exactly like the Control
+            # Plane (node_internal), the heartbeat inspection CLI, and the
+            # heartbeat/availability alert tooling: NODE_STATE_DIR, else
+            # STATE_DIR, else /state. A literal /state fallback would let the
+            # reaper sweep one state generation while enforcing heartbeats from
+            # another, silently disabling detection or acting on foreign Nodes.
+            os.getenv("NODE_STATE_DIR", os.getenv("STATE_DIR", "/state"))
         ) / "nodes.json"
         # Reaper and Control API must operate on the same durable credential
         # file even when STATE_DIR was supplied directly to SessionStore.

@@ -4,7 +4,7 @@ Issue #4 の Continuity Session lifecycleでは、Media Node上のmedia pipeline
 
 ## Source of truth
 
-Node Agent heartbeatはControl Planeの `NODE_STATE_DIR/nodes.json` に保存される。ReaperはSession JSONの `updated_at` をheartbeat用途に流用しない。heartbeatごとにSessionを書き換えると、HOLDING deadline復元など本来のSession lifecycle時刻を汚すためである。
+Node Agent heartbeatはControl Planeの `NODE_STATE_DIR/nodes.json` に保存される。Node authority の root は Control Plane (`node_internal`)、heartbeat inspection CLI、heartbeat / availability alert tooling、standalone reaper のいずれでも `NODE_STATE_DIR` → `STATE_DIR` → `/state` の順で解決する。Reaper は Session authority を掃引する state root と同一の解決順を使うため、`STATE_DIR` だけを設定した deployment でも Control Plane と同じ `nodes.json` を参照する。ReaperはSession JSONの `updated_at` をheartbeat用途に流用しない。heartbeatごとにSessionを書き換えると、HOLDING deadline復元など本来のSession lifecycle時刻を汚すためである。
 
 Reaperは1 sweepにつきNode registryを1回だけ読み、active Sessionに割り当てられた `node_id` と照合する。
 
