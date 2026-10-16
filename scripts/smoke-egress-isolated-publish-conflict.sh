@@ -150,7 +150,7 @@ cleanup() {
     echo "--- target logs (redacted) ---" >&2
     emit_redacted_compose_logs egress-conflict-target 200 || true
   fi
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
