@@ -102,7 +102,7 @@ cleanup() {
       redact_generated_secrets <"$raw_logs" >&2 || echo "redaction failed; log output withheld" >&2
     fi
   fi
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }
