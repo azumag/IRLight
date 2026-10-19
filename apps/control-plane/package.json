@@ -14,7 +14,7 @@
     "dry-run": "node scripts/run.mjs dry-run"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "2.0.0-beta.sha-91c870c02",
+    "@cloudflare/vite-plugin": "2.0.0-beta.v.0",
     "@types/node": "24.19.2",
     "cf": "1.0.0-beta.14",
     "typescript": "7.0.2",
