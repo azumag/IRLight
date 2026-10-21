@@ -39,10 +39,8 @@ register は現行 store が hash generation と authority write を一つの `r
 
 ## 運用上の境界
 
-この変更だけで次の問題は解決しません。
+この変更は KDF の**同時実行数**だけを bound します。試行の**頻度**制限は別 slice の [auth-rate-limit.md](auth-rate-limit.md) が担当し、client アドレスの確定（trusted proxy 境界）もそちらが持ちます。この変更だけでは次の問題は解決しません。
 
-- source IP / normalized email / account 単位の頻度制限
-- trusted proxy 経由で client IP を確定するポリシー
 - 複数 host / container replica をまたぐ cluster-wide quota
 - ユーザー単位の active auth Session 上限
 
@@ -52,4 +50,4 @@ register は現行 store が hash generation と authority write を一つの `r
 
 過負荷調査時は、まず HTTP status / stable code と configured concurrency を確認し、password、email、token をログへ追加して原因調査しないでください。`AUTH_COMPUTE_BUSY` が継続する場合は request rate と Control Plane CPU saturation を別途観測し、上限値を単に引き上げる前に abuse / capacity のどちらが原因かを判断します。
 
-本変更は Issue #86 の「concurrent KDF work を bounded にする」slice のみです。rate-limit key、閾値、window、per-user Session policy は実測・trusted-proxy policy・運用要件なしに決めません。
+本変更は Issue #86 の「concurrent KDF work を bounded にする」slice のみです。頻度制限の key / 閾値 / window は [auth-rate-limit.md](auth-rate-limit.md) が環境変数として提供し、実測に基づく運用判断で調整します。per-user active Session 上限は未着手です。

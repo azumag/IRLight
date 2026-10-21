@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException, Response
+from starlette.requests import Request as HttpRequest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -241,6 +242,23 @@ class AuthKdfAdmissionTest(unittest.TestCase):
 
 
 class AuthKdfAdmissionApiTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # The admission limiter runs before the KDF slot; keep its shared state
+        # in a throwaway directory so these cases stay isolated.
+        temp_dir = tempfile.TemporaryDirectory(prefix="irlight-auth-rate-limit-")
+        self.addCleanup(temp_dir.cleanup)
+        env = patch.dict(
+            os.environ,
+            {"IRLIGHT_AUTH_RATE_LIMIT_DIR": temp_dir.name},
+            clear=False,
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
+    @staticmethod
+    def _http_request(address: str = "192.0.2.10"):
+        return HttpRequest({"type": "http", "client": (address, 12345), "headers": []})
+
     def test_register_busy_is_retryable_503_without_invoking_password_work(self) -> None:
         request = auth_api.RegisterRequest(
             email="alice@example.com",
@@ -254,7 +272,7 @@ class AuthKdfAdmissionApiTest(unittest.TestCase):
             patch("auth_api.register_user") as register_user,
         ):
             with self.assertRaises(HTTPException) as raised:
-                auth_api.register(request)
+                auth_api.register(request, self._http_request())
 
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(
@@ -279,7 +297,7 @@ class AuthKdfAdmissionApiTest(unittest.TestCase):
             patch("auth_api.create_session") as create_session,
         ):
             with self.assertRaises(HTTPException) as raised:
-                auth_api.login(request, response)
+                auth_api.login(request, response, self._http_request())
 
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(
@@ -323,7 +341,7 @@ class AuthKdfAdmissionApiTest(unittest.TestCase):
             patch("auth_api.authenticate_user", return_value={"id": "user-a"}),
             patch("auth_api.create_session", side_effect=create_session),
         ):
-            result = auth_api.login(request, response)
+            result = auth_api.login(request, response, self._http_request())
 
         self.assertFalse(held)
         self.assertEqual(result["user"], {"id": "user-a"})
