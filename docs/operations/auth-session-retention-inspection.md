@@ -50,6 +50,10 @@ inspector は authority を開く前に effective inspection clock も検証す�
 - duplicate JSON object key。
 - `NaN` / `Infinity` / `-Infinity`。
 - token hash、CSRF token、timestamp 等が auth authority の現在の保存契約を満たさない。
+- `created_at < 0`、または `expires_at < created_at`。通常の auth store と同じ
+  時刻順序を要求し、破損 authority を正常な retention 集計として報告しない。
+  epoch `0` と `expires_at == created_at` は引き続き有効で、期限と現在時刻が
+  同じ Session は expired として集計する。新しい時刻上限や TTL は導入しない。
 
 異常時の標準出力は固定値だけで、state path、token hash、user ID、CSRF token、raw JSON、parser error は返さない。
 

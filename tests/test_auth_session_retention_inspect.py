@@ -20,6 +20,7 @@ from auth_session_retention_inspect_cli import (  # noqa: E402
     inspect_auth_session_retention,
     main,
 )
+from auth_store import AuthStateError, _validate_sessions  # noqa: E402
 
 
 CSRF = "A" * 32
@@ -37,6 +38,46 @@ def session_record(
 
 
 class AuthSessionRetentionInspectTests(unittest.TestCase):
+    def test_timestamp_boundary_matches_auth_authority_without_mutation(self) -> None:
+        cases = (
+            (-1.0, 2.0, False), (2.0, 1.0, False),
+            (True, 2.0, False), (1.0, False, False),
+            (math.nan, 2.0, False), (1.0, math.inf, False),
+            (0.0, 0.0, True), (1.0, 1.0, True), (0.0, 2.0, True),
+        )
+        for created, expires, valid in cases:
+            with self.subTest(created=created, expires=expires):
+                state = {"sessions": {"a" * 64: session_record(
+                    created_at=created, expires_at=expires,
+                )}}
+                if valid:
+                    _validate_sessions(state)
+                else:
+                    with self.assertRaises(AuthStateError):
+                        _validate_sessions(state)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "auth_sessions.json"
+                    content = json.dumps(state)
+                    path.write_text(content, encoding="utf-8")
+                    before = path.stat()
+                    if valid:
+                        snapshot = inspect_auth_session_retention(path=path, now=1.0)
+                        self.assertEqual(snapshot.sessions_expired, int(expires <= 1.0))
+                    else:
+                        with self.assertRaises(RetentionInspectError):
+                            inspect_auth_session_retention(path=path, now=1.0)
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
+                            self.assertEqual(main(["--state-file", str(path)]), 2)
+                        self.assertEqual(json.loads(output.getvalue()), {
+                            "status": "UNAVAILABLE",
+                            "reason_code": "AUTH_SESSION_STATE_UNAVAILABLE",
+                        })
+                    self.assertEqual(path.read_text(encoding="utf-8"), content)
+                    self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+                    self.assertEqual(sorted(p.name for p in Path(directory).iterdir()),
+                                     ["auth_sessions.json"])
+
     def test_counts_expiry_boundary_and_estimates_bounded_gc_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "auth_sessions.json"
