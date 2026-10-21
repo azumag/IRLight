@@ -92,8 +92,11 @@ def _validate_record(token_hash: Any, record: Any) -> tuple[float, str]:
     ):
         raise RetentionInspectError("authentication session authority is invalid")
 
-    _finite_number(record, "created_at")
-    return _finite_number(record, "expires_at"), user_id
+    created_at = _finite_number(record, "created_at")
+    expires_at = _finite_number(record, "expires_at")
+    if created_at < 0 or expires_at < created_at:
+        raise RetentionInspectError("authentication session authority is invalid")
+    return expires_at, user_id
 
 
 def _validated_now(value: float | None) -> float:
