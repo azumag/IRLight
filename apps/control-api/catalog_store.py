@@ -19,6 +19,15 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from asset_upload_intent import (
+    AssetUploadIntentError,
+    MAX_UPLOAD_BYTES,
+    is_owner_bound_source_object_key,
+    normalize_image_content_type,
+    source_object_key,
+    validate_upload_completion,
+)
+from asset_processing import MAX_IMAGE_DIMENSION
 from destination_probe import DestinationProbeError, probe_destination
 from destination_url_safety import (
     DestinationUrlSafetyError,
@@ -183,6 +192,53 @@ def _validate_catalog_optional_string(
     return value
 
 
+def _validate_catalog_optional_int(
+    item: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    if field not in item:
+        return None
+    value = item[field]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    if minimum is not None and value < minimum:
+        raise CatalogStateError(f"{context} has invalid {field}")
+    if maximum is not None and value > maximum:
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _validate_catalog_optional_sha256(
+    item: dict[str, Any], field: str, *, context: str
+) -> str | None:
+    if field not in item:
+        return None
+    value = item[field]
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 64:
+        raise CatalogStateError(f"{context} has invalid {field}")
+    if any(char not in "0123456789abcdef" for char in value):
+        raise CatalogStateError(f"{context} has invalid {field}")
+    return value
+
+
+def _validate_catalog_optional_timestamp_if_present(
+    item: dict[str, Any], field: str, *, context: str
+) -> float | None:
+    if field not in item:
+        return None
+    if item[field] is None:
+        return None
+    return _require_catalog_timestamp(item, field, context=context)
+
+
 def _validate_catalog_optional_dict(
     item: dict[str, Any], field: str, *, context: str
 ) -> dict[str, Any] | None:
@@ -250,6 +306,25 @@ def _validate_catalog_authority(catalog: dict[str, Any]) -> dict[str, Any]:
         _require_catalog_string(item, "processing_status", context=context)
         _require_catalog_timestamp(item, "created_at", context=context)
         _require_catalog_timestamp(item, "updated_at", context=context)
+        # Upload-intent metadata (optional for historical records).
+        _validate_catalog_optional_string(item, "content_type", context=context)
+        _validate_catalog_optional_int(
+            item, "max_bytes", context=context, minimum=1, maximum=MAX_UPLOAD_BYTES
+        )
+        _validate_catalog_optional_int(
+            item, "uploaded_size_bytes", context=context, minimum=1, maximum=MAX_UPLOAD_BYTES
+        )
+        _validate_catalog_optional_sha256(item, "uploaded_sha256", context=context)
+        _validate_catalog_optional_sha256(item, "processed_sha256", context=context)
+        _validate_catalog_optional_int(
+            item, "processed_width", context=context, minimum=1, maximum=MAX_IMAGE_DIMENSION
+        )
+        _validate_catalog_optional_int(
+            item, "processed_height", context=context, minimum=1, maximum=MAX_IMAGE_DIMENSION
+        )
+        _validate_catalog_optional_string(item, "failure_reason", context=context)
+        _validate_catalog_optional_dict(item, "variants", context=context)
+        _validate_catalog_optional_timestamp_if_present(item, "ready_at", context=context)
 
     return catalog
 
@@ -499,6 +574,161 @@ def get_asset(asset_id: str, user_id: str) -> dict[str, Any]:
         catalog = _load()
         return dict(_get_owned(catalog, "assets", asset_id, user_id))
 
+def complete_asset_processing(
+    *,
+    asset_id: str,
+    user_id: str,
+    processed_sha256: object | None = None,
+    processed_width: object | None = None,
+    processed_height: object | None = None,
+    variants: object | None = None,
+    failure_reason: object | None = None,
+) -> dict[str, Any]:
+    """Move a ``PROCESSING`` asset to ``READY`` (or ``FAILED``).
+
+    The asset must currently be ``PROCESSING``.  ``failure_reason`` (when
+    supplied) marks the asset ``FAILED`` instead of ``READY``.  Supplied
+    variants must be a mapping of supported variant profile -> metadata dict.
+    """
+
+    from asset_processing import AssetProcessingError
+    from asset_upload_intent import normalize_variant_profile
+
+    try:
+        if failure_reason is not None:
+            if not isinstance(failure_reason, str) or not failure_reason.strip():
+                raise CatalogValidationError("failure reason must be a non-empty string")
+        if processed_sha256 is not None and (
+            not isinstance(processed_sha256, str)
+            or len(processed_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in processed_sha256)
+        ):
+            raise CatalogValidationError("processed sha256 must be 64 lowercase hex characters")
+        if processed_width is not None:
+            if (
+                isinstance(processed_width, bool)
+                or not isinstance(processed_width, int)
+                or processed_width < 1
+                or processed_width > MAX_IMAGE_DIMENSION
+            ):
+                raise CatalogValidationError("processed width is invalid")
+        if processed_height is not None:
+            if (
+                isinstance(processed_height, bool)
+                or not isinstance(processed_height, int)
+                or processed_height < 1
+                or processed_height > MAX_IMAGE_DIMENSION
+            ):
+                raise CatalogValidationError("processed height is invalid")
+
+        with _catalog_lock(exclusive=True):
+            catalog = _load()
+            asset = _get_owned(catalog, "assets", asset_id, user_id)
+            if asset.get("processing_status") != "PROCESSING":
+                raise CatalogValidationError("asset is not processing")
+            now = _validated_catalog_now()
+            if failure_reason is not None:
+                asset["processing_status"] = "FAILED"
+                asset["failure_reason"] = failure_reason.strip()[:500]
+                asset["updated_at"] = now
+                _save(catalog)
+                return dict(asset)
+
+            # READY promotion requires a verified processing result. In this
+            # partial slice there is no authenticated worker boundary that
+            # inspects the processing output; exposing READY from the public
+            # owner API would let an end-user session assert READY with
+            # unverified metadata alone. Keeping the store function
+            # fail-closed here means the READY path is reachable only by the
+            # future worker slice, not by caller metadata.
+            raise CatalogValidationError(
+                "processing completion cannot promote an asset to READY"
+                " from this public API; a verified processing result is required"
+            )
+
+            if processed_sha256 is None:
+                processed_sha256 = asset.get("uploaded_sha256")
+
+            from asset_upload_intent import variant_object_key
+
+            normalized_variants: dict[str, Any] | None = None
+            if variants is not None:
+                if not isinstance(variants, dict) or not variants:
+                    raise CatalogValidationError("variants must be a non-empty mapping")
+                normalized_variants = {}
+                for profile, record in variants.items():
+                    normalized_profile = normalize_variant_profile(profile)
+                    if not isinstance(record, dict):
+                        raise CatalogValidationError("variant record must be an object")
+                    # Server-derived object key: callers may only repeat the
+                    # exact key we would derive; any other value is fail-closed.
+                    derived_key = variant_object_key(
+                        user_id=user_id,
+                        asset_id=asset_id,
+                        profile=normalized_profile,
+                    )
+                    supplied_key = record.get("object_key", None)
+                    if supplied_key is not None and supplied_key != derived_key:
+                        raise CatalogValidationError(
+                            "variant object key is not bound to this owner and asset"
+                        )
+                    # Type/range-check any other record fields.
+                    if "sha256" in record and record["sha256"] is not None:
+                        sha = record["sha256"]
+                        if (
+                            not isinstance(sha, str)
+                            or len(sha) != 64
+                            or any(c not in "0123456789abcdef" for c in sha)
+                        ):
+                            raise CatalogValidationError(
+                                "variant sha256 must be 64 lowercase hex characters"
+                            )
+                    if "size_bytes" in record and record["size_bytes"] is not None:
+                        size = record["size_bytes"]
+                        if isinstance(size, bool) or not isinstance(size, int):
+                            raise CatalogValidationError(
+                                "variant size_bytes must be a positive integer"
+                            )
+                        if size <= 0 or size > MAX_UPLOAD_BYTES:
+                            raise CatalogValidationError(
+                                "variant size_bytes is outside the allowed range"
+                            )
+                    normalized_record = dict(record)
+                    # Always store the server-derived key so caller intent cannot
+                    # address another owner's namespace.
+                    normalized_record["object_key"] = derived_key
+                    normalized_variants[normalized_profile] = normalized_record
+
+            asset["processing_status"] = "READY"
+            asset["ready_at"] = now
+            if processed_sha256 is not None:
+                asset["processed_sha256"] = processed_sha256
+            if processed_width is not None:
+                asset["processed_width"] = processed_width
+            if processed_height is not None:
+                asset["processed_height"] = processed_height
+            if normalized_variants is not None:
+                asset["variants"] = normalized_variants
+            asset["updated_at"] = now
+            _save(catalog)
+            return dict(asset)
+    except (AssetUploadIntentError, AssetProcessingError) as exc:
+        raise CatalogValidationError(str(exc)) from exc
+
+
+def fail_asset_processing(
+    *, asset_id: str, user_id: str, reason: str
+) -> dict[str, Any]:
+    return complete_asset_processing(
+        asset_id=asset_id, user_id=user_id, failure_reason=reason
+    )
+
+
+mark_asset_ready = complete_asset_processing
+process_asset = complete_asset_processing
+mark_asset_failed = fail_asset_processing
+complete_processing = complete_asset_processing
+
 
 def delete_asset(asset_id: str, user_id: str) -> None:
     with _catalog_lock(exclusive=True):
@@ -506,3 +736,93 @@ def delete_asset(asset_id: str, user_id: str) -> None:
         _get_owned(catalog, "assets", asset_id, user_id)
         del catalog["assets"][asset_id]
         _save(catalog)
+
+
+def create_asset_upload_intent(*, user_id: str, content_type: str) -> dict[str, Any]:
+    """Issue a server-generated, owner-bound object key for a new upload.
+
+    The caller never chooses the object key: it is derived from the validated
+    owner id and the server-issued asset id by ``asset_upload_intent``. The
+    asset starts in ``UPLOADING`` and only ``complete_asset_upload`` can move it
+    into ``PROCESSING``. The legacy metadata-only ``create_asset`` path remains
+    for compatibility but grants no write access to any object key.
+    """
+
+    try:
+        normalized_type = normalize_image_content_type(content_type)
+        with _catalog_lock(exclusive=True):
+            catalog = _load()
+            now = _validated_catalog_now()
+            asset_id = str(uuid.uuid4())
+            key = source_object_key(user_id=user_id, asset_id=asset_id)
+            item = {
+                "id": asset_id,
+                "user_id": user_id,
+                "source_object_key": key,
+                "processing_status": "UPLOADING",
+                "content_type": normalized_type,
+                "max_bytes": MAX_UPLOAD_BYTES,
+                "created_at": now,
+                "updated_at": now,
+            }
+            catalog["assets"][asset_id] = item
+            _save(catalog)
+            return dict(item)
+    except AssetUploadIntentError as exc:
+        raise CatalogValidationError(str(exc)) from exc
+
+
+def complete_asset_upload(
+    *,
+    asset_id: str,
+    user_id: str,
+    content_type: str,
+    object_key: str,
+    size_bytes: int,
+    sha256: str,
+) -> dict[str, Any]:
+    """Validate an upload completion and move the asset into ``PROCESSING``.
+
+    Fail closed: a completion whose content type, object key, size, or checksum
+    does not match the issued intent never advances. The asset must currently be
+    ``UPLOADING`` so replays and out-of-order completions are rejected instead
+    of silently re-arming a finished asset. Only the owning user can complete
+    the upload, and only the exact server-derived key is accepted.
+    """
+
+    try:
+        normalized_type = normalize_image_content_type(content_type)
+        with _catalog_lock(exclusive=True):
+            catalog = _load()
+            asset = _get_owned(catalog, "assets", asset_id, user_id)
+            if asset.get("processing_status") != "UPLOADING":
+                raise CatalogValidationError("asset is not awaiting an upload")
+            if asset.get("content_type") != normalized_type:
+                raise CatalogValidationError(
+                    "upload completion content type does not match the issued intent"
+                )
+            completion = validate_upload_completion(
+                user_id=user_id,
+                asset_id=asset_id,
+                content_type=normalized_type,
+                object_key=object_key,
+                size_bytes=size_bytes,
+                sha256=sha256,
+            )
+            if not is_owner_bound_source_object_key(
+                user_id=user_id,
+                asset_id=asset_id,
+                object_key=asset.get("source_object_key"),
+            ):
+                raise CatalogValidationError(
+                    "stored asset object key is not bound to this owner and asset"
+                )
+            now = _validated_catalog_now()
+            asset["processing_status"] = "PROCESSING"
+            asset["uploaded_size_bytes"] = completion["size_bytes"]
+            asset["uploaded_sha256"] = completion["sha256"]
+            asset["updated_at"] = now
+            _save(catalog)
+            return dict(asset)
+    except AssetUploadIntentError as exc:
+        raise CatalogValidationError(str(exc)) from exc

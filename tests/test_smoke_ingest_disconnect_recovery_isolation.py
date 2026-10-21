@@ -1,3 +1,9 @@
+from contextlib import redirect_stdout
+import io
+import json
+import re
+import sys
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
@@ -110,6 +116,90 @@ class IngestDisconnectRecoverySmokeIsolationTest(unittest.TestCase):
             "minimum = max(0.0, stable - 0.5)",
         ):
             self.assertIn(marker, self.source)
+
+
+class IngestDisconnectRecoveryEventContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        function = source.split("assert_recovery_sequence() {", 1)[1].split("\n}\n", 1)[0]
+        match = re.search(
+            r"python3 -c '(.*?)' \"\$recovery_stable_seconds\"",
+            function,
+            re.DOTALL,
+        )
+        if match is None:
+            raise AssertionError("disconnect recovery validator Python body not found")
+        cls.validator = compile(match.group(1), "<disconnect-recovery-validator>", "exec")
+
+    def run_validator(self, events: list[dict], stable: float = 3.0) -> None:
+        with (
+            patch.object(sys, "argv", ["disconnect-recovery-fixture", str(stable),
+                                       "100", "synthetic-source"]),
+            patch.object(sys, "stdin", io.StringIO(json.dumps({"events": events}))),
+            redirect_stdout(io.StringIO()),
+        ):
+            exec(self.validator, {})
+
+    def test_recovery_event_sequence_and_stability_contract(self) -> None:
+        hold = {"sequence": 10, "type": "session.holding",
+                "reason_code": "INGEST_DISCONNECTED"}
+
+        def event(kind: str, sequence: int, occurred_at: float,
+                  source: str = "synthetic-source") -> dict:
+            return {"type": kind, "sequence": sequence, "occurred_at": occurred_at,
+                    "payload": {"source_id": source}}
+
+        reconnect = event("ingest.reconnected", 11, 100)
+        recovery = event("session.recovered", 12, 104)
+        cases = [
+            ("ordered recovery", [hold, reconnect, recovery], 3.0, None),
+            ("recovery before reconnect",
+             [hold, event("session.recovered", 11, 104),
+              event("ingest.reconnected", 12, 100)],
+             3.0, "did not follow ingest.reconnected"),
+            ("same event sequence",
+             [hold, reconnect, event("session.recovered", 11, 104)],
+             3.0, "did not follow ingest.reconnected"),
+            ("array order differs from sequence order", [hold, recovery, reconnect],
+             3.0, None),
+            ("reconnect and recovery share timestamp",
+             [hold, event("ingest.reconnected", 11, 103),
+              event("session.recovered", 12, 103)], 3.0, None),
+            ("missing holding", [reconnect, recovery], 3.0,
+             "missing INGEST_DISCONNECTED session.holding"),
+            ("missing reconnect", [hold, recovery], 3.0,
+             "missing ingest.reconnected"),
+            ("missing recovery", [hold, reconnect], 3.0,
+             "missing session.recovered"),
+            ("reconnect source differs",
+             [hold, event("ingest.reconnected", 11, 100, "other-synthetic-source"),
+              recovery], 3.0, "candidate source differs from reconnect source"),
+            ("recovery source differs",
+             [hold, reconnect,
+              event("session.recovered", 12, 104, "other-synthetic-source")],
+             3.0, "recovered source differs from candidate source"),
+            ("stability gap too short",
+             [hold, reconnect, event("session.recovered", 12, 102.4)],
+             3.0, "recovery stability window too short"),
+            ("stability gap at accepted floor",
+             [hold, reconnect, event("session.recovered", 12, 102.5)], 3.0, None),
+            ("latest holding selects current recovery",
+             [{"sequence": 1, "type": "session.holding",
+               "reason_code": "INGEST_DISCONNECTED"},
+              event("ingest.reconnected", 2, 10, "old-synthetic-source"),
+              event("session.recovered", 3, 14, "old-synthetic-source"),
+              hold, reconnect, recovery], 3.0, None),
+            ("zero stability permits zero candidate gap",
+             [hold, reconnect, event("session.recovered", 12, 100)], 0.0, None),
+        ]
+        for name, events, stable, error in cases:
+            with self.subTest(case=name):
+                if error is None:
+                    self.run_validator(events, stable)
+                else:
+                    with self.assertRaisesRegex(SystemExit, error):
+                        self.run_validator(events, stable)
 
 
 if __name__ == "__main__":

@@ -35,3 +35,12 @@ updates:
       time: "09:30"
       timezone: "Asia/Tokyo"
     open-pull-requests-limit: 3
+
+  - package-ecosystem: "npm"
+    directory: "/apps/control-plane"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:40"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5

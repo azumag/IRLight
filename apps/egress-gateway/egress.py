@@ -24,6 +24,7 @@ from destination_guard import (
     validate_destination_runtime,
 )
 from egress_policy import ReconnectPolicy, TERMINAL_REASON_CODES, classify_error, safe_destination
+from egress_report_cadence import SINK_POLL_MILLISECONDS
 from rtmp_sink import (
     RTMP2_SINK_FACTORY,
     parse_rtmp_sink_factory,
@@ -463,7 +464,7 @@ class EgressAttempt:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
-        self._poll_source_id = GLib.timeout_add(250, self._poll_sink)
+        self._poll_source_id = GLib.timeout_add(SINK_POLL_MILLISECONDS, self._poll_sink)
         state_result = self.pipeline.set_state(Gst.State.PLAYING)
         if state_result == Gst.StateChangeReturn.FAILURE:
             self._clear_track_blocks()

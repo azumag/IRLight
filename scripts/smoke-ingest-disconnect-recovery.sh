@@ -270,6 +270,8 @@ if reconnected is None:
     raise SystemExit("missing ingest.reconnected after disconnect")
 if recovered is None:
     raise SystemExit("missing session.recovered after disconnect")
+if int(recovered.get("sequence", 0)) <= int(reconnected.get("sequence", 0)):
+    raise SystemExit("session.recovered did not follow ingest.reconnected")
 reconnected_source = (reconnected.get("payload") or {}).get("source_id")
 recovered_source = (recovered.get("payload") or {}).get("source_id")
 if reconnected_source != candidate_source_id:
