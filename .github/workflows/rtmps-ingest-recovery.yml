@@ -6,11 +6,14 @@ on:
       - "apps/control-api/**"
       - "apps/node-agent/**"
       - "apps/continuity/**"
+      - "apps/control-plane/**"
+      - "apps/egress-gateway/**"
       - "config/mediamtx.yml"
       - "docker-compose.poc.yml"
       - "scripts/smoke-rtmps-ingest-recovery.sh"
       - "scripts/smoke-rtmps-ingest-recovery-core.sh"
-      - ".github/workflows/rtmps-ingest-recovery.yml"
+      # Dependency updates to any Action must run every recovery merge gate.
+      - ".github/workflows/**"
   workflow_dispatch:
     inputs:
       disconnect_seconds:
