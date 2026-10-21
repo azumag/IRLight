@@ -19,6 +19,7 @@ import math
 import os
 import queue
 import secrets
+import selectors
 import socket
 import ssl
 import subprocess
@@ -55,6 +56,11 @@ SRT_STDERR_EVENT_OVERFLOW = "overflow"
 SRT_STDERR_EVENT_ERROR = "error"
 SRT_CLEANUP_SECONDS = 1.0
 SRT_TERMINATE_GRACE_SECONDS = 0.25
+# The stderr reader waits for the verifier in bounded windows instead of one
+# blocking read, so a stop request is honoured even when the pipe never sees
+# EOF. Keep it far below SRT_CLEANUP_SECONDS: the reader must be able to leave
+# its loop inside the shared cleanup budget.
+SRT_STDERR_READ_POLL_SECONDS = 0.1
 DNS_RESOLVER_MAX_ADDRESSES = 64
 DNS_RESOLVER_MAX_OUTPUT_BYTES = 64 * 1024
 DNS_RESOLVER_CLEANUP_SECONDS = 0.5
@@ -417,13 +423,67 @@ def _emit_srt_stderr_event(events: queue.Queue[str], event: str) -> None:
         pass
 
 
-def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
+def _stderr_selector(stream: Any) -> Any:
+    """Return a selector that reports stderr readability, or ``None``.
+
+    Popen stderr is normally a pipe. Streams used in tests (``io.BytesIO``) and
+    regular files cannot be polled the same way; ``None`` keeps the reader on a
+    direct read for those.
+    """
+
+    try:
+        descriptor = stream.fileno()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    selector: Any = None
+    try:
+        selector = selectors.DefaultSelector()
+        selector.register(descriptor, selectors.EVENT_READ)
+    except (OSError, TypeError, ValueError, KeyError):
+        if selector is not None:
+            try:
+                selector.close()
+            except (OSError, ValueError):
+                pass
+        return None
+    return selector
+
+
+def _wait_for_stderr_data(selector: Any, timeout: float) -> bool:
+    """Wait one bounded window. ``False`` means the window elapsed with no data.
+
+    A selector that cannot be polled anymore must not hide pending output, so
+    an unexpected error is reported as readable and the caller reads directly.
+    """
+
+    if selector is None:
+        return True
+    try:
+        return bool(selector.select(timeout))
+    except (OSError, ValueError):
+        return True
+
+
+def _read_srt_stderr_event(
+    stream: Any,
+    events: queue.Queue[str],
+    *,
+    stop_event: threading.Event | None = None,
+) -> None:
     """Read bounded stderr chunks and expose only a terminal status event.
 
     The verifier URI is user-controlled, so stderr is neither retained nor
     forwarded. Reading fixed-size chunks avoids ``readline()`` allocating an
     attacker-controlled no-newline line, and the total byte budget prevents a
     noisy child from consuming unbounded memory/CPU while verification waits.
+
+    ``stop_event`` lets verification end the reader without waiting for pipe
+    EOF. A reaped verifier normally closes the writer end, but a helper process
+    can keep the pipe open after the verifier itself is gone; the reader would
+    then stay blocked in ``read1()`` for as long as that helper lives and leak
+    its thread and pipe descriptor on every attempt. Waiting in bounded windows
+    keeps the reader reclaimable inside the caller's cleanup budget. A stop
+    request publishes no terminal event: the consumer already has its result.
     """
 
     max_tail = max(len(marker) for marker in SRT_CONNECTED_MARKERS) - 1
@@ -435,8 +495,15 @@ def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
     # most one raw read; fall back to ``read`` for test/file-like objects that
     # do not expose it.
     read_chunk = getattr(stream, "read1", stream.read)
+    selector = _stderr_selector(stream) if stop_event is not None else None
     try:
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return
+            if not _wait_for_stderr_data(selector, SRT_STDERR_READ_POLL_SECONDS):
+                # Nothing to read yet. Re-check the stop request instead of
+                # blocking on a pipe whose writer may outlive the verifier.
+                continue
             # Read at most one byte beyond the remaining budget so overflow is
             # detected without allocating an arbitrarily large line/chunk.
             remaining = SRT_STDERR_MAX_BYTES - total
@@ -457,6 +524,12 @@ def _read_srt_stderr_event(stream: Any, events: queue.Queue[str]) -> None:
             tail = window[-max_tail:] if max_tail else b""
     except (OSError, ValueError):
         _emit_srt_stderr_event(events, SRT_STDERR_EVENT_ERROR)
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except (OSError, ValueError):
+                pass
 
 
 def _cleanup_srt_process(
@@ -464,17 +537,29 @@ def _cleanup_srt_process(
     reader: threading.Thread | None,
     *,
     cleanup_deadline: float | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Stop and reap the verifier within one shared cleanup budget.
 
     Cleanup is deliberately separate from the handshake deadline, but the
     grace period is shared by terminate/wait/kill/reap and reader shutdown.
     No individual step receives a fresh timeout.
+
+    ``stop_event`` asks the stderr reader to leave its read loop so the pipe can
+    be closed even when the writer end outlives the verifier process. The
+    reader is still only joined inside the same budget, and an unconfirmed stop
+    keeps failing closed.
     """
 
     if cleanup_deadline is None:
         cleanup_deadline = time.monotonic() + SRT_CLEANUP_SECONDS
     cleanup_failed = False
+
+    # Stop reading before the child is signalled: the consumer already holds a
+    # terminal result, and the reader must not stay blocked on a pipe whose
+    # writer may still be a helper process.
+    if stop_event is not None:
+        stop_event.set()
 
     if process.poll() is None:
         try:
@@ -528,7 +613,9 @@ def _cleanup_srt_process(
 
     # Closing stderr is safe once no reader can hold its buffered-stream lock.
     # If an unkillable child also leaves the reader wedged, fail within the
-    # shared budget instead of risking an unbounded cross-thread close().
+    # shared budget instead of risking an unbounded cross-thread close(). A
+    # reader that honoured the stop request terminates on its own, so its pipe
+    # descriptor is reclaimed here instead of for the worker's whole lifetime.
     if not reader_alive and process.stderr is not None:
         try:
             process.stderr.close()
@@ -607,6 +694,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
         process: subprocess.Popen[bytes] | None = None
         reader: threading.Thread | None = None
         events: queue.Queue[str] = queue.Queue(maxsize=1)
+        stop_reader = threading.Event()
         candidate_failed = False
         try:
             process = subprocess.Popen(
@@ -626,6 +714,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
             reader = threading.Thread(
                 target=_read_srt_stderr_event,
                 args=(process.stderr, events),
+                kwargs={"stop_event": stop_reader},
                 daemon=True,
             )
             reader.start()
@@ -667,6 +756,7 @@ def _probe_srt(parsed: Any, port: int, config: ProbeConfig) -> dict[str, Any]:
                     process,
                     reader,
                     cleanup_deadline=cleanup_deadline,
+                    stop_event=stop_reader,
                 )
 
         if connected_at is not None:

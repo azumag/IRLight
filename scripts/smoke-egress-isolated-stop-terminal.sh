@@ -70,7 +70,7 @@ cleanup() {
     echo "--- compose ps (secret-safe) ---" >&2
     "${compose[@]}" ps -a >&2 || true
   fi
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
   exit "$status"
 }

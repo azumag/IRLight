@@ -80,7 +80,11 @@ class ClientAddressTest(unittest.TestCase):
         self.assertEqual(client_address(request, trusted_proxies=["192.0.2.10"]), "192.0.2.10")
 
     def test_malformed_hop_falls_back_to_the_peer(self) -> None:
-        for value in ("unknown", "203.0.113.7, not-an-ip", "203.0.113.7,", "  "):
+        for value in (
+            "unknown", "203.0.113.7, not-an-ip", "203.0.113.7,", "  ",
+            "not-an-ip, 203.0.113.7", ", 203.0.113.7",
+            "not-an-ip, 203.0.113.7, 192.0.2.20",
+        ):
             with self.subTest(value=value):
                 request = _request("192.0.2.10", [value])
                 self.assertEqual(

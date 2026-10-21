@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "issue": 11,
+  "log_schema": {
+    "required_fields": [
+      "timestamp",
+      "level",
+      "service",
+      "version",
+      "request_id",
+      "session_id",
+      "node_id",
+      "event_type",
+      "reason_code"
+    ],
+    "timestamp_format": "ISO8601 UTC",
+    "structured_format": "JSON object, one record per line (JSONL)",
+    "secret_handling": {
+      "redaction_tokens": [
+        "[redacted]",
+        "<redacted>",
+        "***"
+      ],
+      "never_log": [
+        "stream key",
+        "SRT passphrase",
+        "authentication token",
+        "password",
+        "DSN",
+        "provider credential",
+        "media samples",
+        "user source material"
+      ],
+      "validation": "apps/control-api/log_redaction_inspect_cli.py"
+    },
+    "correlation": {
+      "primary_key": "session_id",
+      "cross_plane_keys": [
+        "correlation_id",
+        "request_id",
+        "session_id",
+        "node_id"
+      ],
+      "required_transitions": [
+        "session.prepare",
+        "node.reservation",
+        "process.start",
+        "ingest.connect",
+        "egress.connect",
+        "session.stop.cleanup"
+      ]
+    }
+  },
+  "metric_families": [
+    {
+      "name": "node_availability",
+      "signals": [
+        "media_nodes.available_count",
+        "media_nodes.heartbeat_age_seconds",
+        "media_nodes.reserved_session_count"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/media-node-heartbeat-stopped.md"
+    },
+    {
+      "name": "session_lifecycle",
+      "signals": [
+        "sessions.active",
+        "sessions.reserved",
+        "sessions.holding",
+        "sessions.failed",
+        "sessions.unexpected_termination_rate",
+        "sessions.prepare_success_rate"
+      ],
+      "unit": "count or ratio",
+      "runbook": "docs/operations/session-process-crash-loop.md"
+    },
+    {
+      "name": "ingest",
+      "signals": [
+        "ingest.connections",
+        "ingest.bitrate_bps",
+        "ingest.fps",
+        "ingest.audio_rate_hz",
+        "ingest.reconnect_count",
+        "ingest.prepare_latency_seconds"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/ingest-connectivity-failure.md"
+    },
+    {
+      "name": "egress",
+      "signals": [
+        "egress.connections",
+        "egress.reconnects",
+        "egress.bytes",
+        "egress.failure_rate",
+        "egress.recovery_latency_seconds"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/egress-widespread-failure.md"
+    },
+    {
+      "name": "capacity",
+      "signals": [
+        "node.capacity_utilization_percent",
+        "cutover.latency_seconds",
+        "recovery.latency_seconds"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/media-node-capacity-high.md"
+    },
+    {
+      "name": "host_resources",
+      "signals": [
+        "host.cpu_utilization_percent",
+        "host.memory_utilization_percent",
+        "host.disk_utilization_percent",
+        "host.network_bytes",
+        "process.restart_count",
+        "process.oom_count"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/media-node-resource-pressure.md"
+    },
+    {
+      "name": "storage_processing",
+      "signals": [
+        "asset.processing_queue_depth",
+        "asset.processing_failed_count"
+      ],
+      "unit": "count",
+      "runbook": "docs/operations/object-storage-unavailable.md"
+    },
+    {
+      "name": "api_control_plane",
+      "signals": [
+        "api.latency_seconds",
+        "api.error_rate",
+        "db.health",
+        "redis.health",
+        "object_storage.health",
+        "webhook.failure_rate",
+        "webhook.backlog_depth"
+      ],
+      "unit": "mixed",
+      "runbook": "docs/operations/datastore-unavailable.md"
+    }
+  ],
+  "status": "contract-level only; collectors and dashboards are not claimed to be production-wired"
+}

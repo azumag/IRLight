@@ -2,6 +2,26 @@
 
 Issue #86 のうち、`POST /v1/auth/register` と `POST /v1/auth/login` が受け付ける**試行の頻度**を Control Plane runtime 内で bounded にする運用契約です。`auth-kdf-admission` が「同時に何件の password KDF を走らせるか」を bound するのに対し、この gate は「同じ client / account が一定時間に何回試行できるか」を bound します。
 
+## 採用した既定方針と適用範囲
+
+頻度制限の初期方針として、既存の client × 正規化 email の組に対する
+10 回 / 60 秒と 30 回 / 600 秒を採用します。account 単独の制限は別の
+接続元からの試行で正当ユーザーを巻き込みやすく、client 単独の制限は
+共有 NAT の利用者を一括拒否しやすいため、この slice では採用しません。
+拒否は期限付きで、成功・未知 account とも同じ admission 境界を通します。
+これは実 traffic に対する最適値を証明したものではありません。
+
+proxy は既定で信頼せず、明示した exact IP のみを信頼する方式を採用します。
+不正な forwarded chain は一部だけを採用せず全体を捨て、peer に戻します。
+ASGI server / middleware が先に client を書き換える構成では socket peer と
+同一とは限らないため、配備時には upstream の proxy-header trust 設定と
+アプリの allowlist を別々に確認してください。この PR は本番設定を変更せず、
+実 proxy のアドレスや credential を追加しません。
+
+既存の KDF 同時実行制限は維持します。admission 境界が安全に読めない場合の
+503 fail-closed と、一時 counter 内容破損時の window reset を区別する既存契約も
+維持します。cluster-wide quota、active Session cap、監査メトリクスは別 slice です。
+
 ## 何を制限するか
 
 試行ごとに key を作り、2 つの fixed window を両方とも通過したときだけ PBKDF2 へ進みます。

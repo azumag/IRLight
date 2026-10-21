@@ -117,12 +117,12 @@ def client_address(
     hops = [hop.strip() for hop in forwarded.split(",")]
     if not hops or len(hops) > DEFAULT_MAX_FORWARDED_HOPS:
         return peer
-    for hop in reversed(hops):
-        candidate = _normalized_address(hop)
-        if candidate is None:
-            # A malformed chain is not partially trusted: fall back to the peer
-            # instead of guessing which hop the attacker intended to expose.
-            return peer
+    candidates = [_normalized_address(hop) for hop in hops]
+    if any(candidate is None for candidate in candidates):
+        # Validate the entire bounded chain before selecting a client. A bad
+        # left-hand hop must not be hidden by an earlier right-hand return.
+        return peer
+    for candidate in reversed(candidates):
         if candidate not in trusted:
             return candidate
     # Every hop is a trusted proxy, so no real client can be identified without

@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 
 from ingest_api import (  # noqa: E402
+    INGEST_CLOCK_UNAVAILABLE,
+    INGEST_DEADLINE_UNAVAILABLE,
     IssueIngestCredentialRequest,
     MediaMTXAuthRequest,
     authorize_mediamtx_publish,
@@ -232,6 +234,178 @@ class IngestCredentialEndpointPreflightTest(unittest.TestCase):
             )
             self.assertIsNotNone(verified)
             self.assertEqual(verified["id"], old_record["id"])
+
+class IngestCredentialDeadlineClockBoundaryTest(unittest.TestCase):
+    """Credential issuance must enforce the Session absolute deadline against a
+    validated effective clock and never treat a damaged deadline as "no limit"."""
+
+    SESSION_ID = "11111111-1111-4111-8111-111111111111"
+    USER_ID = "user-1"
+
+    def _session_store(self, **extra: object) -> "_SessionStore":
+        session: dict[str, object] = {
+            "session_id": self.SESSION_ID,
+            "user_id": self.USER_ID,
+            "status": "READY_WAIT_INGEST",
+        }
+        session.update(extra)
+        return _SessionStore(session)
+
+    def _issue(self, credential_store, session_store, clock, **request_kwargs):
+        request = IssueIngestCredentialRequest(**request_kwargs)
+        with patch("ingest_api.default_store", return_value=session_store), patch(
+            "ingest_api.default_ingest_store", return_value=credential_store
+        ), patch("ingest_api.time.time", return_value=clock):
+            return issue_ingest_credential(
+                self.SESSION_ID, request, {"id": self.USER_ID}
+            )
+
+    def test_invalid_clock_fails_closed_without_rotating_credential(self) -> None:
+        invalid_clocks = (
+            float("nan"),
+            float("inf"),
+            -float("inf"),
+            -5.0,
+            True,
+            "100",
+            10**10000,
+        )
+        for index, clock in enumerate(invalid_clocks):
+            with self.subTest(case=index, value_type=type(clock).__name__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    credential_store = IngestCredentialStore(tmp)
+                    old_record, old_secret = credential_store.issue(
+                        session_id=self.SESSION_ID,
+                        user_id=self.USER_ID,
+                        protocols=["rtmp"],
+                        now=100.0,
+                    )
+                    session_store = self._session_store(absolute_deadline_at=1000.0)
+
+                    with patch.object(
+                        credential_store, "issue", wraps=credential_store.issue
+                    ) as issue:
+                        with self.assertRaises(HTTPException) as failure:
+                            self._issue(
+                                credential_store,
+                                session_store,
+                                clock,
+                                protocols=["rtmp"],
+                            )
+
+                    self.assertEqual(failure.exception.status_code, 503)
+                    self.assertEqual(
+                        failure.exception.detail, INGEST_CLOCK_UNAVAILABLE
+                    )
+                    issue.assert_not_called()
+                    verified = credential_store.verify(
+                        username=self.SESSION_ID,
+                        secret=old_secret,
+                        protocol="rtmp",
+                        now=101.0,
+                    )
+                    self.assertIsNotNone(verified)
+                    self.assertEqual(verified["id"], old_record["id"])
+
+    def test_invalid_clock_fails_closed_without_a_deadline(self) -> None:
+        # A Session without an absolute deadline still must not surface an
+        # unhandled serializer/clock exception to the caller.
+        for clock in (float("nan"), -float("inf")):
+            with tempfile.TemporaryDirectory() as tmp:
+                credential_store = IngestCredentialStore(tmp)
+                session_store = self._session_store()
+                with self.assertRaises(HTTPException) as failure:
+                    self._issue(
+                        credential_store, session_store, clock, protocols=["rtmp"]
+                    )
+                self.assertEqual(failure.exception.status_code, 503)
+                self.assertEqual(failure.exception.detail, INGEST_CLOCK_UNAVAILABLE)
+                self.assertIsNone(
+                    credential_store.active_for_session(self.SESSION_ID, now=1.0)
+                )
+
+    def test_damaged_persisted_deadline_fails_closed(self) -> None:
+        invalid_deadlines = (
+            "soon",
+            float("nan"),
+            float("inf"),
+            -float("inf"),
+            -1.0,
+            True,
+            10**10000,
+        )
+        for index, deadline in enumerate(invalid_deadlines):
+            with self.subTest(case=index, value_type=type(deadline).__name__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    credential_store = IngestCredentialStore(tmp)
+                    old_record, old_secret = credential_store.issue(
+                        session_id=self.SESSION_ID,
+                        user_id=self.USER_ID,
+                        protocols=["rtmp"],
+                        now=100.0,
+                    )
+                    session_store = self._session_store(absolute_deadline_at=deadline)
+
+                    with patch.object(
+                        credential_store, "issue", wraps=credential_store.issue
+                    ) as issue:
+                        with self.assertRaises(HTTPException) as failure:
+                            self._issue(
+                                credential_store,
+                                session_store,
+                                100.0,
+                                protocols=["rtmp"],
+                            )
+
+                    self.assertEqual(failure.exception.status_code, 503)
+                    self.assertEqual(
+                        failure.exception.detail, INGEST_DEADLINE_UNAVAILABLE
+                    )
+                    issue.assert_not_called()
+                    verified = credential_store.verify(
+                        username=self.SESSION_ID,
+                        secret=old_secret,
+                        protocol="rtmp",
+                        now=101.0,
+                    )
+                    self.assertIsNotNone(verified)
+                    self.assertEqual(verified["id"], old_record["id"])
+
+    def test_expired_deadline_is_rejected_with_a_valid_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            credential_store = IngestCredentialStore(tmp)
+            session_store = self._session_store(absolute_deadline_at=99.0)
+            with self.assertRaises(HTTPException) as failure:
+                self._issue(credential_store, session_store, 100.0, protocols=["rtmp"])
+            self.assertEqual(failure.exception.status_code, 409)
+            self.assertEqual(
+                failure.exception.detail, "session deadline has expired"
+            )
+            # The exact deadline instant is already expired.
+            session_store = self._session_store(absolute_deadline_at=100.0)
+            with self.assertRaises(HTTPException) as equal:
+                self._issue(credential_store, session_store, 100.0, protocols=["rtmp"])
+            self.assertEqual(equal.exception.status_code, 409)
+
+    def test_valid_clock_caps_ttl_at_the_session_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            credential_store = IngestCredentialStore(tmp)
+            session_store = self._session_store(absolute_deadline_at=160.0)
+            record = self._issue(
+                credential_store, session_store, 100.0, protocols=["rtmp"]
+            )
+            self.assertEqual(record["created_at"], 100.0)
+            self.assertEqual(record["expires_at"], 160.0)
+
+    def test_epoch_zero_clock_remains_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            credential_store = IngestCredentialStore(tmp)
+            session_store = self._session_store()
+            record = self._issue(
+                credential_store, session_store, 0.0, protocols=["rtmp"]
+            )
+            self.assertEqual(record["created_at"], 0.0)
+
 
 class MediaMTXAuthTest(unittest.TestCase):
     def test_valid_publish_is_authorized(self) -> None:
