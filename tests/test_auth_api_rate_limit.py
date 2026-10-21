@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import sys
 import tempfile
@@ -38,6 +39,32 @@ LOGIN = auth_api.LoginRequest(email="alice@example.com", password="correct-horse
 
 
 class AuthApiRateLimitTest(unittest.TestCase):
+    def test_admission_io_errors_return_stable_503_before_kdf(self) -> None:
+        case_number = 0
+        for target, code in (
+            ("auth_rate_limit.fcntl.flock", errno.EIO),
+            ("auth_rate_limit._read_shard", errno.EIO),
+            ("auth_rate_limit._write_shard", errno.ENOSPC),
+            ("auth_rate_limit.os.fsync", errno.ENOSPC),
+        ):
+            for endpoint in ("login", "register"):
+                case_number += 1
+                request = _http_request(f"192.0.2.{case_number}")
+                with self.subTest(target=target, endpoint=endpoint), \
+                     patch(target, side_effect=OSError(code, "private-path-marker")), \
+                     patch("auth_api.auth_kdf_slot") as slot:
+                    with self.assertRaises(HTTPException) as raised:
+                        if endpoint == "login":
+                            auth_api.login(LOGIN, Response(), request)
+                        else:
+                            auth_api.register(REGISTER, request)
+                    self.assertEqual(raised.exception.status_code, 503)
+                    self.assertEqual(
+                        raised.exception.detail,
+                        {"code": auth_api.AUTH_RATE_LIMIT_UNAVAILABLE_CODE},
+                    )
+                    slot.assert_not_called()
+
     def setUp(self) -> None:
         self._temp_dir = tempfile.TemporaryDirectory(prefix="irlight-auth-rate-limit-")
         self.addCleanup(self._temp_dir.cleanup)

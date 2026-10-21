@@ -565,6 +565,20 @@ def enforce_authentication_rate_limit(
     cfg = config or AuthRateLimitConfig.from_env()
     current = _validated_now(now)
 
+    try:
+        _enforce_rate_limit(cfg, client_address, email, current)
+    except OSError as exc:
+        # I/O failures must retain the same fail-closed API contract as an
+        # unsafe boundary. Never expose filesystem details to the caller.
+        raise AuthRateLimitUnavailable("authentication rate limit is unavailable") from exc
+
+
+def _enforce_rate_limit(
+    cfg: AuthRateLimitConfig,
+    client_address: str | None,
+    email: object,
+    current: float,
+) -> None:
     directory_fd = _open_directory(cfg.directory)
     try:
         secret = _load_secret(directory_fd)
