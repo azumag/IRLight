@@ -28,6 +28,8 @@ URL の userinfo (`user:password@host`) と SRT の `passphrase` query は拒否
 
 SRT verifier の stderr はログやレスポンスへ転送せず、4 KiB 以下の固定 chunk で読み取る。接続成功 marker の検出に必要な末尾だけを保持し、総読取量が 64 KiB を超えた時点で verification を fail-closed に終了する。改行なしの巨大な stderr や大量行でも `readline()` / 無制限 queue によるメモリ増加を許さない。
 
+stderr reader は待機を短い周期の readable 待ちに分割し、cleanup からの停止要求で pipe の EOF を待たずに読み取り loop を抜ける。verifier 自身が reap されても stderr の write 端を継承した helper process が残れば pipe は EOF にならないため、この停止要求がないと reader thread と pipe descriptor が attempt ごとに worker の寿命まで残り続ける。停止要求は terminal event を publish しない（consumer はすでに結果を保持している）。
+
 ## タイムアウト
 
 既定の probe timeout は 5 秒。以下で 0.5〜30 秒の範囲に変更できる。
@@ -42,7 +44,7 @@ DNS 解決も同じ deadline に含める。`socket.getaddrinfo()` は短命な 
 
 この hard deadline は 1 probe 内の時間上限を保証するもので、同時 probe 数やユーザー単位の頻度を制限する admission control は含まない。大量の並行 verify による process/socket 枯渇対策は Issue #91 の別 slice として扱う。
 
-SRT 子 process の終了回収には handshake deadline とは別に **単一の 1 秒 cleanup 予算**を使う。terminate / wait / kill / reap / stderr reader の終了確認へそれぞれ新しい 1 秒を与えず、全 cleanup 手順で同じ単調時計 deadline を共有する。stdin は失敗経路でも閉じ、stderr は reader の停止確認後に閉じる。子 process または reader の停止を予算内に確認できない場合は、別 thread が保持する buffered stderr の `close()` で期限を越えて待たず、固定エラーで fail-closed にする。cleanup 予算を handshake 成功判定の追加時間として利用しない。
+SRT 子 process の終了回収には handshake deadline とは別に **単一の 1 秒 cleanup 予算**を使う。terminate / wait / kill / reap / stderr reader の終了確認へそれぞれ新しい 1 秒を与えず、全 cleanup 手順で同じ単調時計 deadline を共有する。stdin は失敗経路でも閉じ、cleanup の開始時に stderr reader へ停止要求を出し、reader の停止確認後に stderr を閉じる。子 process または reader の停止を予算内に確認できない場合は、別 thread が保持する buffered stderr の `close()` で期限を越えて待たず、固定エラーで fail-closed にする。cleanup 予算を handshake 成功判定の追加時間として利用しない。
 
 ## 状態更新
 
