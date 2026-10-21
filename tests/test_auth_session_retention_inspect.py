@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import math
@@ -77,6 +78,43 @@ class AuthSessionRetentionInspectTests(unittest.TestCase):
                     self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
                     self.assertEqual(sorted(p.name for p in Path(directory).iterdir()),
                                      ["auth_sessions.json"])
+
+    def test_snapshot_io_errors_return_fixed_diagnostic_and_release_fd(self) -> None:
+        real_open = os.open
+        real_fstat = os.fstat
+        for operation in ("os.fstat", "os.fdopen", "load_json_authority"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "auth_sessions.json"
+                content = '{"sessions":{}}'
+                path.write_text(content, encoding="utf-8")
+                before = path.stat()
+                opened_fds = []
+
+                def track_open(*args, **kwargs):
+                    fd = real_open(*args, **kwargs)
+                    opened_fds.append(fd)
+                    return fd
+
+                output, errors = io.StringIO(), io.StringIO()
+                with patch("auth_session_retention_inspect_cli.os.open", side_effect=track_open), \
+                     patch("auth_session_retention_inspect_cli." + operation,
+                           side_effect=OSError(errno.EIO, "DUMMY_PRIVATE_DETAIL")), \
+                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    self.assertEqual(main(["--state-file", str(path)]), 2)
+                self.assertEqual(json.loads(output.getvalue()), {
+                    "status": "UNAVAILABLE",
+                    "reason_code": "AUTH_SESSION_STATE_UNAVAILABLE",
+                })
+                self.assertEqual(errors.getvalue(), "")
+                self.assertNotIn("DUMMY_PRIVATE_DETAIL", output.getvalue())
+                self.assertEqual(len(opened_fds), 1)
+                with self.assertRaises(OSError) as closed:
+                    real_fstat(opened_fds[0])
+                self.assertEqual(closed.exception.errno, errno.EBADF)
+                self.assertEqual(path.read_text(encoding="utf-8"), content)
+                self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+                self.assertEqual(sorted(p.name for p in Path(directory).iterdir()),
+                                 ["auth_sessions.json"])
 
     def test_counts_expiry_boundary_and_estimates_bounded_gc_runs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

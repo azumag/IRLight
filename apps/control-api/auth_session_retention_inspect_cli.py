@@ -129,7 +129,10 @@ def _load_read_only_snapshot(path: Path) -> dict[str, Any]:
         raise RetentionInspectError("authentication session authority is unavailable") from exc
 
     try:
-        opened = os.fstat(fd)
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise RetentionInspectError("authentication session authority is unavailable") from exc
         if not stat.S_ISREG(before.st_mode) or not stat.S_ISREG(opened.st_mode):
             raise RetentionInspectError("authentication session authority is unavailable")
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
