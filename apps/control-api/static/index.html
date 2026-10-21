@@ -62,6 +62,8 @@
     <span class="label">実状態</span><span id="actual" class="value">—</span>
     <span class="label">バージョン</span><span id="version" class="value">—</span>
     <span class="label">最終反映</span><span id="updated" class="value">—</span>
+    <span class="label">異常</span><span id="runtimeError" class="value" aria-describedby="runtimeErrorAction">—</span>
+    <p id="runtimeErrorAction" class="grid-note small" hidden></p>
     <span class="label">管理接続</span><span id="connection" class="value" aria-describedby="connectionHelp">接続中…</span>
     <span class="label">最終確認</span><span id="checked" class="value">—</span>
     <p id="connectionHelp" class="grid-note small">「管理接続」はこの画面と Control API の通信状態です。入力映像・配信音声・配信先の接続状態とは別に確認してください。</p>
@@ -127,6 +129,55 @@ async function fetchWithTimeout(resource, options, consumeResponse) {
 
 function textForSession(value) {
   return ({LIVE:'通常映像', HOLDING:'待機中', STABILIZING:'復帰確認中', STARTING:'起動中'})[value] || value || '不明';
+}
+
+// Internal runtime reason codes must never reach the user verbatim. Map the
+// known prefixes to plain-language copy plus the action the user can take,
+// and fail closed to a generic message for anything unknown so an unmodelled
+// code cannot be presented as a diagnosed cause.
+const RUNTIME_ERROR_COPY = {
+  INPUT_START_FAILED: {
+    summary: '入力の受信を開始できませんでした',
+    action: '配信アプリの送信先URLとストリームキーを確認し、しばらく待つと自動で再試行します。',
+  },
+  INPUT_PIPELINE_ERROR: {
+    summary: '入力の受信が停止しました',
+    action: '配信アプリが切断されていないか確認してください。復帰するまで待機画面を表示します。',
+  },
+  PASSTHROUGH_ATTACH_FAILED: {
+    summary: '入力映像を配信へ接続できませんでした',
+    action: 'しばらく待つと自動で再試行します。続く場合は配信を停止して作り直してください。',
+  },
+  OUTPUT_PIPELINE_ERROR: {
+    summary: '配信の送出が停止しました',
+    action: '配信先の接続状況を確認し、必要なら配信を停止して作り直してください。',
+  },
+  OUTPUT_PIPELINE_EOS: {
+    summary: '配信の送出が終了しました',
+    action: '次の配信を新規に開始してください。',
+  },
+  CONTROL_STATE_UNAVAILABLE: {
+    summary: '音声の設定を読み出せませんでした',
+    action: 'しばらく待つと自動で再試行します。最後に受け付けた設定は維持されるため、反映行で実際の音声状態を確認してください。',
+  },
+  CONTROL_STATE_INVALID: {
+    summary: '音声の設定を確認できませんでした',
+    action: 'しばらく待つと自動で再試行します。最後に受け付けた設定は維持されるため、反映行で実際の音声状態を確認し、必要なら配信を停止してください。',
+  },
+};
+
+const RUNTIME_ERROR_UNKNOWN = {
+  summary: '配信を継続できません',
+  action: 'しばらく待ってから再確認してください。続く場合は配信を停止して作り直してください。',
+};
+
+function runtimeErrorCopy(reason) {
+  if (typeof reason !== 'string' || reason === '') return null;
+  const prefix = reason.split(':', 1)[0];
+  if (Object.prototype.hasOwnProperty.call(RUNTIME_ERROR_COPY, prefix)) {
+    return RUNTIME_ERROR_COPY[prefix];
+  }
+  return RUNTIME_ERROR_UNKNOWN;
 }
 
 function announceStatus(message) {
@@ -214,6 +265,22 @@ function lastCheckedText() {
     : new Date(snapshotReceivedAtMs).toLocaleTimeString();
 }
 
+function renderRuntimeError(copy) {
+  const summary = $('runtimeError');
+  const action = $('runtimeErrorAction');
+  if (copy === null) {
+    summary.textContent = '—';
+    action.hidden = true;
+    action.textContent = '';
+    return;
+  }
+  summary.textContent = copy.summary;
+  action.hidden = false;
+  // Only rewrite when the text actually changes so an unchanged fault is not
+  // re-announced on every one-second polling tick.
+  if (action.textContent !== copy.action) action.textContent = copy.action;
+}
+
 function renderUnavailable() {
   const unknown = '状態確認不能';
   $('stickySession').textContent = unknown;
@@ -223,6 +290,9 @@ function renderUnavailable() {
   for (const id of ['video', 'inputVideo', 'inputAudio', 'desired', 'actual', 'version', 'updated']) {
     $(id).textContent = unknown;
   }
+  // A cached fault must not be shown as a current fault while the runtime is
+  // unreachable; the same fail-closed rule as the other runtime-derived rows.
+  renderRuntimeError(null);
   $('connection').textContent = '再接続中…';
   $('checked').textContent = lastCheckedText();
   $('stickyConnection').textContent = '再接続中…';
@@ -264,6 +334,9 @@ function render(data) {
   $('inputVideo').textContent = runtimeTrusted ? (r.input_video_recent ? '受信中' : '停止') : '状態確認不能';
   $('inputAudio').textContent = runtimeTrusted ? (r.input_audio_recent ? '受信中' : '停止／なし') : '状態確認不能';
   $('updated').textContent = runtimeTrusted && r.updated_at ? new Date(r.updated_at * 1000).toLocaleTimeString() : '状態確認不能';
+  // The fault row is runtime-derived too: while the runtime timestamp is stale
+  // the UI must not present the last seen fault as the current one.
+  renderRuntimeError(runtimeTrusted ? runtimeErrorCopy(r.last_error) : null);
   $('connection').textContent = '接続済み';
   $('checked').textContent = lastCheckedText();
   $('stickyConnection').textContent = '接続済み';

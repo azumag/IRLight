@@ -6,10 +6,13 @@ on:
       - "apps/control-api/**"
       - "apps/node-agent/**"
       - "apps/continuity/**"
+      - "apps/control-plane/**"
+      - "apps/egress-gateway/**"
       - "config/mediamtx.yml"
       - "docker-compose.poc.yml"
       - "scripts/smoke-ingest-disconnect-recovery.sh"
-      - ".github/workflows/disconnect-recovery.yml"
+      # Dependency updates to any Action must run every recovery merge gate.
+      - ".github/workflows/**"
   schedule:
     - cron: "17 18 * * *"
   workflow_dispatch:

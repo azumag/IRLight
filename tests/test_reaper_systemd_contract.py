@@ -76,6 +76,42 @@ class ReaperSystemdContractTest(unittest.TestCase):
         self.assertIn("同じ `STATE_DIR`", self.runbook)
         self.assertIn("料金が", self.runbook)
 
+    def test_runbook_documents_prepare_auth_and_destination_contract(self) -> None:
+        # prepare requires a session cookie + CSRF header, and (for the conoha
+        # provider) a VERIFIED destination; the runbook must say so instead of
+        # showing an unauthenticated request.
+        for expected in (
+            "X-CSRF-Token",
+            "401",
+            "403",
+            "IRLIGHT_REQUIRE_DESTINATION",
+            "destination must be verified before prepare",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, self.runbook)
+
+    def test_runbook_documents_reaper_orphan_terminal_gate(self) -> None:
+        # A manually deleted server leaves the volume until the Session reaches a
+        # terminal state; step C must not claim the reaper sweeps it immediately.
+        for expected in (
+            "_orphan_delete_allowed",
+            "orphan_cleanup=0",
+            "no-ingest timeout",
+            "3600",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, self.runbook)
+
+    def test_runbook_requires_initialized_state_dir(self) -> None:
+        # Sharing STATE_DIR is only sufficient when its session state is
+        # initialized; otherwise the orphan sweep logs and returns 0.
+        for expected in (
+            "skipping orphan cleanup",
+            ".sessions.json.initialized",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, self.runbook)
+
 
 if __name__ == "__main__":
     unittest.main()

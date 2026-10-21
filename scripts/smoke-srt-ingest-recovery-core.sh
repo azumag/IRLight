@@ -232,6 +232,8 @@ reconnected=next((e for e in events if int(e.get("sequence",0))>int(hold.get("se
 recovered=next((e for e in events if int(e.get("sequence",0))>int(hold.get("sequence",0)) and e.get("type")=="session.recovered"),None)
 if reconnected is None: raise SystemExit(f"missing ingest.reconnected: {events!r}")
 if recovered is None: raise SystemExit(f"missing session.recovered: {events!r}")
+if int(recovered.get("sequence",0)) <= int(reconnected.get("sequence",0)):
+    raise SystemExit(f"session.recovered did not follow ingest.reconnected: {events!r}")
 if any(e.get("type") in {"session.failed","session.cleanup_failed"} for e in events):
     raise SystemExit(f"fatal event during SRT recovery: {events!r}")
 print("SRT event sequence: session.holding -> ingest.reconnected -> session.recovered")

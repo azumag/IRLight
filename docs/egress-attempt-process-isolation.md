@@ -46,10 +46,25 @@ The default canary windows are:
 - `EGRESS_ISOLATED_TEARDOWN_TIMEOUT_SECONDS=8`
 - `EGRESS_ISOLATED_TERMINATE_TIMEOUT_SECONDS=2`
 - `EGRESS_ISOLATED_KILL_TIMEOUT_SECONDS=2`
+- `EGRESS_ISOLATED_LIVENESS_TIMEOUT_SECONDS=20`
 
 They are only read when the canary is enabled, must be finite and non-negative, and do not alter the existing retry/backoff configuration. Before the first `CONNECTED` event, the supervisor also bounds an otherwise stuck attempt to the existing connect timeout plus the teardown window. A configured connect timeout of `0` keeps the historical disabled-timeout behavior.
 
-User stop sets a child-shared stop event first, then applies the same bounded teardown/reap sequence. IPC flooding cannot extend the stop or teardown deadline because deadlines are evaluated after every received message.
+User stop sets a child-shared stop event first, then applies the same bounded teardown/reap sequence. Progress-message flooding cannot extend the stop or teardown deadline, because both are armed once and every deadline is evaluated after each received message.
+
+These bounds cover pre-connect, teardown, explicit user stop, and post-connect silence. Receiving `connected` clears the startup deadline and arms a liveness deadline; a teardown deadline starts at the first `teardown` message.
+
+### Post-connect liveness
+
+After `CONNECTED`, the child must keep reporting. Any accepted `connected` or `progress` message refreshes the liveness window, so a healthy attempt that heartbeats normally is never fenced by it — an arriving message is itself the evidence that the child is still alive, and a child that is reporting cannot be indistinguishable from one that is not. A child that stays alive but stops emitting IPC — the #545 failure mode, where a legacy sink call wedges inside `EgressAttempt.run()` before the teardown monitor can observe the loop transition — is fenced once the window elapses, and the parent publishes a retryable `TIMEOUT` result so the gateway can reach `RECONNECTING` instead of leaving a stale `CONNECTED` status.
+
+The stop and teardown deadlines are the ones flooding cannot move: both are armed exactly once. The liveness window is deliberately not in that set, because withholding the refresh would fence a healthy child that is still reporting.
+
+The window is armed only when the child has a channel that can refresh it in time. `EGRESS_STATUS_HEARTBEAT_SECONDS` is the only post-connect liveness evidence the child can emit, and reports are emitted only by the existing 250 ms sink poll. The liveness window must be strictly wider than the heartbeat rounded up to that nominal poll interval: a 0.1-second heartbeat requires a window over 0.25 seconds, and a 0.3-second heartbeat requires one over 0.5 seconds. This nominal cadence is not a guarantee against scheduler or IPC delays. A disabled heartbeat (`0`) leaves the window unarmed. Enabling the canary with a window that is not wider than the heartbeat is rejected at startup rather than left to fence a healthy attempt inside a reconnect loop.
+
+A configured liveness timeout of `0` keeps the historical unbounded post-connect behavior, exactly like a disabled connect timeout.
+
+The teardown transition is single-shot: the first `teardown` message arms the teardown deadline and repeated valid `teardown` messages cannot postpone fencing. The child-side monitor emits exactly one marker on its normal path, so a second one can only be an attempt to keep the deadline moving. The progress-message flooding guarantee therefore covers the arm-once stop and teardown deadlines, not the liveness window.
 
 ### Failure mapping
 
@@ -57,6 +72,7 @@ User stop sets a child-shared stop event first, then applies the same bounded te
 - child crash without a valid final result -> `LOCAL_PIPELINE_FAILED`, terminal;
 - destination runtime guard rejection -> its existing non-secret reason/terminal classification;
 - bounded pre-connect timeout -> `TIMEOUT`, retryable;
+- bounded post-connect IPC silence -> `TIMEOUT`, retryable, or the child's own already-announced teardown reason;
 - user stop after successful child reap -> `STOPPED`;
 - a child that remains alive even after kill -> `AttemptSupervisorError` in the parent, rather than starting an overlapping attempt.
 
