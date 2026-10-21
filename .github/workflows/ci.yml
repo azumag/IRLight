@@ -124,6 +124,13 @@ jobs:
           df -h /
           docker system df
           echo "::endgroup::"
+      - name: Warm egress image after cache pruning
+        if: steps.ci_paths.outputs.run_heavy == 'true'
+        timeout-minutes: 10
+        # Egress scenarios use unique Compose project tags but the same build
+        # context and Dockerfile. Warm those content-addressed layers outside
+        # their 180-second runtime budget; keep scenario --build and failures.
+        run: docker build -t irlight-egress-ci-warm -f apps/egress-gateway/Dockerfile apps/egress-gateway
       - name: Exercise Docker integration smoke suite
         if: steps.ci_paths.outputs.run_heavy == 'true'
         id: docker_smoke_suite
