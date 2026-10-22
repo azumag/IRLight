@@ -61,6 +61,15 @@ GC cannot safely inspect or update its authority, the reaper keeps the provider
 cleanup result, reports the fixed `AUTH_SESSION_GC_FAILED` reason, and exits
 non-zero without printing the authority path or record contents.
 
+Both successful and handled failed sweeps also report
+`auth_session_gc_duration_seconds`, measured with a monotonic clock around the
+authentication GC attempt. This includes its lock wait, validation, and any
+write, but excludes the preceding provider/session cleanup. The value is an
+aggregate elapsed duration in seconds, not an identifier or authority detail.
+Existing status, counts, fixed failure reason, and exit codes remain unchanged.
+This CLI output is a measurement source; a production metrics collector,
+dashboard, or alert integration is not claimed here.
+
 The periodic default remains 1,000 expired authentication sessions per sweep.
 It can be changed explicitly when invoking the reaper:
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from time import monotonic
 
 from auth_session_gc import DEFAULT_MAX_DELETIONS, prune_expired_sessions
 from auth_store import AuthStateError
@@ -58,10 +59,15 @@ def main(argv: list[str] | None = None) -> int:
     # Provider/session cleanup must not be skipped because authentication state
     # is damaged. Run the bounded auth-session GC afterwards and surface a fixed
     # reason code instead of leaking authority paths or records.
+    auth_gc_started = monotonic()
     try:
-        auth_gc = prune_expired_sessions(
-            max_deletions=args.auth_session_gc_max_delete
-        )
+        try:
+            auth_gc = prune_expired_sessions(
+                max_deletions=args.auth_session_gc_max_delete
+            )
+        finally:
+            # Exclude provider cleanup and output; include lock wait and failures.
+            result["auth_session_gc_duration_seconds"] = monotonic() - auth_gc_started
     except (AuthStateError, ValueError):
         LOG.error(
             "authentication session GC failed; inspect authentication authority state"

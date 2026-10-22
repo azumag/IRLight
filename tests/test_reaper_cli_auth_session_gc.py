@@ -29,6 +29,52 @@ class ReaperCliAuthSessionGcTests(unittest.TestCase):
         instance.run.return_value = dict(result)
         return instance
 
+    def test_gc_duration_covers_success_and_failure_without_provider_time(self) -> None:
+        for failure in (None, AuthStateError("secret-token /state/private"), ValueError("secret-email")):
+            with self.subTest(failure=type(failure).__name__):
+                reaper = self._reaper_mock({"orphan_cleanup": 3})
+                stream = io.StringIO()
+                events = []
+
+                def provider_cleanup():
+                    events.append("provider")
+                    return {"orphan_cleanup": 3}
+
+                reaper.run.side_effect = provider_cleanup
+
+                def clock():
+                    events.append("clock")
+                    return 100.0 if events.count("clock") == 1 else 100.25
+
+                def prune(**kwargs):
+                    events.append("gc")
+                    if failure is not None:
+                        raise failure
+                    return PruneResult(5, 2, 1, False)
+
+                with (
+                    patch("reaper_cli.default_store", return_value=object()),
+                    patch("reaper_cli.default_provider", return_value=object()),
+                    patch("reaper_cli.Reaper", return_value=reaper),
+                    patch("reaper_cli.monotonic", side_effect=clock),
+                    patch("reaper_cli.prune_expired_sessions", side_effect=prune),
+                    patch.object(reaper_cli.LOG, "error") as log_error,
+                    redirect_stdout(stream),
+                ):
+                    rc = reaper_cli.main([])
+
+                result = ast.literal_eval(stream.getvalue().strip().splitlines()[-1])
+                self.assertEqual(events, ["provider", "clock", "gc", "clock"])
+                self.assertEqual(result["auth_session_gc_duration_seconds"], 0.25)
+                self.assertEqual(result["orphan_cleanup"], 3)
+                self.assertEqual(rc, 0 if failure is None else 1)
+                self.assertEqual(result["auth_session_gc_status"], "ok" if failure is None else "failed")
+                if failure is not None:
+                    self.assertEqual(result["auth_session_gc_reason"], "AUTH_SESSION_GC_FAILED")
+                output = stream.getvalue() + str(log_error.call_args_list)
+                for secret in ("secret-token", "secret-email", "/state/private"):
+                    self.assertNotIn(secret, output)
+
     def test_main_runs_auth_gc_and_preserves_flat_reaper_output(self) -> None:
         reaper = self._reaper_mock({"deadline_stops": 1})
         stream = io.StringIO()
