@@ -55,6 +55,13 @@ ACTIVE_STATES = {
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
 SESSION_EVENT_LIMIT = 1000
+# User-authored events share the merged per-Session event list and monotonic
+# sequence with internal audit/lifecycle events, but retain their own bounded
+# ring. Keeping the rings independent means a flood of user notes can evict
+# only older user notes and can never push internal audit events out of the
+# retained history.
+USER_EVENT_ORIGIN = "user-api"
+SESSION_USER_EVENT_LIMIT = 200
 UNUSABLE_MEDIA_REASONS = {"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}
 FORMAT_REJECTION_REASONS = {
     "VIDEO_CODEC_UNSUPPORTED",
@@ -594,6 +601,33 @@ class SessionStore:
 
         return current - candidate_since >= self.recovery_stable_seconds
 
+    @staticmethod
+    def _trim_session_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Apply the internal/user retention rings to a merged event list.
+
+        The newest ``SESSION_EVENT_LIMIT`` non-user events and the newest
+        ``SESSION_USER_EVENT_LIMIT`` ``user-api`` events are retained,
+        independently of each other. Evicting only within each ring keeps the
+        retained list sorted by the monotonic ``sequence`` values and
+        guarantees user-authored volume cannot displace internal audit events.
+        """
+
+        retained: list[dict[str, Any]] = []
+        kept_user = 0
+        kept_internal = 0
+        for event in reversed(events):
+            if event.get("origin") == USER_EVENT_ORIGIN:
+                kept_user += 1
+                if kept_user > SESSION_USER_EVENT_LIMIT:
+                    continue
+            else:
+                kept_internal += 1
+                if kept_internal > SESSION_EVENT_LIMIT:
+                    continue
+            retained.append(event)
+        retained.reverse()
+        return retained
+
     def _append_event_locked(
         self,
         session: dict[str, Any],
@@ -619,7 +653,7 @@ class SessionStore:
         }
         events = list(session.get("events", []))
         events.append(event)
-        session["events"] = events[-SESSION_EVENT_LIMIT:]
+        session["events"] = self._trim_session_events(events)
         session["next_event_seq"] = sequence + 1
         return dict(event)
 
