@@ -20,6 +20,8 @@ Authentication uses one fail-closed effective-clock validator for request expiry
 
 The bounded authentication-session GC applies the same wall-clock boundary before acquiring the authentication-state lock or reading authority. Its explicit `now` hook and default `time.time()` path both reject booleans, non-numeric values, overflow, non-finite values, and pre-epoch values while continuing to accept Unix epoch `0.0`. A broken pre-epoch clock therefore cannot silently classify every retained session as unexpired and publish misleading cleanup results; the reaper surfaces the existing fixed `AUTH_SESSION_GC_FAILED` failure instead.
 
+Session issuance also bounds per-user retained sessions. A login always succeeds: when the user already holds `MAX_SESSIONS_PER_USER` (10) live sessions (`expires_at > now`, matching the request-authentication expiry rule), `create_session` revokes the oldest live records inside the same exclusive authority transaction before inserting the new token. Eviction order is deterministic — oldest `created_at` first, token hash as tie breaker. Revoking the oldest rather than rejecting the new login keeps a third party who only floods logins from freezing the legitimate user out, and bounds per-user authority size independently of GC cadence. Expired records are not counted toward the cap; the bounded GC described above reclaims them.
+
 Invalid authority is not rewritten with defaults by a read path. Serialization also fails before replacing the existing authority file if the new payload cannot be represented as strict JSON.
 
 ## API failure contract

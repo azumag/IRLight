@@ -91,7 +91,14 @@ empty `auth_sessions.json`.
 
 Expired-record retention and its periodic execution are handled here.
 PBKDF2-heavy registration/login also has a bounded multi-worker concurrency
-gate; see [auth-kdf-admission.md](auth-kdf-admission.md). Issue #86 still tracks
-policy that this repository should not infer without deployment evidence:
-source IP / normalized-email rate limits, trusted-proxy handling, cluster-wide
-quota across independent replicas, and any per-user active auth Session cap.
+gate; see [auth-kdf-admission.md](auth-kdf-admission.md). Retained *live*
+sessions are additionally bounded per user at issuance time — `create_session`
+revokes the user's oldest live records beyond `MAX_SESSIONS_PER_USER` inside
+the same authority transaction (see
+[auth-authority-validation.md](../auth-authority-validation.md)). Issue #86
+still tracks policy that this repository should not infer without deployment
+evidence: rate-limit threshold evaluation on real traffic (an initial
+client×normalized-email contract exists; see
+[auth-rate-limit.md](auth-rate-limit.md)), trusted-proxy handling across
+deployments, cluster-wide quota across independent replicas, and operational
+metrics for limits/GC.
