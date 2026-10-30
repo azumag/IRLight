@@ -36,5 +36,27 @@ consumer that normalizes event names. Rejection is HTTP 422 with fixed code
 `USER_EVENT_TYPE_RESERVED`. Other custom user event names remain accepted for
 compatibility; this change does not yet narrow the endpoint to only `user.note`.
 
-User events and internal audit events still share the retained event ring today;
-separating their retention remains follow-up work under Issue #93.
+## Retention separation
+
+Retained events live in one merged, sequence-ordered list per Session, but the
+list is trimmed as two independent rings:
+
+- internal (non-`user-api`) events keep the newest `SESSION_EVENT_LIMIT`
+  (1000) entries — the same retention as before this change;
+- `user-api` events keep the newest `SESSION_USER_EVENT_LIMIT` (200) entries.
+
+Because each ring evicts only its own oldest entries, any volume of
+user-authored posts can evict only older user notes and can never push
+internal lifecycle/audit events out of the retained history. The bound also
+caps one owner's worst-case persisted user-note footprint at roughly
+200 × the 8 KiB payload budget.
+
+Evicted user notes can leave mid-list `sequence` gaps in the merged view.
+Consumers must not assume retained sequences are contiguous; `earliest_sequence`,
+`latest_sequence`, `has_more`, and `retention_gap` still describe front
+truncation and cursor progress as before. States persisted before the user
+ring existed keep their already-retained events and are bounded on the next
+append rather than rewritten at load.
+
+Fully separate audit storage, an idempotency-key contract, and per-owner
+posting-frequency limits remain follow-up work under Issue #93.

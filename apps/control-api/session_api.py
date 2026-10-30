@@ -27,7 +27,12 @@ from session_event_policy import (
     validate_user_event_payload,
     validate_user_event_type,
 )
-from session_store import SESSION_EVENT_LIMIT, EntitlementExceeded, SessionStateError
+from session_store import (
+    SESSION_EVENT_LIMIT,
+    USER_EVENT_ORIGIN,
+    EntitlementExceeded,
+    SessionStateError,
+)
 from session_workflow import ProvisioningWorkflow
 
 
@@ -278,7 +283,7 @@ def add_session_event(
             event_type=request.type,
             reason_code=request.reason_code,
             payload=request.payload,
-            origin="user-api",
+            origin=USER_EVENT_ORIGIN,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
