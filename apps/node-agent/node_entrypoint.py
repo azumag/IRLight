@@ -9,6 +9,7 @@ import urllib.parse
 from pathlib import Path
 
 import agent as agent_module
+from agent import main as agent_main
 from ingest_auth_proxy import (
     INTERNAL_MEDIA_USERNAME,
     INTERNAL_MEDIA_ACTIONS,
@@ -168,7 +169,7 @@ def main() -> int:
     _install_media_control_transport()
 
     if os.getenv("NODE_INGEST_AUTH_PROXY_ENABLED", "1") == "0":
-        return agent_module.main()
+        return agent_main()
 
     control_base_url = os.getenv("NODE_CONTROL_PLANE_URL", "").rstrip("/")
     if not control_base_url:
@@ -193,7 +194,7 @@ def main() -> int:
         secret_dir=secret_dir,
         relay_secret_dir=relay_secret_dir,
     )
-    return agent_module.main(
+    return agent_main(
         pre_media_start=lifecycle.start,
         post_media_stop=lifecycle.stop,
     )
