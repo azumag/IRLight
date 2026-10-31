@@ -114,7 +114,7 @@ def normalize_audio_observation(value: object) -> dict[str, object]:
 def classify_audio_observation(session: object, observation: object) -> str:
     """Classify an ACK without allowing it to rewrite command authority.
 
-    The caller may mutate ``actual_mode`` only for ``matched``.  Older,
+    The caller may mutate ``actual_mode`` only for ``matched``. Older,
     future, or same-version/different-command observations are deliberately
     ignored so delayed heartbeats cannot roll Session state backward.
     """
@@ -130,3 +130,27 @@ def classify_audio_observation(session: object, observation: object) -> str:
     if observed["command_id"] != command["command_id"]:
         return "command_mismatch"
     return "matched"
+
+
+def heartbeat_media_control_response(session: object) -> dict[str, object]:
+    """Build the media-control portion of a heartbeat response."""
+
+    return {"audio": session_audio_command(session)}
+
+
+def heartbeat_audio_observation(value: object) -> dict[str, object] | None:
+    """Extract and validate an optional audio ACK from a heartbeat request.
+
+    Missing ``media_control`` is valid during rolling upgrades. A present
+    envelope is strict so malformed data cannot be silently treated as an
+    applied command.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise MediaControlDeliveryError("invalid heartbeat media-control envelope")
+    audio = value.get("audio")
+    if audio is None:
+        return None
+    return normalize_audio_observation(audio)
