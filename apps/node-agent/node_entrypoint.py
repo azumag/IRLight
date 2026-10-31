@@ -8,13 +8,14 @@ import tempfile
 import urllib.parse
 from pathlib import Path
 
-from agent import main as agent_main
+import agent as agent_module
 from ingest_auth_proxy import (
     INTERNAL_MEDIA_USERNAME,
     INTERNAL_MEDIA_ACTIONS,
     AuthProxyConfig,
     IngestAuthProxy,
 )
+from media_control_transport import media_control_http_json
 
 
 INTERNAL_SECRET_FILES = (
@@ -146,9 +147,28 @@ class InternalMediaAuthLifecycle:
         self.paths = []
 
 
+def _install_media_control_transport() -> None:
+    control_state_path = Path(
+        os.getenv("NODE_CONTROL_STATE_FILE") or "/state/control.json"
+    )
+    status_path = Path(
+        os.getenv("NODE_CONTINUITY_STATUS_FILE")
+        or str(control_state_path.with_name("status.json"))
+    )
+    agent_module.http_json = media_control_http_json(
+        agent_module.http_json,
+        status_path=status_path,
+        control_path=control_state_path,
+    )
+
+
 def main() -> int:
+    # Media control rides the authenticated bootstrap/heartbeat transport even
+    # when the node-local MediaMTX auth proxy is disabled.
+    _install_media_control_transport()
+
     if os.getenv("NODE_INGEST_AUTH_PROXY_ENABLED", "1") == "0":
-        return agent_main()
+        return agent_module.main()
 
     control_base_url = os.getenv("NODE_CONTROL_PLANE_URL", "").rstrip("/")
     if not control_base_url:
@@ -173,7 +193,7 @@ def main() -> int:
         secret_dir=secret_dir,
         relay_secret_dir=relay_secret_dir,
     )
-    return agent_main(
+    return agent_module.main(
         pre_media_start=lifecycle.start,
         post_media_stop=lifecycle.stop,
     )
