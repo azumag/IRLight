@@ -28,8 +28,16 @@ def media_control_http_json(
     Media-control failures are isolated from the lifecycle heartbeat: malformed
     local status emits no ACK, and a conflicting/malformed remote command never
     mutates local authority, but STOP/deadline responses can still reach the
-    Agent loop.
+    Agent loop. Repeated installation with the same paths is a no-op so tests
+    or embedded entrypoints cannot accidentally nest the adapter.
     """
+
+    if (
+        getattr(delegate, "__irlight_media_control_status_path__", None) == status_path
+        and getattr(delegate, "__irlight_media_control_control_path__", None)
+        == control_path
+    ):
+        return delegate
 
     def wrapped(
         url: str,
@@ -95,4 +103,6 @@ def media_control_http_json(
                 )
         return response
 
+    setattr(wrapped, "__irlight_media_control_status_path__", status_path)
+    setattr(wrapped, "__irlight_media_control_control_path__", control_path)
     return wrapped
