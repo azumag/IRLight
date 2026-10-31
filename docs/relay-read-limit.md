@@ -7,18 +7,27 @@ Session as the MVP default.
 
 The node-local ingest auth proxy now enforces that bound for external RTMP
 reads of the relay path. The proxy asks the MediaMTX control API for the
-current reader count of the relay path before forwarding the authorization
-upstream. When the observed count reaches `NODE_RELAY_MAX_READERS` (default
-`1`, accepted range `1`-`32`), the request is denied with HTTP 403
-`relay reader limit reached` and **never reaches the Control Plane
-authorize endpoint**, so saturated reads cannot flood the upstream.
+current readers of the relay path before forwarding the authorization
+upstream. It counts MediaMTX reader types `rtmpConn` and `rtmpsConn` as
+external relay clients; internal protocol readers such as `rtspSession` and
+HLS preview readers do not consume the external-client slot. A reader whose
+type is missing or malformed is counted conservatively so an unexpected API
+shape cannot silently bypass the bound.
+
+When the observed external reader count reaches `NODE_RELAY_MAX_READERS`
+(default `1`, accepted range `1`-`32`), the request is denied with HTTP 403
+`relay reader limit reached` and **never reaches the Control Plane authorize
+endpoint**, so saturated reads cannot flood the upstream.
 
 ## Semantics
 
-- Only `read` + `rtmp` requests to `NODE_RELAY_PATH` (default
-  `output/relay`) are limited. Publishes, other paths, and SRT/RTSP requests
-  are unaffected. Internal RTSP media readers use the separate internal
-  credential path and are not counted by the user-facing cap.
+- Only `read` + `rtmp` authorization requests to `NODE_RELAY_PATH` (default
+  `output/relay`) are limited. MediaMTX uses the RTMP auth protocol value for
+  the external RTMP/RTMPS read boundary, while its path API distinguishes the
+  active reader as `rtmpConn` or `rtmpsConn`.
+- Publishes, other paths, and SRT/RTSP authorization requests are unaffected.
+  Internal `rtspSession` readers and HLS preview readers are explicitly
+  excluded from the external relay-client count.
 - The reader count is fresh MediaMTX state, so a dropped TCP connection frees
   its slot immediately — OBS reconnects are not penalized by stale counts.
 - An `RELAY_SOURCE_OFFLINE` observation means the path currently has no
@@ -35,10 +44,11 @@ authorize endpoint**, so saturated reads cannot flood the upstream.
 
 - The bound is best-effort against simultaneous admits racing a single
   observation; a strict media-plane reader bound is follow-up work.
-- The cap limits concurrent readers, not brute-force attempts; credential
-  guessing remains governed by the Control Plane ingest auth guard.
+- The cap limits concurrent external RTMP/RTMPS readers, not brute-force
+  attempts; credential guessing remains governed by the Control Plane ingest
+  auth guard.
 - `NODE_RELAY_PATH` must stay aligned with the relay path configured for the
   MediaMTX/auth boundary; `docker-compose.node.yml` passes both env values
   through.
 
-Generated with [Devin](https://devin.ai)
+Generated with ChatGPT
