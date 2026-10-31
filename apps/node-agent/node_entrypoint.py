@@ -7,6 +7,7 @@ import secrets
 import tempfile
 import urllib.parse
 from pathlib import Path
+from typing import Callable
 
 import agent as agent_module
 from agent import main as agent_main
@@ -148,7 +149,8 @@ class InternalMediaAuthLifecycle:
         self.paths = []
 
 
-def _install_media_control_transport() -> None:
+def _install_media_control_transport() -> Callable[..., dict[str, object]]:
+    original = agent_module.http_json
     control_state_path = Path(
         os.getenv("NODE_CONTROL_STATE_FILE") or "/state/control.json"
     )
@@ -157,47 +159,52 @@ def _install_media_control_transport() -> None:
         or str(control_state_path.with_name("status.json"))
     )
     agent_module.http_json = media_control_http_json(
-        agent_module.http_json,
+        original,
         status_path=status_path,
         control_path=control_state_path,
     )
+    return original
 
 
 def main() -> int:
     # Media control rides the authenticated bootstrap/heartbeat transport even
-    # when the node-local MediaMTX auth proxy is disabled.
-    _install_media_control_transport()
+    # when the node-local MediaMTX auth proxy is disabled. Restore the global
+    # transport when the embedded Agent exits so repeated tests/invocations do
+    # not leak the adapter into the next run.
+    original_http_json = _install_media_control_transport()
+    try:
+        if os.getenv("NODE_INGEST_AUTH_PROXY_ENABLED", "1") == "0":
+            return agent_main()
 
-    if os.getenv("NODE_INGEST_AUTH_PROXY_ENABLED", "1") == "0":
-        return agent_main()
+        control_base_url = os.getenv("NODE_CONTROL_PLANE_URL", "").rstrip("/")
+        if not control_base_url:
+            raise RuntimeError("missing required env var: NODE_CONTROL_PLANE_URL")
+        upstream_url = os.getenv("NODE_INGEST_AUTH_UPSTREAM_URL", "").strip()
+        if not upstream_url:
+            upstream_url = f"{control_base_url}/internal/ingest/auth"
 
-    control_base_url = os.getenv("NODE_CONTROL_PLANE_URL", "").rstrip("/")
-    if not control_base_url:
-        raise RuntimeError("missing required env var: NODE_CONTROL_PLANE_URL")
-    upstream_url = os.getenv("NODE_INGEST_AUTH_UPSTREAM_URL", "").strip()
-    if not upstream_url:
-        upstream_url = f"{control_base_url}/internal/ingest/auth"
-
-    secret_dir = Path(
-        os.getenv("NODE_MEDIA_SECRET_DIR")
-        or os.getenv("NODE_SECRET_DIR")
-        or "/run/irlight/media-secrets"
-    )
-    relay_secret_dir = Path(
-        os.getenv("NODE_RELAY_SECRET_DIR")
-        or os.getenv("NODE_MEDIA_SECRET_DIR")
-        or os.getenv("NODE_SECRET_DIR")
-        or "/run/irlight/relay-secrets"
-    )
-    lifecycle = InternalMediaAuthLifecycle(
-        upstream_url=upstream_url,
-        secret_dir=secret_dir,
-        relay_secret_dir=relay_secret_dir,
-    )
-    return agent_main(
-        pre_media_start=lifecycle.start,
-        post_media_stop=lifecycle.stop,
-    )
+        secret_dir = Path(
+            os.getenv("NODE_MEDIA_SECRET_DIR")
+            or os.getenv("NODE_SECRET_DIR")
+            or "/run/irlight/media-secrets"
+        )
+        relay_secret_dir = Path(
+            os.getenv("NODE_RELAY_SECRET_DIR")
+            or os.getenv("NODE_MEDIA_SECRET_DIR")
+            or os.getenv("NODE_SECRET_DIR")
+            or "/run/irlight/relay-secrets"
+        )
+        lifecycle = InternalMediaAuthLifecycle(
+            upstream_url=upstream_url,
+            secret_dir=secret_dir,
+            relay_secret_dir=relay_secret_dir,
+        )
+        return agent_main(
+            pre_media_start=lifecycle.start,
+            post_media_stop=lifecycle.stop,
+        )
+    finally:
+        agent_module.http_json = original_http_json
 
 
 if __name__ == "__main__":
