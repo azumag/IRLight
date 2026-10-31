@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT / "apps" / "control-api"))
 from media_control_delivery import (  # noqa: E402
     MediaControlDeliveryError,
     classify_audio_observation,
+    heartbeat_audio_observation,
+    heartbeat_media_control_response,
     normalize_audio_observation,
     session_audio_command,
 )
@@ -126,6 +128,36 @@ class MediaControlDeliveryTest(unittest.TestCase):
         observation["command_id"] = None
         with self.assertRaises(MediaControlDeliveryError):
             normalize_audio_observation(observation)
+
+    def test_heartbeat_response_wraps_current_command(self) -> None:
+        command_id = str(uuid.uuid4())
+        session = self._session(version=6, command_id=command_id)
+        self.assertEqual(
+            heartbeat_media_control_response(session),
+            {
+                "audio": {
+                    "desired_mode": "MUTED",
+                    "version": 6,
+                    "command_id": command_id,
+                    "idempotency_key": "operator-command",
+                    "updated_at": 11.0,
+                }
+            },
+        )
+
+    def test_missing_heartbeat_media_control_is_rolling_upgrade_compatible(self) -> None:
+        self.assertIsNone(heartbeat_audio_observation(None))
+        self.assertIsNone(heartbeat_audio_observation({}))
+
+    def test_heartbeat_observation_envelope_is_strict(self) -> None:
+        command_id = str(uuid.uuid4())
+        observation = self._observation(version=7, command_id=command_id)
+        self.assertEqual(
+            heartbeat_audio_observation({"audio": observation}),
+            observation,
+        )
+        with self.assertRaises(MediaControlDeliveryError):
+            heartbeat_audio_observation("invalid")
 
 
 if __name__ == "__main__":
