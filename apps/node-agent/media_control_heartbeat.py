@@ -12,6 +12,7 @@ from typing import Any
 
 from media_control_state import (
     MediaControlStateError,
+    normalize_remote_audio_command,
     read_audio_observation,
     reconcile_audio_command,
 )
@@ -64,7 +65,7 @@ def bootstrap_audio_command(response: dict[str, object]) -> dict[str, object] | 
 
     New Control Planes may send the nested media-control contract directly.
     During rolling upgrades, preserve the existing flat bootstrap fields and
-    translate them into the same shape.  A completely legacy response without
+    translate them into the same shape. A completely legacy response without
     audio fields keeps the historical Node-side bootstrap path untouched.
     """
 
@@ -75,9 +76,14 @@ def bootstrap_audio_command(response: dict[str, object]) -> dict[str, object] | 
         audio = nested.get("audio")
         if audio is None:
             return None
-        if not isinstance(audio, dict):
-            raise MediaControlStateError("invalid bootstrap audio command")
-        return dict(audio)
+        normalized = normalize_remote_audio_command(audio)
+        return {
+            "desired_mode": normalized["audio_mode"],
+            "version": normalized["version"],
+            "command_id": normalized["command_id"],
+            "idempotency_key": normalized["idempotency_key"],
+            "updated_at": normalized["updated_at"],
+        }
 
     known = {
         "audio_mode",
