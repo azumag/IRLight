@@ -45,6 +45,14 @@ TOKEN_URLSAFE_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
 DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 3600
+# A login always succeeds, so per-user retained sessions need their own bound:
+# when a user already holds MAX_SESSIONS_PER_USER live sessions, the oldest
+# (by created_at, token hash tie breaker) are revoked to make room. Expired
+# sessions do not count; the bounded GC reclaims those separately. Revoking
+# the oldest rather than rejecting the new login keeps a third party who only
+# floods logins from freezing the legitimate user out, while still bounding
+# per-user authority size.
+MAX_SESSIONS_PER_USER = 10
 
 
 class AuthError(Exception):
@@ -428,6 +436,31 @@ def get_user(user_id: str) -> dict[str, Any] | None:
         return _public_user(user) if user else None
 
 
+def _evict_oldest_live_sessions_locked(
+    sessions: dict[str, Any], *, user_id: str, now: float
+) -> None:
+    """Bound one user's live sessions below MAX_SESSIONS_PER_USER.
+
+    Records are validated before this runs, so ``user_id`` is a non-empty
+    string and ``created_at`` / ``expires_at`` are finite numbers. Live means
+    ``expires_at > now``, matching ``get_session_user``'s ``<=`` expiry rule.
+    Eviction order is deterministic: oldest ``created_at`` first, token hash
+    as the stable tie breaker.
+    """
+
+    live = sorted(
+        (
+            (token_hash, float(record["created_at"]))
+            for token_hash, record in sessions.items()
+            if record["user_id"] == user_id and float(record["expires_at"]) > now
+        ),
+        key=lambda item: (item[1], item[0]),
+    )
+    evictions = len(live) - (MAX_SESSIONS_PER_USER - 1)
+    for token_hash, _created_at in live[: max(evictions, 0)]:
+        del sessions[token_hash]
+
+
 def create_session(
     user_id: str, *, ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
 ) -> dict[str, Any]:
@@ -438,6 +471,9 @@ def create_session(
     with _state_lock(exclusive=True):
         sessions = _validate_sessions(
             read_json(AUTH_SESSIONS_PATH, _default_sessions())
+        )
+        _evict_oldest_live_sessions_locked(
+            sessions["sessions"], user_id=user_id, now=now
         )
         sessions["sessions"][_hash_token(token)] = {
             "user_id": user_id,
