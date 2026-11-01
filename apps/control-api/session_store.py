@@ -55,6 +55,10 @@ ACTIVE_STATES = {
 TERMINAL_STATES = {"STOPPED", "FINISHED", "FAILED"}
 CAPACITY_STATES = ACTIVE_STATES | {"STOPPING", "FAILED_CLEANUP"}
 SESSION_EVENT_LIMIT = 1000
+MEDIA_CONTROL_AUDIO_DESIRED_MODES = frozenset({"LIVE", "MUTED"})
+MEDIA_CONTROL_AUDIO_ACTUAL_MODES = frozenset(
+    {"LIVE", "MUTED", "SILENT_FALLBACK", "APPLYING", "FAILED"}
+)
 UNUSABLE_MEDIA_REASONS = {"VIDEO_TIMEOUT", "AUDIO_TIMEOUT"}
 FORMAT_REJECTION_REASONS = {
     "VIDEO_CODEC_UNSUPPORTED",
@@ -106,6 +110,26 @@ class EntitlementExceeded(RuntimeError):
 
 class SessionStateError(RuntimeError):
     """Raised when persisted Session state cannot be trusted."""
+
+    pass
+
+
+class MediaControlIdempotencyConflict(RuntimeError):
+    """Raised when an Idempotency-Key was used for a different command."""
+
+    pass
+
+
+class MediaControlVersionConflict(RuntimeError):
+    """Raised when expected_version does not match the current command version."""
+
+    def __init__(self, current: dict[str, Any]) -> None:
+        super().__init__("media-control version conflict")
+        self.current = current
+
+
+class MediaControlNotRunning(RuntimeError):
+    """Raised when a media-control command targets a terminated Session."""
 
     pass
 
@@ -211,6 +235,27 @@ def new_session_id() -> str:
     return str(uuid.uuid4())
 
 
+def _default_media_control(now: float) -> dict[str, Any]:
+    """Initial per-Session media-control state (Issue #15 command contract).
+
+    ``desired_mode`` is the last accepted operator command; ``actual_mode`` is
+    the last state confirmed applied by the Media Node. The two are kept
+    separate so an accepted-but-unapplied command is reported as ``APPLYING``
+    instead of pretending the Node already switched.
+    """
+
+    return {
+        "audio": {
+            "desired_mode": "LIVE",
+            "actual_mode": "LIVE",
+            "version": 0,
+            "command_id": None,
+            "idempotency_key": None,
+            "updated_at": now,
+        }
+    }
+
+
 def new_session(
     *,
     user_id: str,
@@ -270,6 +315,7 @@ def new_session(
         "failure_reason": None,
         "events": [],
         "next_event_seq": 1,
+        "media_control": _default_media_control(now),
         "created_at": now,
         "updated_at": now,
     }
@@ -458,6 +504,60 @@ class SessionStore:
             ):
                 raise SessionStateError(
                     "Session state record next_event_seq does not advance retained events"
+                )
+
+            media_control = record.get("media_control")
+            if media_control is not None:
+                if not isinstance(media_control, dict):
+                    raise SessionStateError(
+                        "Session state record has invalid media_control"
+                    )
+                audio = media_control.get("audio")
+                if not isinstance(audio, dict):
+                    raise SessionStateError(
+                        "Session state record has invalid media_control audio"
+                    )
+                desired_mode = _require_nonempty_string(
+                    audio,
+                    "desired_mode",
+                    context="Session media-control audio",
+                )
+                if desired_mode not in MEDIA_CONTROL_AUDIO_DESIRED_MODES:
+                    raise SessionStateError(
+                        "Session media-control audio has unknown desired_mode"
+                    )
+                actual_mode = _require_nonempty_string(
+                    audio,
+                    "actual_mode",
+                    context="Session media-control audio",
+                )
+                if actual_mode not in MEDIA_CONTROL_AUDIO_ACTUAL_MODES:
+                    raise SessionStateError(
+                        "Session media-control audio has unknown actual_mode"
+                    )
+                _require_nonnegative_int(
+                    audio,
+                    "version",
+                    context="Session media-control audio",
+                )
+                command_id = audio.get("command_id")
+                if command_id is not None and not isinstance(command_id, str):
+                    raise SessionStateError(
+                        "Session media-control audio has invalid command_id"
+                    )
+                idempotency_key = audio.get("idempotency_key")
+                if idempotency_key is not None and (
+                    not isinstance(idempotency_key, str)
+                    or not idempotency_key
+                    or len(idempotency_key) > 200
+                ):
+                    raise SessionStateError(
+                        "Session media-control audio has invalid idempotency_key"
+                    )
+                _require_finite_number(
+                    audio,
+                    "updated_at",
+                    context="Session media-control audio",
                 )
 
     @staticmethod
@@ -1189,6 +1289,110 @@ class SessionStore:
             session["updated_at"] = current
             self._persist()
             return event
+
+    def set_audio_desired(
+        self,
+        session_id: str,
+        *,
+        mode: str,
+        expected_version: int,
+        idempotency_key: str,
+        operator: str,
+        occurred_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Accept a final-state audio command for one Session (Issue #15).
+
+        This is a PUT of the desired final state, not a toggle. The same
+        ``Idempotency-Key`` replays the recorded response without bumping the
+        version; the same key with a different mode conflicts. A stale
+        ``expected_version`` conflicts with the current version. Accepted
+        commands are recorded as a ``media_control.audio.requested`` internal
+        event inside the same authority transaction. ``actual_mode`` becomes
+        ``APPLYING`` whenever the new desired differs from the last confirmed
+        state; Node delivery and the applied/failed acknowledgement are
+        follow-up work under Issue #15.
+        """
+
+        if mode not in MEDIA_CONTROL_AUDIO_DESIRED_MODES:
+            raise ValueError("audio mode must be LIVE or MUTED")
+        if isinstance(expected_version, bool) or not isinstance(
+            expected_version, int
+        ) or expected_version < 0:
+            raise ValueError("expected_version must be a non-negative integer")
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 200
+        ):
+            raise ValueError("Idempotency-Key is required and must be <= 200 chars")
+
+        current = (
+            _validated_now(context="Session media-control clock")
+            if occurred_at is None
+            else _validated_timestamp(
+                occurred_at,
+                error="Session media-control command has invalid occurred_at",
+            )
+        )
+        with self._state_lock(exclusive=True):
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("status") in TERMINAL_STATES:
+                raise MediaControlNotRunning("session is not running")
+
+            media_control = session.get("media_control")
+            if not isinstance(media_control, dict):
+                media_control = _default_media_control(current)
+                session["media_control"] = media_control
+            audio = media_control.get("audio")
+            if not isinstance(audio, dict):
+                audio = _default_media_control(current)["audio"]
+                media_control["audio"] = audio
+
+            response = {
+                "desired_mode": audio["desired_mode"],
+                "actual_mode": audio["actual_mode"],
+                "version": audio["version"],
+                "command_id": audio["command_id"],
+            }
+            if audio["idempotency_key"] == idempotency_key:
+                if audio["desired_mode"] != mode:
+                    raise MediaControlIdempotencyConflict(
+                        "Idempotency-Key was already used for another mode"
+                    )
+                return response
+            if expected_version != audio["version"]:
+                raise MediaControlVersionConflict(response)
+
+            audio["desired_mode"] = mode
+            audio["version"] += 1
+            audio["command_id"] = str(uuid.uuid4())
+            audio["idempotency_key"] = idempotency_key
+            audio["updated_at"] = current
+            if audio["actual_mode"] != mode:
+                audio["actual_mode"] = "APPLYING"
+            session["updated_at"] = current
+            self._append_event_locked(
+                session,
+                event_type="media_control.audio.requested",
+                reason_code=None,
+                payload={
+                    "command_id": audio["command_id"],
+                    "desired_mode": mode,
+                    "version": audio["version"],
+                    "operator_user_id": operator,
+                },
+                origin="control-api",
+                occurred_at=current,
+            )
+            self._persist()
+            return {
+                "desired_mode": mode,
+                "actual_mode": audio["actual_mode"],
+                "version": audio["version"],
+                "command_id": audio["command_id"],
+            }
 
     def bind_node(
         self,

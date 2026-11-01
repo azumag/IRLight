@@ -88,6 +88,13 @@ class IngestAuthProxyTest(unittest.TestCase):
                 cache_max_age_seconds=30.0,
                 cache_max_entries=8,
             ),
+            relay_reader_observer=lambda: {
+                "status": "DISCONNECTED",
+                "connected": False,
+                "reader_count": 0,
+                "reason_code": None,
+                "observed_at": 0.0,
+            },
         )
         self.proxy.start()
         self.url = f"http://127.0.0.1:{self.proxy.port}/auth"

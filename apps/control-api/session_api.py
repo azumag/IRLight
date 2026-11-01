@@ -27,7 +27,14 @@ from session_event_policy import (
     validate_user_event_payload,
     validate_user_event_type,
 )
-from session_store import SESSION_EVENT_LIMIT, EntitlementExceeded, SessionStateError
+from session_store import (
+    SESSION_EVENT_LIMIT,
+    EntitlementExceeded,
+    MediaControlIdempotencyConflict,
+    MediaControlNotRunning,
+    MediaControlVersionConflict,
+    SessionStateError,
+)
 from session_workflow import ProvisioningWorkflow
 
 
@@ -282,6 +289,64 @@ def add_session_event(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown session") from exc
+    except SessionStateError as exc:
+        raise _session_state_unavailable(exc) from exc
+
+
+class MediaControlAudioRequest(BaseModel):
+    mode: Literal["LIVE", "MUTED"]
+    expected_version: int = Field(ge=0)
+
+
+@router.put("/{session_id}/media-control/audio")
+def set_session_audio(
+    session_id: str,
+    command: MediaControlAudioRequest,
+    current_user: CurrentUser,
+    _csrf: Csrf = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, Any]:
+    """Final-state audio command for one Session (Issue #15, CP-side slice).
+
+    Desired state is persisted immediately; ``actual_mode`` stays ``APPLYING``
+    until the Media Node confirms application in a follow-up slice. This is a
+    PUT of the final state, not a toggle.
+    """
+
+    _owned_session(session_id, str(current_user["id"]))
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=400, detail="Idempotency-Key header is required"
+        )
+    try:
+        return _session_store().set_audio_desired(
+            session_id,
+            mode=command.mode,
+            expected_version=command.expected_version,
+            idempotency_key=idempotency_key,
+            operator=str(current_user["id"]),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown session") from exc
+    except MediaControlNotRunning as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "SESSION_NOT_RUNNING"}
+        ) from exc
+    except MediaControlIdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "IDEMPOTENCY_CONFLICT"}
+        ) from exc
+    except MediaControlVersionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "VERSION_CONFLICT",
+                "current_version": exc.current["version"],
+                "current_mode": exc.current["desired_mode"],
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SessionStateError as exc:
         raise _session_state_unavailable(exc) from exc
 

@@ -12,9 +12,12 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+from relay_client import RelayClientObserver
 
 
 MAX_REQUEST_BYTES = 16 * 1024
@@ -35,6 +38,8 @@ class AuthProxyConfig:
     upstream_timeout_seconds: float = 2.0
     cache_max_age_seconds: float = 300.0
     cache_max_entries: int = 256
+    relay_max_readers: int = 1
+    relay_path: str = "output/relay"
 
     @classmethod
     def from_env(cls) -> "AuthProxyConfig":
@@ -50,6 +55,8 @@ class AuthProxyConfig:
             cache_max_entries=_env_int(
                 "NODE_INGEST_AUTH_CACHE_MAX_ENTRIES", 256, 1, 4096
             ),
+            relay_max_readers=_env_int("NODE_RELAY_MAX_READERS", 1, 1, 32),
+            relay_path=os.getenv("NODE_RELAY_PATH", "output/relay"),
         )
 
 
@@ -170,10 +177,14 @@ class IngestAuthProxy:
         upstream_token: str | None = None,
         internal_media_secret: str | None = None,
         internal_media_secrets: dict[tuple[str, str, str], str] | None = None,
+        relay_reader_observer: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.upstream_url = upstream_url
         self.upstream_token = upstream_token
         self.config = config or AuthProxyConfig.from_env()
+        self.relay_reader_observer = (
+            relay_reader_observer or RelayClientObserver().observe
+        )
         self.cache = cache or PositiveAuthCache(
             max_age_seconds=self.config.cache_max_age_seconds,
             max_entries=self.config.cache_max_entries,
@@ -263,6 +274,9 @@ class IngestAuthProxy:
         internal = self._authorize_internal_media(payload)
         if internal is not None:
             return internal
+        limited = self._relay_read_limited(payload)
+        if limited is not None:
+            return limited
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.upstream_token:
@@ -337,6 +351,52 @@ class IngestAuthProxy:
         if not configured or not secrets.compare_digest(configured, supplied):
             return _json_response(401, {"detail": "invalid internal media credential"})
         return _json_response(200, {"authorized": True, "internal": True})
+
+    def _relay_read_limited(self, payload: dict[str, Any]) -> ProxyResponse | None:
+        """Bound concurrent external relay readers (Issue #76).
+
+        Only RTMP reads of the user-facing relay path are limited; internal
+        RTSP media readers are handled by ``_authorize_internal_media`` and do
+        not count against the cap. The count comes from the local MediaMTX
+        API, so a dropped TCP connection frees its slot immediately instead of
+        penalizing OBS reconnects on stale observations. A count that cannot
+        be trusted fails closed before the upstream round-trip; an offline
+        relay path simply has zero readers to admit against. The bound is
+        best-effort against simultaneous admits racing one observation; the
+        media-plane hard bound remains follow-up work.
+        """
+        if (
+            str(payload.get("action", "")).lower() != "read"
+            or str(payload.get("protocol", "")).lower() != "rtmp"
+            or str(payload.get("path", "")) != self.config.relay_path
+        ):
+            return None
+        try:
+            observation = self.relay_reader_observer()
+        except Exception:
+            observation = None
+        if (
+            isinstance(observation, dict)
+            and observation.get("reason_code") == "RELAY_SOURCE_OFFLINE"
+        ):
+            return None
+        readers = observation.get("reader_count") if isinstance(observation, dict) else None
+        if (
+            not isinstance(observation, dict)
+            or observation.get("status") == "UNKNOWN"
+            or observation.get("reason_code") is not None
+            or isinstance(readers, bool)
+            or not isinstance(readers, int)
+            or readers < 0
+        ):
+            return _json_response(
+                503,
+                {"detail": "relay reader limiter unavailable"},
+                headers={"Retry-After": "2"},
+            )
+        if readers >= self.config.relay_max_readers:
+            return _json_response(403, {"detail": "relay reader limit reached"})
+        return None
 
     def _fallback(self, payload: dict[str, Any]) -> ProxyResponse:
         cache_allowed = False

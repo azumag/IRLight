@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+EXTERNAL_RELAY_READER_TYPES = frozenset({"rtmpConn", "rtmpsConn"})
+
+
 @dataclass(frozen=True)
 class RelayClientConfig:
     api_url: str = "http://mediamtx:9997"
@@ -48,8 +51,29 @@ def _validated_observed_at(value: float) -> float:
     return observed_at
 
 
+def _external_relay_readers(readers: list[Any]) -> list[Any]:
+    """Return user-facing RTMP/RTMPS relay readers from a MediaMTX path snapshot.
+
+    MediaMTX reports every protocol attached to a path in ``readers``. Internal
+    RTSP consumers and HLS previews therefore must not consume the one-reader
+    Relay Only slot. Current MediaMTX versions identify reader protocol with a
+    ``type`` field. A missing or malformed type is counted conservatively so an
+    older or unexpected API shape cannot silently bypass the reader bound.
+    """
+
+    external: list[Any] = []
+    for reader in readers:
+        if not isinstance(reader, dict):
+            external.append(reader)
+            continue
+        reader_type = reader.get("type")
+        if not isinstance(reader_type, str) or reader_type in EXTERNAL_RELAY_READER_TYPES:
+            external.append(reader)
+    return external
+
+
 class RelayClientObserver:
-    """Map MediaMTX's anonymous reader count to a safe connection state."""
+    """Map MediaMTX's external relay-reader count to a safe connection state."""
 
     def __init__(self, config: RelayClientConfig | None = None) -> None:
         self.config = config or RelayClientConfig.from_env()
@@ -112,10 +136,11 @@ class RelayClientObserver:
         if not isinstance(readers, list):
             return {**base, "reason_code": "READER_STATE_UNAVAILABLE"}
 
+        external_readers = _external_relay_readers(readers)
         return {
             **base,
-            "status": "CONNECTED" if readers else "DISCONNECTED",
-            "connected": bool(readers),
-            "reader_count": len(readers),
+            "status": "CONNECTED" if external_readers else "DISCONNECTED",
+            "connected": bool(external_readers),
+            "reader_count": len(external_readers),
             "reason_code": None,
         }
